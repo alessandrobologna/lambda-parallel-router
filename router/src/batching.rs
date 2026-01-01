@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 
 use crate::{
     lambda::{LambdaInvokeResult, LambdaInvoker},
-    spec::{InvokeMode, OperationConfig},
+    spec::{BatchKeyDimension, InvokeMode, OperationConfig},
 };
 
 #[derive(Debug, Clone)]
@@ -87,10 +87,18 @@ struct BatchKey {
     invoke_mode: InvokeMode,
     max_wait_ms: u64,
     max_batch_size: usize,
+    key_values: Vec<Option<String>>,
 }
 
 impl BatchKey {
-    fn from_operation(op: &OperationConfig) -> Self {
+    fn from_operation_and_request(op: &OperationConfig, req: &PendingRequest) -> Self {
+        let key_values = op
+            .key
+            .iter()
+            .map(|dim| match dim {
+                BatchKeyDimension::Header(name) => req.headers.get(name.as_str()).cloned(),
+            })
+            .collect();
         Self {
             target_lambda: op.target_lambda.clone(),
             method: op.method.clone(),
@@ -98,6 +106,7 @@ impl BatchKey {
             invoke_mode: op.invoke_mode,
             max_wait_ms: op.max_wait_ms,
             max_batch_size: op.max_batch_size,
+            key_values,
         }
     }
 }
@@ -140,7 +149,7 @@ impl BatcherManager {
         op: &OperationConfig,
         mut req: PendingRequest,
     ) -> Result<(), EnqueueError> {
-        let key = BatchKey::from_operation(op);
+        let key = BatchKey::from_operation_and_request(op, &req);
 
         // Handle idle eviction + races by retrying once if the channel is closed.
         for _ in 0..2 {
@@ -779,6 +788,7 @@ mod tests {
             target_lambda: "fn".to_string(),
             max_wait_ms,
             max_batch_size,
+            key: vec![],
             timeout_ms: 1000,
             invoke_mode: InvokeMode::Buffered,
         }
@@ -792,6 +802,7 @@ mod tests {
             target_lambda: "fn".to_string(),
             max_wait_ms,
             max_batch_size,
+            key: vec![],
             timeout_ms: 1000,
             invoke_mode: InvokeMode::ResponseStream,
         }
@@ -890,6 +901,131 @@ mod tests {
 
         let r = rx.await.expect("resp");
         assert_eq!(r.status, StatusCode::OK);
+    }
+
+    struct RecordingInvoker {
+        batch_sizes: tokio::sync::Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl LambdaInvoker for RecordingInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::Buffered);
+            let v: serde_json::Value = serde_json::from_slice(&payload)?;
+            let batch = v["batch"].as_array().expect("batch array");
+            self.batch_sizes.lock().await.push(batch.len());
+
+            let responses = batch
+                .iter()
+                .map(|item| {
+                    let id = item["id"].as_str().expect("id");
+                    serde_json::json!({
+                      "id": id,
+                      "statusCode": 200,
+                      "headers": {},
+                      "body": "ok",
+                      "isBase64Encoded": false
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let out = serde_json::json!({
+              "v": 1,
+              "responses": responses
+            });
+
+            Ok(LambdaInvokeResult::Buffered(Bytes::from(
+                serde_json::to_vec(&out)?,
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn header_key_dimension_batches_same_value_together() {
+        let invoker = Arc::new(RecordingInvoker {
+            batch_sizes: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let mgr = BatcherManager::new(
+            invoker.clone(),
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let mut op = op_cfg(10_000, 2);
+        op.key = vec![BatchKeyDimension::Header(
+            http::HeaderName::from_bytes(b"x-tenant-id").unwrap(),
+        )];
+
+        let (mut req_a, rx_a) = pending("a");
+        req_a
+            .headers
+            .insert("x-tenant-id".to_string(), "t1".to_string());
+        mgr.enqueue(&op, req_a).unwrap();
+
+        let (mut req_b, rx_b) = pending("b");
+        req_b
+            .headers
+            .insert("x-tenant-id".to_string(), "t1".to_string());
+        mgr.enqueue(&op, req_b).unwrap();
+
+        assert_eq!(rx_a.await.unwrap().status, StatusCode::OK);
+        assert_eq!(rx_b.await.unwrap().status, StatusCode::OK);
+
+        let mut sizes = invoker.batch_sizes.lock().await.clone();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![2]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn header_key_dimension_separates_different_values() {
+        let invoker = Arc::new(RecordingInvoker {
+            batch_sizes: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let mgr = BatcherManager::new(
+            invoker.clone(),
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let mut op = op_cfg(10, 2);
+        op.key = vec![BatchKeyDimension::Header(
+            http::HeaderName::from_bytes(b"x-tenant-id").unwrap(),
+        )];
+
+        let (mut req_a, rx_a) = pending("a");
+        req_a
+            .headers
+            .insert("x-tenant-id".to_string(), "t1".to_string());
+        mgr.enqueue(&op, req_a).unwrap();
+
+        let (mut req_b, rx_b) = pending("b");
+        req_b
+            .headers
+            .insert("x-tenant-id".to_string(), "t2".to_string());
+        mgr.enqueue(&op, req_b).unwrap();
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(rx_a.await.unwrap().status, StatusCode::OK);
+        assert_eq!(rx_b.await.unwrap().status, StatusCode::OK);
+
+        let mut sizes = invoker.batch_sizes.lock().await.clone();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![1, 1]);
     }
 
     struct StaticBufferedInvoker {
@@ -1101,6 +1237,7 @@ mod tests {
             invoke_mode: InvokeMode::Buffered,
             max_wait_ms: 10_000,
             max_batch_size: 2,
+            key_values: vec![],
         };
 
         let item_a_one = BatchItem {
@@ -1183,6 +1320,7 @@ mod tests {
             invoke_mode: InvokeMode::Buffered,
             max_wait_ms: 0,
             max_batch_size: 1,
+            key_values: vec![],
         };
 
         let received_at_ms = 1_700_000_000_000u64;

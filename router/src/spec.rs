@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use http::Method;
+use http::{HeaderName, Method};
 use matchit::Router;
 use serde::Deserialize;
 
@@ -34,12 +34,27 @@ pub struct LprOperationConfig {
     pub max_batch_size: usize,
 
     #[serde(default)]
+    /// Optional additional batch key dimensions (e.g. `header:x-tenant-id`).
+    ///
+    /// The router always partitions batches by `(target_lambda, method, route_template)`.
+    /// This list allows adding extra per-request dimensions to avoid mixing requests whose
+    /// semantics differ (e.g. multi-tenant traffic).
+    pub key: Vec<String>,
+
+    #[serde(default)]
     /// Optional per-request timeout override (milliseconds).
     pub timeout_ms: Option<u64>,
 
     #[serde(default)]
     /// Optional invocation mode override (defaults to buffered).
     pub invoke_mode: InvokeMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// One additional component of a batch key.
+pub enum BatchKeyDimension {
+    /// Partition batches by the value of a request header.
+    Header(HeaderName),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +106,7 @@ pub struct OperationConfig {
     pub target_lambda: String,
     pub max_wait_ms: u64,
     pub max_batch_size: usize,
+    pub key: Vec<BatchKeyDimension>,
     pub timeout_ms: u64,
     pub invoke_mode: InvokeMode,
 }
@@ -225,6 +241,9 @@ fn add_op(
         anyhow::bail!("x-lpr.max_batch_size must be > 0 for {method} {route_template}");
     }
 
+    let key = parse_batch_key_dimensions(&op.lpr.key)
+        .map_err(|err| anyhow::anyhow!("invalid x-lpr.key for {method} {route_template}: {err}"))?;
+
     let timeout_ms = op.lpr.timeout_ms.unwrap_or(default_timeout_ms);
     map.insert(
         method.clone(),
@@ -235,11 +254,58 @@ fn add_op(
             target_lambda: op.target_lambda,
             max_wait_ms: op.lpr.max_wait_ms,
             max_batch_size: op.lpr.max_batch_size,
+            key,
             timeout_ms,
             invoke_mode: op.lpr.invoke_mode,
         },
     );
     Ok(())
+}
+
+fn parse_batch_key_dimensions(raw: &[String]) -> anyhow::Result<Vec<BatchKeyDimension>> {
+    let mut dims = Vec::with_capacity(raw.len());
+    let mut headers = std::collections::HashSet::new();
+
+    for entry in raw {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            anyhow::bail!("empty key entry");
+        }
+
+        // The spec draft examples sometimes include `method`/`route` explicitly, but the router
+        // always keys by these fields anyway.
+        let lowered = entry.to_ascii_lowercase();
+        if lowered == "method"
+            || lowered == "route"
+            || lowered == "lambda"
+            || lowered == "target_lambda"
+            || lowered == "target-lambda"
+        {
+            continue;
+        }
+
+        let Some((kind, rest)) = entry.split_once(':') else {
+            anyhow::bail!("unsupported key dimension: {entry}");
+        };
+
+        match kind.trim().to_ascii_lowercase().as_str() {
+            "header" => {
+                let name = rest.trim();
+                if name.is_empty() {
+                    anyhow::bail!("header dimension requires a name");
+                }
+                let normalized = name.to_ascii_lowercase();
+                let header = HeaderName::from_bytes(normalized.as_bytes())?;
+                if !headers.insert(header.clone()) {
+                    anyhow::bail!("duplicate header dimension: {}", header.as_str());
+                }
+                dims.push(BatchKeyDimension::Header(header));
+            }
+            other => anyhow::bail!("unsupported key dimension type: {other}"),
+        }
+    }
+
+    Ok(dims)
 }
 
 fn openapi_path_to_matchit(path: &str) -> anyhow::Result<String> {
@@ -396,5 +462,61 @@ paths:
             panic!("expected match");
         };
         assert_eq!(op.invoke_mode, InvokeMode::Buffered);
+    }
+
+    #[test]
+    fn parses_header_key_dimension() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr:
+        max_wait_ms: 1
+        max_batch_size: 1
+        key:
+          - header:X-Tenant-Id
+"#;
+        let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
+        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+            panic!("expected match");
+        };
+        assert_eq!(op.key.len(), 1);
+        assert_eq!(
+            op.key,
+            vec![BatchKeyDimension::Header(
+                HeaderName::from_bytes(b"x-tenant-id").unwrap()
+            )]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_key_dimensions() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr:
+        max_wait_ms: 1
+        max_batch_size: 1
+        key: ["not-supported"]
+"#;
+        assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_header_key_dimensions() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr:
+        max_wait_ms: 1
+        max_batch_size: 1
+        key: ["header:x-tenant-id", "header:X-Tenant-Id"]
+"#;
+        assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
     }
 }
