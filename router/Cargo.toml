@@ -9,11 +9,11 @@ anyhow = "1"
 async-trait = "0.1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-lambda = "1"
-axum = "0.7"
+axum = "0.8"
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
-dashmap = "5"
+dashmap = "6"
 futures = "0.3"
 http = "1"
 matchit = "0.8"
