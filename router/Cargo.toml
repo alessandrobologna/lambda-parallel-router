@@ -17,6 +17,7 @@ dashmap = "5"
 futures = "0.3"
 http = "1"
 matchit = "0.8"
+memchr = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

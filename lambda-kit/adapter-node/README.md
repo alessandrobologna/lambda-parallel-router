@@ -14,3 +14,17 @@ async function handler(req) {
 
 exports.handler = batchAdapter(handler);
 ```
+
+## Response streaming (NDJSON)
+
+If your router operation uses `invoke_mode: response_stream`, export a streaming handler:
+
+```js
+const { batchAdapterStream } = require("./index");
+
+async function handler(req) {
+  return { statusCode: 200, headers: { "content-type": "text/plain" }, body: "ok" };
+}
+
+exports.handler = batchAdapterStream(handler);
+```

@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
 use dashmap::{mapref::entry::Entry, DashMap};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use memchr::memchr;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Semaphore};
 
@@ -197,6 +198,20 @@ struct BatchResponseItem {
     is_base64_encoded: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct StreamResponseRecord {
+    v: u8,
+    id: String,
+    #[serde(rename = "statusCode")]
+    status_code: u16,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default)]
+    body: String,
+    #[serde(rename = "isBase64Encoded", default)]
+    is_base64_encoded: bool,
+}
+
 async fn batcher_task(
     key: BatchKey,
     mut rx: mpsc::Receiver<PendingRequest>,
@@ -288,17 +303,24 @@ async fn flush_batch(key: &BatchKey, invoker: &Arc<dyn LambdaInvoker>, batch: Ve
         }
     };
 
-    let resp_bytes = match invoker
+    match invoker
         .invoke(&key.target_lambda, payload, key.invoke_mode)
         .await
     {
-        Ok(LambdaInvokeResult::Buffered(bytes)) => bytes,
+        Ok(LambdaInvokeResult::Buffered(bytes)) => dispatch_buffered(bytes, pending),
+        Ok(LambdaInvokeResult::ResponseStream(stream)) => {
+            dispatch_response_stream(stream, pending).await
+        }
         Err(err) => {
             fail_all(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
-            return;
         }
-    };
+    }
+}
 
+fn dispatch_buffered(
+    resp_bytes: Bytes,
+    mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+) {
     let parsed: BatchResponse = match serde_json::from_slice(&resp_bytes) {
         Ok(r) => r,
         Err(err) => {
@@ -324,7 +346,12 @@ async fn flush_batch(key: &BatchKey, invoker: &Arc<dyn LambdaInvoker>, batch: Ve
         let Some(tx) = pending.remove(&item.id) else {
             continue;
         };
-        let resp = match build_router_response(item) {
+        let resp = match build_router_response_parts(
+            item.status_code,
+            item.headers,
+            item.body,
+            item.is_base64_encoded,
+        ) {
             Ok(r) => r,
             Err(err) => {
                 RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
@@ -340,20 +367,162 @@ async fn flush_batch(key: &BatchKey, invoker: &Arc<dyn LambdaInvoker>, batch: Ve
     );
 }
 
-fn build_router_response(item: BatchResponseItem) -> anyhow::Result<RouterResponse> {
-    let status = StatusCode::from_u16(item.status_code)?;
+async fn dispatch_response_stream(
+    mut stream: tokio::sync::mpsc::Receiver<anyhow::Result<Bytes>>,
+    mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+) {
+    const MAX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+    let mut buffer: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.recv().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(err) => {
+                fail_all(
+                    pending,
+                    StatusCode::BAD_GATEWAY,
+                    format!("response stream error: {err}"),
+                );
+                return;
+            }
+        };
+
+        buffer.extend_from_slice(&chunk);
+        if buffer.len() > MAX_BUFFER_BYTES {
+            fail_all(
+                pending,
+                StatusCode::BAD_GATEWAY,
+                "response stream too large".to_string(),
+            );
+            return;
+        }
+
+        let mut start = 0usize;
+        while let Some(rel_nl) = memchr(b'\n', &buffer[start..]) {
+            let nl = start + rel_nl;
+            let mut line = &buffer[start..nl];
+            if line.ends_with(b"\r") {
+                line = &line[..line.len().saturating_sub(1)];
+            }
+            start = nl + 1;
+
+            if line.is_empty() {
+                continue;
+            }
+
+            let record: StreamResponseRecord = match serde_json::from_slice(line) {
+                Ok(r) => r,
+                Err(err) => {
+                    fail_all(
+                        pending,
+                        StatusCode::BAD_GATEWAY,
+                        format!("bad ndjson record: {err}"),
+                    );
+                    return;
+                }
+            };
+
+            if record.v != 1 {
+                fail_all(
+                    pending,
+                    StatusCode::BAD_GATEWAY,
+                    format!("unsupported record version: {}", record.v),
+                );
+                return;
+            }
+
+            let Some(tx) = pending.remove(&record.id) else {
+                continue;
+            };
+            let resp = match build_router_response_parts(
+                record.status_code,
+                record.headers,
+                record.body,
+                record.is_base64_encoded,
+            ) {
+                Ok(r) => r,
+                Err(err) => {
+                    RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
+                }
+            };
+            let _ = tx.send(resp);
+        }
+
+        if start > 0 {
+            buffer.drain(..start);
+        }
+    }
+
+    // Allow the final record to omit the trailing newline.
+    let mut end = buffer.len();
+    while end > 0 && (buffer[end - 1] == b'\n' || buffer[end - 1] == b'\r') {
+        end -= 1;
+    }
+    let tail = &buffer[..end];
+    if !tail.is_empty() {
+        let record: StreamResponseRecord = match serde_json::from_slice(tail) {
+            Ok(r) => r,
+            Err(err) => {
+                fail_all(
+                    pending,
+                    StatusCode::BAD_GATEWAY,
+                    format!("bad ndjson record: {err}"),
+                );
+                return;
+            }
+        };
+
+        if record.v != 1 {
+            fail_all(
+                pending,
+                StatusCode::BAD_GATEWAY,
+                format!("unsupported record version: {}", record.v),
+            );
+            return;
+        }
+
+        if let Some(tx) = pending.remove(&record.id) {
+            let resp = match build_router_response_parts(
+                record.status_code,
+                record.headers,
+                record.body,
+                record.is_base64_encoded,
+            ) {
+                Ok(r) => r,
+                Err(err) => {
+                    RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
+                }
+            };
+            let _ = tx.send(resp);
+        }
+    }
+
+    fail_all(
+        pending,
+        StatusCode::BAD_GATEWAY,
+        "missing response record".to_string(),
+    );
+}
+
+fn build_router_response_parts(
+    status_code: u16,
+    headers_in: HashMap<String, String>,
+    body: String,
+    is_base64_encoded: bool,
+) -> anyhow::Result<RouterResponse> {
+    let status = StatusCode::from_u16(status_code)?;
 
     let mut headers = HeaderMap::new();
-    for (k, v) in item.headers {
+    for (k, v) in headers_in {
         let name = HeaderName::from_bytes(k.as_bytes())?;
         let value = HeaderValue::from_str(&v)?;
         headers.insert(name, value);
     }
 
-    let body_bytes = if item.is_base64_encoded {
-        Bytes::from(STANDARD.decode(item.body.as_bytes())?)
+    let body_bytes = if is_base64_encoded {
+        Bytes::from(STANDARD.decode(body.as_bytes())?)
     } else {
-        Bytes::from(item.body)
+        Bytes::from(body)
     };
 
     Ok(RouterResponse {
@@ -455,6 +624,19 @@ mod tests {
         }
     }
 
+    fn op_cfg_stream(max_wait_ms: u64, max_batch_size: usize) -> OperationConfig {
+        OperationConfig {
+            route_template: "/hello".to_string(),
+            method: Method::GET,
+            operation_id: None,
+            target_lambda: "fn".to_string(),
+            max_wait_ms,
+            max_batch_size,
+            timeout_ms: 1000,
+            invoke_mode: InvokeMode::ResponseStream,
+        }
+    }
+
     #[tokio::test]
     async fn flushes_by_batch_size() {
         let invoker = Arc::new(EchoInvoker {
@@ -546,5 +728,95 @@ mod tests {
 
         let r = rx.await.expect("resp");
         assert_eq!(r.status, StatusCode::OK);
+    }
+
+    struct StreamInvoker;
+
+    #[async_trait]
+    impl LambdaInvoker for StreamInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            _payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::ResponseStream);
+            let (tx, rx) = tokio::sync::mpsc::channel::<anyhow::Result<Bytes>>(8);
+
+            tokio::spawn(async move {
+                let chunk1 = concat!(
+                    "{\"v\":1,\"id\":\"b\",\"statusCode\":200,\"headers\":{},\"body\":\"ok\",\"isBase64Encoded\":false}\n",
+                    "{\"v\":1,\"id\":\"a\""
+                );
+                let _ = tx.send(Ok(Bytes::from(chunk1))).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let chunk2 =
+                    ",\"statusCode\":200,\"headers\":{},\"body\":\"ok\",\"isBase64Encoded\":false}\n";
+                let _ = tx.send(Ok(Bytes::from(chunk2))).await;
+            });
+
+            Ok(LambdaInvokeResult::ResponseStream(rx))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_stream_dispatches_early_records() {
+        let invoker = Arc::new(StreamInvoker);
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg_stream(10_000, 2);
+
+        let (tx_a, mut rx_a) = oneshot::channel();
+        mgr.enqueue(
+            &op,
+            PendingRequest {
+                id: "a".to_string(),
+                method: Method::GET,
+                path: "/hello".to_string(),
+                route: "/hello".to_string(),
+                headers: HashMap::new(),
+                query: HashMap::new(),
+                body: Bytes::new(),
+                respond_to: tx_a,
+            },
+        )
+        .unwrap();
+
+        let (tx_b, rx_b) = oneshot::channel();
+        mgr.enqueue(
+            &op,
+            PendingRequest {
+                id: "b".to_string(),
+                method: Method::GET,
+                path: "/hello".to_string(),
+                route: "/hello".to_string(),
+                headers: HashMap::new(),
+                query: HashMap::new(),
+                body: Bytes::new(),
+                respond_to: tx_b,
+            },
+        )
+        .unwrap();
+
+        let b = rx_b.await.expect("b response");
+        assert_eq!(b.status, StatusCode::OK);
+
+        // `a` should not be ready until we advance time.
+        assert!(tokio::time::timeout(Duration::from_millis(0), &mut rx_a)
+            .await
+            .is_err());
+
+        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+
+        let a = rx_a.await.expect("a response");
+        assert_eq!(a.status, StatusCode::OK);
     }
 }

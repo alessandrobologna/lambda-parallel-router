@@ -25,6 +25,23 @@ async function mapConcurrent(items, concurrency, fn) {
   return out;
 }
 
+async function forEachConcurrent(items, concurrency, fn) {
+  let next = 0;
+
+  async function worker() {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      // eslint-disable-next-line no-await-in-loop
+      await fn(items[i], i);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  await Promise.all(workers);
+}
+
 function decodeRequestBody(item) {
   if (item == null) return Buffer.alloc(0);
 
@@ -104,4 +121,64 @@ function batchAdapter(userHandler, options = {}) {
   };
 }
 
-module.exports = { batchAdapter };
+function batchAdapterStream(userHandler, options = {}) {
+  if (typeof userHandler !== "function") {
+    throw new TypeError("batchAdapterStream(userHandler): userHandler must be a function");
+  }
+  const concurrency = normalizeConcurrency(options.concurrency ?? 16);
+
+  const streamifyResponse = options.streamifyResponse ?? globalThis?.awslambda?.streamifyResponse;
+  if (typeof streamifyResponse !== "function") {
+    throw new Error(
+      "Response streaming is not available (missing awslambda.streamifyResponse); use batchAdapter() instead.",
+    );
+  }
+
+  return streamifyResponse(async (event, responseStream) => {
+    try {
+      if (typeof responseStream?.setContentType === "function") {
+        responseStream.setContentType("application/x-ndjson");
+      }
+
+      const batch = Array.isArray(event?.batch) ? event.batch : [];
+      await forEachConcurrent(batch, concurrency, async (item) => {
+        const id = typeof item?.id === "string" ? item.id : "";
+        const req = {
+          ...item,
+          id,
+          body: decodeRequestBody(item),
+          headers: normalizeHeaders(item?.headers),
+          query: item?.query && typeof item.query === "object" ? item.query : {},
+        };
+
+        let record;
+        try {
+          const userResp = await userHandler(req);
+          const statusCode = Number(userResp?.statusCode ?? 200);
+          const headers = normalizeHeaders(userResp?.headers);
+          const { body, isBase64Encoded } = normalizeResponseBody(
+            userResp?.body,
+            userResp?.isBase64Encoded,
+          );
+
+          record = { v: 1, id, statusCode, headers, body, isBase64Encoded };
+        } catch (err) {
+          record = {
+            v: 1,
+            id,
+            statusCode: 500,
+            headers: { "content-type": "text/plain" },
+            body: "internal error",
+            isBase64Encoded: false,
+          };
+        }
+
+        responseStream.write(`${JSON.stringify(record)}\n`);
+      });
+    } finally {
+      responseStream.end();
+    }
+  });
+}
+
+module.exports = { batchAdapter, batchAdapterStream };
