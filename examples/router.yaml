@@ -1,0 +1,10 @@
+listen_addr: "127.0.0.1:3000"
+spec_path: "examples/spec.yaml"
+aws_region: "us-east-1"
+
+max_inflight_invocations: 64
+max_queue_depth_per_key: 1000
+idle_ttl_ms: 30000
+default_timeout_ms: 2000
+max_body_bytes: 1048576
+

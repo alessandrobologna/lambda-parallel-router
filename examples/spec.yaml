@@ -1,0 +1,11 @@
+paths:
+  /hello:
+    get:
+      operationId: hello
+      x-target-lambda: my-lambda-name
+      x-lpr:
+        max_wait_ms: 10
+        max_batch_size: 16
+        timeout_ms: 2000
+        invoke_mode: buffered # buffered|response_stream
+
