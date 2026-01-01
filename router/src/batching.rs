@@ -1,3 +1,9 @@
+//! Per-route microbatching and response demultiplexing.
+//!
+//! `BatcherManager` maintains a map of per-batch-key Tokio tasks. Each task buffers requests for a
+//! short period (or until it reaches a maximum size), invokes Lambda once, then dispatches the
+//! per-request responses back to the waiting HTTP handlers.
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -18,6 +24,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// HTTP response returned to the original client.
 pub struct RouterResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
@@ -25,6 +32,7 @@ pub struct RouterResponse {
 }
 
 impl RouterResponse {
+    /// Convenience constructor for a plain text response (no default content-type is set).
     pub fn text(status: StatusCode, body: impl Into<String>) -> Self {
         Self {
             status,
@@ -44,10 +52,13 @@ impl axum::response::IntoResponse for RouterResponse {
 }
 
 #[derive(Debug)]
+/// A single HTTP request waiting to be included in a batch.
 pub struct PendingRequest {
+    /// Router-generated request identifier (unique within the batch).
     pub id: String,
     pub method: Method,
     pub path: String,
+    /// The matched OpenAPI route template (e.g. `/v1/items/{id}`).
     pub route: String,
     pub headers: HashMap<String, String>,
     pub query: HashMap<String, String>,
@@ -56,9 +67,13 @@ pub struct PendingRequest {
 }
 
 #[derive(Debug, Clone)]
+/// Batching limits and resource caps.
 pub struct BatchingConfig {
+    /// Global in-flight invocation limit across all routes.
     pub max_inflight_invocations: usize,
+    /// Per-batch-key queue depth.
     pub max_queue_depth_per_key: usize,
+    /// Idle eviction time for per-key batcher tasks.
     pub idle_ttl: Duration,
 }
 
@@ -86,6 +101,7 @@ impl BatchKey {
 }
 
 #[derive(Clone)]
+/// Manages per-batch-key microbatchers.
 pub struct BatcherManager {
     invoker: Arc<dyn LambdaInvoker>,
     cfg: BatchingConfig,
@@ -94,12 +110,16 @@ pub struct BatcherManager {
 }
 
 #[derive(Debug)]
+/// Errors that can occur while enqueueing a request for batching.
 pub enum EnqueueError {
+    /// The per-key queue is at capacity.
     QueueFull,
+    /// The batcher task exited while enqueueing.
     BatcherClosed,
 }
 
 impl BatcherManager {
+    /// Create a new manager using the given Lambda invoker and batching config.
     pub fn new(invoker: Arc<dyn LambdaInvoker>, cfg: BatchingConfig) -> Self {
         let inflight = Arc::new(Semaphore::new(cfg.max_inflight_invocations));
         Self {
@@ -110,6 +130,9 @@ impl BatcherManager {
         }
     }
 
+    /// Enqueue a request for batching according to the operation's configuration.
+    ///
+    /// This function is synchronous and uses `try_send` to apply backpressure immediately.
     pub fn enqueue(
         &self,
         op: &OperationConfig,
@@ -550,6 +573,23 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    fn pending(id: &str) -> (PendingRequest, oneshot::Receiver<RouterResponse>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            PendingRequest {
+                id: id.to_string(),
+                method: Method::GET,
+                path: "/hello".to_string(),
+                route: "/hello".to_string(),
+                headers: HashMap::new(),
+                query: HashMap::new(),
+                body: Bytes::new(),
+                respond_to: tx,
+            },
+            rx,
+        )
+    }
+
     struct EchoInvoker {
         calls: AtomicUsize,
     }
@@ -730,6 +770,192 @@ mod tests {
         assert_eq!(r.status, StatusCode::OK);
     }
 
+    struct StaticBufferedInvoker {
+        response: Bytes,
+    }
+
+    #[async_trait]
+    impl LambdaInvoker for StaticBufferedInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            _payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::Buffered);
+            Ok(LambdaInvokeResult::Buffered(self.response.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_missing_record_returns_bad_gateway_for_missing() {
+        let invoker = Arc::new(StaticBufferedInvoker {
+            response: Bytes::from_static(br#"{"v":1,"responses":[{"id":"a","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false}]}"#),
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::OK);
+        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            std::str::from_utf8(&b.body).unwrap(),
+            "missing response record"
+        );
+    }
+
+    #[tokio::test]
+    async fn buffered_invalid_json_fails_all() {
+        let invoker = Arc::new(StaticBufferedInvoker {
+            response: Bytes::from_static(b"not-json"),
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+        assert!(std::str::from_utf8(&a.body)
+            .unwrap()
+            .contains("decode response"));
+    }
+
+    #[tokio::test]
+    async fn buffered_unsupported_version_fails_all() {
+        let invoker = Arc::new(StaticBufferedInvoker {
+            response: Bytes::from_static(br#"{"v":2,"responses":[]}"#),
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+        assert!(std::str::from_utf8(&a.body)
+            .unwrap()
+            .contains("unsupported response version"));
+    }
+
+    #[tokio::test]
+    async fn buffered_bad_base64_only_fails_that_item() {
+        let invoker = Arc::new(StaticBufferedInvoker {
+            response: Bytes::from_static(br#"{"v":1,"responses":[{"id":"a","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false},{"id":"b","statusCode":200,"headers":{},"body":"!!!","isBase64Encoded":true}]}"#),
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::OK);
+        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+        assert!(std::str::from_utf8(&b.body)
+            .unwrap()
+            .contains("bad response"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn enqueue_returns_queue_full_without_yielding() {
+        let invoker = Arc::new(EchoInvoker {
+            calls: AtomicUsize::new(0),
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 1,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg(10_000, 16);
+        let (req_a, _rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, _rx_b) = pending("b");
+        assert!(matches!(
+            mgr.enqueue(&op, req_b),
+            Err(EnqueueError::QueueFull)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_batcher_is_evicted() {
+        let invoker = Arc::new(EchoInvoker {
+            calls: AtomicUsize::new(0),
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_millis(10),
+            },
+        );
+
+        let op = op_cfg(0, 1);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        assert_eq!(a.status, StatusCode::OK);
+
+        assert_eq!(mgr.batchers.len(), 1);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(mgr.batchers.len(), 0);
+    }
+
     struct StreamInvoker;
 
     #[async_trait]
@@ -818,5 +1044,110 @@ mod tests {
 
         let a = rx_a.await.expect("a response");
         assert_eq!(a.status, StatusCode::OK);
+    }
+
+    struct StreamOnceInvoker {
+        chunks: Vec<Bytes>,
+    }
+
+    #[async_trait]
+    impl LambdaInvoker for StreamOnceInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            _payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::ResponseStream);
+            let (tx, rx) = tokio::sync::mpsc::channel::<anyhow::Result<Bytes>>(8);
+            let chunks = self.chunks.clone();
+            tokio::spawn(async move {
+                for c in chunks {
+                    let _ = tx.send(Ok(c)).await;
+                }
+            });
+            Ok(LambdaInvokeResult::ResponseStream(rx))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_stream_without_trailing_newline_is_accepted() {
+        let invoker = Arc::new(StreamOnceInvoker {
+            chunks: vec![Bytes::from_static(
+                br#"{"v":1,"id":"a","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false}"#,
+            )],
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg_stream(0, 1);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let a = rx_a.await.expect("a response");
+        assert_eq!(a.status, StatusCode::OK);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_stream_missing_record_fails_remaining() {
+        let invoker = Arc::new(StreamOnceInvoker {
+            chunks: vec![Bytes::from_static(
+                br#"{"v":1,"id":"a","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false}
+"#,
+            )],
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg_stream(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::OK);
+        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_stream_invalid_record_fails_all() {
+        let invoker = Arc::new(StreamOnceInvoker {
+            chunks: vec![Bytes::from_static(b"{not-json}\n")],
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+            },
+        );
+
+        let op = op_cfg_stream(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+        assert!(std::str::from_utf8(&a.body)
+            .unwrap()
+            .contains("bad ndjson record"));
     }
 }

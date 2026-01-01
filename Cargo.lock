@@ -1381,6 +1381,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "url",

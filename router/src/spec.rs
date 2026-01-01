@@ -1,3 +1,8 @@
+//! OpenAPI-ish routing spec parsing and matching.
+//!
+//! The router uses a lightweight subset of OpenAPI (`paths` + HTTP methods) and relies on vendor
+//! extensions to define Lambda targets and microbatching behavior.
+
 use std::collections::{BTreeMap, HashMap};
 
 use http::Method;
@@ -5,9 +10,12 @@ use matchit::Router;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+/// How the router invokes Lambda for an operation.
 #[serde(rename_all = "snake_case")]
 pub enum InvokeMode {
+    /// Synchronous `Invoke` returning a single buffered payload.
     Buffered,
+    /// `InvokeWithResponseStream` returning a byte stream (used with NDJSON records).
     ResponseStream,
 }
 
@@ -18,30 +26,39 @@ impl Default for InvokeMode {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// `x-lpr` vendor extension (per operation).
 pub struct LprOperationConfig {
+    /// Maximum time (in milliseconds) to wait before flushing a batch.
     pub max_wait_ms: u64,
+    /// Maximum number of requests per batch.
     pub max_batch_size: usize,
 
     #[serde(default)]
+    /// Optional per-request timeout override (milliseconds).
     pub timeout_ms: Option<u64>,
 
     #[serde(default)]
+    /// Optional invocation mode override (defaults to buffered).
     pub invoke_mode: InvokeMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// One operation entry under a path item.
 pub struct Operation {
     #[serde(rename = "operationId", default)]
     pub operation_id: Option<String>,
 
     #[serde(rename = "x-target-lambda")]
+    /// Lambda function name or ARN.
     pub target_lambda: String,
 
     #[serde(rename = "x-lpr")]
+    /// Router-specific operation configuration.
     pub lpr: LprOperationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+/// OpenAPI-ish "path item" containing method operations.
 pub struct PathItem {
     #[serde(default)]
     pub get: Option<Operation>,
@@ -60,11 +77,13 @@ pub struct PathItem {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// Minimal OpenAPI-ish spec containing only `paths`.
 pub struct OpenApiLikeSpec {
     pub paths: BTreeMap<String, PathItem>,
 }
 
 #[derive(Debug, Clone)]
+/// Fully resolved per-operation configuration used by the router at runtime.
 pub struct OperationConfig {
     pub route_template: String,
     pub method: Method,
@@ -82,23 +101,32 @@ struct RouteConfig {
 }
 
 #[derive(Debug, Clone)]
+/// A compiled route matcher.
 pub struct CompiledSpec {
     router: Router<RouteConfig>,
 }
 
 #[derive(Debug, Clone)]
+/// Outcome of matching an incoming request to a configured operation.
 pub enum RouteMatch<'a> {
+    /// No configured path matched.
     NotFound,
+    /// Path matched but method wasn't configured.
     MethodNotAllowed { allowed: Vec<Method> },
+    /// Path+method matched and produced an operation config.
     Matched(&'a OperationConfig),
 }
 
 impl CompiledSpec {
+    /// Parse and compile a YAML spec into a matcher.
     pub fn from_yaml_bytes(bytes: &[u8], default_timeout_ms: u64) -> anyhow::Result<Self> {
         let spec: OpenApiLikeSpec = serde_yaml::from_slice(bytes)?;
         Self::compile(spec, default_timeout_ms)
     }
 
+    /// Match an `(HTTP method, path)` pair.
+    ///
+    /// The router uses this to decide which Lambda to invoke, and which batching settings to apply.
     pub fn match_request<'a>(&'a self, method: &Method, path: &str) -> RouteMatch<'a> {
         let Ok(matched) = self.router.at(path) else {
             return RouteMatch::NotFound;
@@ -107,7 +135,12 @@ impl CompiledSpec {
         match matched.value.ops_by_method.get(method) {
             Some(op) => RouteMatch::Matched(op),
             None => RouteMatch::MethodNotAllowed {
-                allowed: matched.value.ops_by_method.keys().cloned().collect(),
+                allowed: {
+                    let mut methods: Vec<Method> =
+                        matched.value.ops_by_method.keys().cloned().collect();
+                    methods.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+                    methods
+                },
             },
         }
     }
@@ -291,5 +324,77 @@ paths:
             spec.match_request(&Method::POST, "/v1/items/123"),
             RouteMatch::MethodNotAllowed { .. }
         ));
+    }
+
+    #[test]
+    fn method_not_allowed_returns_sorted_allow_list() {
+        let yaml = br#"
+paths:
+  /x:
+    post:
+      x-target-lambda: fn
+      x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
+    get:
+      x-target-lambda: fn
+      x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
+"#;
+        let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
+        let RouteMatch::MethodNotAllowed { allowed } = spec.match_request(&Method::PUT, "/x")
+        else {
+            panic!("expected method not allowed");
+        };
+        assert_eq!(allowed, vec![Method::GET, Method::POST]);
+    }
+
+    #[test]
+    fn rejects_invalid_path_templates() {
+        assert!(openapi_path_to_matchit("v1/items").is_err());
+        assert!(openapi_path_to_matchit("/v1/{").is_err());
+        assert!(openapi_path_to_matchit("/v1/}").is_err());
+        assert!(openapi_path_to_matchit("/v1/{}").is_err());
+        assert!(openapi_path_to_matchit("/v1/{{id}}").is_err());
+    }
+
+    #[test]
+    fn ignores_paths_with_no_operations() {
+        let yaml = br#"
+paths:
+  /empty: {}
+"#;
+        let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
+        assert!(matches!(
+            spec.match_request(&Method::GET, "/empty"),
+            RouteMatch::NotFound
+        ));
+    }
+
+    #[test]
+    fn max_batch_size_must_be_positive() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr: { max_wait_ms: 1, max_batch_size: 0 }
+"#;
+        assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
+    }
+
+    #[test]
+    fn invoke_mode_defaults_to_buffered() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr:
+        max_wait_ms: 1
+        max_batch_size: 1
+"#;
+        let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
+        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+            panic!("expected match");
+        };
+        assert_eq!(op.invoke_mode, InvokeMode::Buffered);
     }
 }

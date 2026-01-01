@@ -1,15 +1,28 @@
+//! Lambda invocation abstraction.
+//!
+//! The router supports two modes:
+//! - Buffered (`Invoke`) where the entire Lambda response is returned as a single payload.
+//! - Response streaming (`InvokeWithResponseStream`) where the Lambda response is delivered as a
+//!   stream of byte chunks (used for NDJSON records).
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use crate::spec::InvokeMode;
 
+/// Result of invoking a Lambda function.
 pub enum LambdaInvokeResult {
+    /// Entire response payload (buffered).
     Buffered(Bytes),
+    /// Stream of payload chunks.
+    ///
+    /// The receiver yields `Ok(Bytes)` chunks, or a terminal `Err` if the stream reports an error.
     ResponseStream(mpsc::Receiver<anyhow::Result<Bytes>>),
 }
 
 #[async_trait]
+/// Abstract Lambda invoker to allow unit-testing the router without AWS.
 pub trait LambdaInvoker: Send + Sync {
     async fn invoke(
         &self,
@@ -19,11 +32,13 @@ pub trait LambdaInvoker: Send + Sync {
     ) -> anyhow::Result<LambdaInvokeResult>;
 }
 
+/// AWS SDK implementation of [`LambdaInvoker`].
 pub struct AwsLambdaInvoker {
     client: aws_sdk_lambda::Client,
 }
 
 impl AwsLambdaInvoker {
+    /// Create an invoker using standard AWS credential resolution.
     pub async fn new(region: Option<String>) -> anyhow::Result<Self> {
         let mut loader = aws_config::from_env();
         if let Some(region) = region {
