@@ -4,7 +4,7 @@ use http::Method;
 use matchit::Router;
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvokeMode {
     Buffered,
@@ -86,15 +86,30 @@ pub struct CompiledSpec {
     router: Router<RouteConfig>,
 }
 
+#[derive(Debug, Clone)]
+pub enum RouteMatch<'a> {
+    NotFound,
+    MethodNotAllowed { allowed: Vec<Method> },
+    Matched(&'a OperationConfig),
+}
+
 impl CompiledSpec {
     pub fn from_yaml_bytes(bytes: &[u8], default_timeout_ms: u64) -> anyhow::Result<Self> {
         let spec: OpenApiLikeSpec = serde_yaml::from_slice(bytes)?;
         Self::compile(spec, default_timeout_ms)
     }
 
-    pub fn match_operation(&self, method: &Method, path: &str) -> Option<&OperationConfig> {
-        let matched = self.router.at(path).ok()?;
-        matched.value.ops_by_method.get(method)
+    pub fn match_request<'a>(&'a self, method: &Method, path: &str) -> RouteMatch<'a> {
+        let Ok(matched) = self.router.at(path) else {
+            return RouteMatch::NotFound;
+        };
+
+        match matched.value.ops_by_method.get(method) {
+            Some(op) => RouteMatch::Matched(op),
+            None => RouteMatch::MethodNotAllowed {
+                allowed: matched.value.ops_by_method.keys().cloned().collect(),
+            },
+        }
     }
 
     fn compile(spec: OpenApiLikeSpec, default_timeout_ms: u64) -> anyhow::Result<Self> {
@@ -156,12 +171,7 @@ impl CompiledSpec {
                 continue;
             }
 
-            router.insert(
-                matchit_path,
-                RouteConfig {
-                    ops_by_method,
-                },
-            )?;
+            router.insert(matchit_path, RouteConfig { ops_by_method })?;
         }
         Ok(Self { router })
     }
@@ -266,9 +276,9 @@ paths:
         timeout_ms: 2000
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 2500).unwrap();
-        let op = spec
-            .match_operation(&Method::GET, "/v1/items/123")
-            .expect("operation");
+        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/v1/items/123") else {
+            panic!("expected route match");
+        };
 
         assert_eq!(op.route_template, "/v1/items/{id}");
         assert_eq!(op.target_lambda, "my-fn");
@@ -277,6 +287,9 @@ paths:
         assert_eq!(op.timeout_ms, 2000);
         assert_eq!(op.operation_id.as_deref(), Some("getItem"));
 
-        assert!(spec.match_operation(&Method::POST, "/v1/items/123").is_none());
+        assert!(matches!(
+            spec.match_request(&Method::POST, "/v1/items/123"),
+            RouteMatch::MethodNotAllowed { .. }
+        ));
     }
 }

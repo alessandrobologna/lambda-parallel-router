@@ -51,4 +51,3 @@ impl RouterConfig {
         Ok(serde_yaml::from_slice(bytes)?)
     }
 }
-
