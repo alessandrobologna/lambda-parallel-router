@@ -1,5 +1,7 @@
 use clap::Parser;
 
+use lpr_router::{config::RouterConfig, spec::CompiledSpec};
+
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long)]
@@ -15,8 +17,12 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     tracing::info!(config = %args.config, "starting");
 
-    // Scaffold only; implementation lands in follow-up commits.
-    let _cfg_bytes = tokio::fs::read(args.config).await?;
+    let cfg_bytes = tokio::fs::read(&args.config).await?;
+    let cfg = RouterConfig::from_yaml_bytes(&cfg_bytes)?;
+
+    let spec_bytes = tokio::fs::read(&cfg.spec_path).await?;
+    let _spec = CompiledSpec::from_yaml_bytes(&spec_bytes, cfg.default_timeout_ms)?;
+
+    tracing::info!(listen_addr = %cfg.listen_addr, "loaded config + spec");
     Ok(())
 }
-
