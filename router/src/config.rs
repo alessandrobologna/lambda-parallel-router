@@ -26,6 +26,10 @@ fn default_max_body_bytes() -> usize {
     1024 * 1024
 }
 
+fn default_max_invoke_payload_bytes() -> usize {
+    6 * 1024 * 1024
+}
+
 #[derive(Debug, Clone, Deserialize)]
 /// Top-level router configuration.
 pub struct RouterConfig {
@@ -57,6 +61,13 @@ pub struct RouterConfig {
     #[serde(default = "default_max_body_bytes")]
     /// Maximum accepted request body size.
     pub max_body_bytes: usize,
+
+    #[serde(default = "default_max_invoke_payload_bytes")]
+    /// Maximum JSON payload size sent to Lambda per invocation.
+    ///
+    /// If a batch exceeds this limit, the router will split it into multiple invocations when
+    /// possible; otherwise the affected requests will fail.
+    pub max_invoke_payload_bytes: usize,
 }
 
 impl RouterConfig {
@@ -82,6 +93,7 @@ spec_path: "spec.yaml"
         assert_eq!(cfg.idle_ttl_ms, 30_000);
         assert_eq!(cfg.default_timeout_ms, 2_000);
         assert_eq!(cfg.max_body_bytes, 1024 * 1024);
+        assert_eq!(cfg.max_invoke_payload_bytes, 6 * 1024 * 1024);
         assert!(cfg.aws_region.is_none());
     }
 }

@@ -46,6 +46,7 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
             max_inflight_invocations: cfg.max_inflight_invocations,
             max_queue_depth_per_key: cfg.max_queue_depth_per_key,
             idle_ttl: Duration::from_millis(cfg.idle_ttl_ms),
+            max_invoke_payload_bytes: cfg.max_invoke_payload_bytes,
         },
     );
 
@@ -216,6 +217,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -224,6 +226,29 @@ mod tests {
             batchers,
             max_body_bytes,
         }
+    }
+
+    fn app_with_invoker(
+        invoker: Arc<dyn LambdaInvoker>,
+        spec_yaml: &[u8],
+        max_body_bytes: usize,
+    ) -> Router {
+        let spec = CompiledSpec::from_yaml_bytes(spec_yaml, 1000).unwrap();
+        let batchers = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        build_app(AppState {
+            spec: Arc::new(spec),
+            batchers,
+            max_body_bytes,
+        })
     }
 
     #[tokio::test]
@@ -348,5 +373,77 @@ paths:
             .await
             .unwrap();
         assert_eq!(&body[..], b"ok");
+    }
+
+    struct InspectInvoker;
+
+    #[async_trait]
+    impl LambdaInvoker for InspectInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::Buffered);
+            let v: serde_json::Value = serde_json::from_slice(&payload)?;
+
+            assert_eq!(v["v"], 1);
+            assert_eq!(v["meta"]["route"], "/hello");
+            assert!(v["meta"]["receivedAtMs"].as_u64().is_some());
+
+            let batch = v["batch"].as_array().unwrap();
+            assert_eq!(batch.len(), 1);
+            let item = &batch[0];
+            assert_eq!(item["method"], "POST");
+            assert_eq!(item["path"], "/hello");
+            assert_eq!(item["route"], "/hello");
+            assert_eq!(item["query"]["x"], "1");
+            assert_eq!(item["query"]["y"], "2");
+            assert_eq!(item["headers"]["x-foo"], "bar");
+            assert_eq!(item["isBase64Encoded"], true);
+            assert_eq!(item["body"], "aGk=");
+
+            let id = item["id"].as_str().unwrap();
+            let out = serde_json::json!({
+              "v": 1,
+              "responses": [
+                { "id": id, "statusCode": 200, "headers": {}, "body": "ok", "isBase64Encoded": false }
+              ]
+            });
+
+            Ok(LambdaInvokeResult::Buffered(Bytes::from(
+                serde_json::to_vec(&out)?,
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn request_fields_are_forwarded_in_batch_event() {
+        let app = app_with_invoker(
+            Arc::new(InspectInvoker),
+            br#"
+paths:
+  /hello:
+    post:
+      x-target-lambda: fn
+      x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
+"#,
+            1024,
+        );
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/hello?x=1&y=2")
+                    .header("x-foo", "bar")
+                    .body(Body::from("hi"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }

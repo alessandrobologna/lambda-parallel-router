@@ -75,6 +75,8 @@ pub struct BatchingConfig {
     pub max_queue_depth_per_key: usize,
     /// Idle eviction time for per-key batcher tasks.
     pub idle_ttl: Duration,
+    /// Maximum JSON payload size sent to Lambda per invocation.
+    pub max_invoke_payload_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -153,6 +155,7 @@ impl BatcherManager {
                         Arc::clone(&self.invoker),
                         self.cfg.idle_ttl,
                         Arc::clone(&self.inflight),
+                        self.cfg.max_invoke_payload_bytes,
                         Arc::clone(&self.batchers),
                     ));
                     tx
@@ -172,21 +175,6 @@ impl BatcherManager {
 
         Err(EnqueueError::BatcherClosed)
     }
-}
-
-#[derive(Debug, Serialize)]
-struct BatchEvent {
-    v: u8,
-    meta: BatchMeta,
-    batch: Vec<BatchItem>,
-}
-
-#[derive(Debug, Serialize)]
-struct BatchMeta {
-    router: &'static str,
-    route: String,
-    #[serde(rename = "receivedAtMs")]
-    received_at_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -241,6 +229,7 @@ async fn batcher_task(
     invoker: Arc<dyn LambdaInvoker>,
     idle_ttl: Duration,
     inflight: Arc<Semaphore>,
+    max_invoke_payload_bytes: usize,
     batchers: Arc<DashMap<BatchKey, mpsc::Sender<PendingRequest>>>,
 ) {
     loop {
@@ -270,18 +259,19 @@ async fn batcher_task(
             }
         }
 
-        let _permit = match inflight.acquire().await {
-            Ok(p) => p,
-            Err(_) => break,
-        };
-
-        flush_batch(&key, &invoker, batch).await;
+        flush_batch(&key, &invoker, &inflight, max_invoke_payload_bytes, batch).await;
     }
 
     batchers.remove(&key);
 }
 
-async fn flush_batch(key: &BatchKey, invoker: &Arc<dyn LambdaInvoker>, batch: Vec<PendingRequest>) {
+async fn flush_batch(
+    key: &BatchKey,
+    invoker: &Arc<dyn LambdaInvoker>,
+    inflight: &Arc<Semaphore>,
+    max_invoke_payload_bytes: usize,
+    batch: Vec<PendingRequest>,
+) {
     let mut pending: HashMap<String, oneshot::Sender<RouterResponse>> = HashMap::new();
     let mut batch_items = Vec::with_capacity(batch.len());
     for req in batch {
@@ -304,40 +294,163 @@ async fn flush_batch(key: &BatchKey, invoker: &Arc<dyn LambdaInvoker>, batch: Ve
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let event = BatchEvent {
+    for plan in plan_invocations(
+        key,
+        received_at_ms,
+        max_invoke_payload_bytes,
+        pending,
+        batch_items,
+    ) {
+        match plan {
+            InvocationPlan::Fail {
+                pending,
+                status,
+                msg,
+            } => fail_all(pending, status, msg),
+            InvocationPlan::Invoke { pending, payload } => {
+                let _permit = match inflight.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        fail_all(
+                            pending,
+                            StatusCode::BAD_GATEWAY,
+                            "router shutting down".to_string(),
+                        );
+                        continue;
+                    }
+                };
+
+                match invoker
+                    .invoke(&key.target_lambda, payload, key.invoke_mode)
+                    .await
+                {
+                    Ok(LambdaInvokeResult::Buffered(bytes)) => dispatch_buffered(bytes, pending),
+                    Ok(LambdaInvokeResult::ResponseStream(stream)) => {
+                        dispatch_response_stream(stream, pending).await
+                    }
+                    Err(err) => {
+                        fail_all(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum InvocationPlan {
+    Invoke {
+        pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+        payload: Bytes,
+    },
+    Fail {
+        pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+        status: StatusCode,
+        msg: String,
+    },
+}
+
+fn plan_invocations(
+    key: &BatchKey,
+    received_at_ms: u64,
+    max_invoke_payload_bytes: usize,
+    pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+    batch_items: Vec<BatchItem>,
+) -> Vec<InvocationPlan> {
+    let payload = match build_payload_bytes(key, received_at_ms, &batch_items) {
+        Ok(p) => p,
+        Err(err) => {
+            return vec![InvocationPlan::Fail {
+                pending,
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                msg: format!("encode: {err}"),
+            }];
+        }
+    };
+
+    if payload.len() <= max_invoke_payload_bytes {
+        return vec![InvocationPlan::Invoke { pending, payload }];
+    }
+
+    // Lambda imposes request payload limits. If a collected batch exceeds our configured limit,
+    // we recursively split it into smaller invocations. In the worst case, a single request may
+    // still exceed the limit (e.g., extremely large headers); in that case we fail it.
+    if batch_items.len() <= 1 {
+        return vec![InvocationPlan::Fail {
+            pending,
+            status: StatusCode::BAD_GATEWAY,
+            msg: "invoke payload too large".to_string(),
+        }];
+    }
+
+    let mid = batch_items.len() / 2;
+    let mut left_items = batch_items;
+    let right_items = left_items.split_off(mid);
+
+    let (left_pending, right_pending) = split_pending(pending, &left_items);
+    let mut out = plan_invocations(
+        key,
+        received_at_ms,
+        max_invoke_payload_bytes,
+        left_pending,
+        left_items,
+    );
+    out.extend(plan_invocations(
+        key,
+        received_at_ms,
+        max_invoke_payload_bytes,
+        right_pending,
+        right_items,
+    ));
+    out
+}
+
+fn build_payload_bytes(
+    key: &BatchKey,
+    received_at_ms: u64,
+    batch_items: &[BatchItem],
+) -> anyhow::Result<Bytes> {
+    #[derive(Serialize)]
+    struct BatchEventBorrowed<'a> {
+        v: u8,
+        meta: BatchMetaBorrowed<'a>,
+        batch: &'a [BatchItem],
+    }
+
+    #[derive(Serialize)]
+    struct BatchMetaBorrowed<'a> {
+        router: &'static str,
+        route: &'a str,
+        #[serde(rename = "receivedAtMs")]
+        received_at_ms: u64,
+    }
+
+    let event = BatchEventBorrowed {
         v: 1,
-        meta: BatchMeta {
+        meta: BatchMetaBorrowed {
             router: "lambda-parallel-router",
-            route: key.route.clone(),
+            route: &key.route,
             received_at_ms,
         },
         batch: batch_items,
     };
 
-    let payload = match serde_json::to_vec(&event) {
-        Ok(p) => Bytes::from(p),
-        Err(err) => {
-            fail_all(
-                pending,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("encode: {err}"),
-            );
-            return;
-        }
-    };
+    Ok(Bytes::from(serde_json::to_vec(&event)?))
+}
 
-    match invoker
-        .invoke(&key.target_lambda, payload, key.invoke_mode)
-        .await
-    {
-        Ok(LambdaInvokeResult::Buffered(bytes)) => dispatch_buffered(bytes, pending),
-        Ok(LambdaInvokeResult::ResponseStream(stream)) => {
-            dispatch_response_stream(stream, pending).await
-        }
-        Err(err) => {
-            fail_all(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
+fn split_pending(
+    mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+    left_items: &[BatchItem],
+) -> (
+    HashMap<String, oneshot::Sender<RouterResponse>>,
+    HashMap<String, oneshot::Sender<RouterResponse>>,
+) {
+    let mut left = HashMap::with_capacity(left_items.len());
+    for item in left_items {
+        if let Some(tx) = pending.remove(&item.id) {
+            left.insert(item.id.clone(), tx);
         }
     }
+    (left, pending)
 }
 
 fn dispatch_buffered(
@@ -574,6 +687,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn pending(id: &str) -> (PendingRequest, oneshot::Receiver<RouterResponse>) {
+        pending_with_body(id, Bytes::new())
+    }
+
+    fn pending_with_body(
+        id: &str,
+        body: Bytes,
+    ) -> (PendingRequest, oneshot::Receiver<RouterResponse>) {
         let (tx, rx) = oneshot::channel();
         (
             PendingRequest {
@@ -583,7 +703,7 @@ mod tests {
                 route: "/hello".to_string(),
                 headers: HashMap::new(),
                 query: HashMap::new(),
-                body: Bytes::new(),
+                body,
                 respond_to: tx,
             },
             rx,
@@ -688,6 +808,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -743,6 +864,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -798,6 +920,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -828,6 +951,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -857,6 +981,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -886,6 +1011,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -904,6 +1030,35 @@ mod tests {
             .contains("bad response"));
     }
 
+    #[tokio::test]
+    async fn buffered_extra_records_are_ignored() {
+        let invoker = Arc::new(StaticBufferedInvoker {
+            response: Bytes::from_static(
+                br#"{"v":1,"responses":[{"id":"a","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false},{"id":"b","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false},{"id":"extra","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false}]}"#,
+            ),
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let op = op_cfg(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::OK);
+        assert_eq!(b.status, StatusCode::OK);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn enqueue_returns_queue_full_without_yielding() {
         let invoker = Arc::new(EchoInvoker {
@@ -915,6 +1070,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 1,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -928,6 +1084,146 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn oversized_invoke_payload_splits_batch() {
+        let invoker = Arc::new(EchoInvoker {
+            calls: AtomicUsize::new(0),
+        });
+
+        // Pick a limit between the serialized size of a 1-item and 2-item batch so that we force
+        // splitting into two single-item invocations.
+        let body = Bytes::from(vec![0u8; 256]);
+        let body_b64 = STANDARD.encode(&body);
+        let key = BatchKey {
+            target_lambda: "fn".to_string(),
+            method: Method::GET,
+            route: "/hello".to_string(),
+            invoke_mode: InvokeMode::Buffered,
+            max_wait_ms: 10_000,
+            max_batch_size: 2,
+        };
+
+        let item_a_one = BatchItem {
+            id: "a".to_string(),
+            method: "GET".to_string(),
+            path: "/hello".to_string(),
+            route: "/hello".to_string(),
+            headers: HashMap::new(),
+            query: HashMap::new(),
+            body: body_b64.clone(),
+            is_base64_encoded: true,
+        };
+        let item_a_two = BatchItem {
+            id: "a".to_string(),
+            method: "GET".to_string(),
+            path: "/hello".to_string(),
+            route: "/hello".to_string(),
+            headers: HashMap::new(),
+            query: HashMap::new(),
+            body: body_b64.clone(),
+            is_base64_encoded: true,
+        };
+        let item_b_two = BatchItem {
+            id: "b".to_string(),
+            method: "GET".to_string(),
+            path: "/hello".to_string(),
+            route: "/hello".to_string(),
+            headers: HashMap::new(),
+            query: HashMap::new(),
+            body: body_b64,
+            is_base64_encoded: true,
+        };
+
+        let received_at_ms = 1_700_000_000_000u64;
+        let one_len = build_payload_bytes(&key, received_at_ms, &[item_a_one])
+            .unwrap()
+            .len();
+        let two_len = build_payload_bytes(&key, received_at_ms, &[item_a_two, item_b_two])
+            .unwrap()
+            .len();
+        assert!(one_len < two_len);
+        let max_invoke_payload_bytes = (one_len + two_len) / 2;
+
+        let mgr = BatcherManager::new(
+            invoker.clone(),
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes,
+            },
+        );
+
+        let op = op_cfg(10_000, 2);
+        let (req_a, rx_a) = pending_with_body("a", body.clone());
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending_with_body("b", body);
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::OK);
+        assert_eq!(b.status, StatusCode::OK);
+
+        assert_eq!(invoker.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn oversized_single_request_fails_without_invoking() {
+        let invoker = Arc::new(EchoInvoker {
+            calls: AtomicUsize::new(0),
+        });
+
+        let body = Bytes::from(vec![0u8; 256]);
+        let body_b64 = STANDARD.encode(&body);
+        let key = BatchKey {
+            target_lambda: "fn".to_string(),
+            method: Method::GET,
+            route: "/hello".to_string(),
+            invoke_mode: InvokeMode::Buffered,
+            max_wait_ms: 0,
+            max_batch_size: 1,
+        };
+
+        let received_at_ms = 1_700_000_000_000u64;
+        let item = BatchItem {
+            id: "a".to_string(),
+            method: "GET".to_string(),
+            path: "/hello".to_string(),
+            route: "/hello".to_string(),
+            headers: HashMap::new(),
+            query: HashMap::new(),
+            body: body_b64,
+            is_base64_encoded: true,
+        };
+        let one_len = build_payload_bytes(&key, received_at_ms, &[item])
+            .unwrap()
+            .len();
+
+        let mgr = BatcherManager::new(
+            invoker.clone(),
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: one_len - 1,
+            },
+        );
+
+        let op = op_cfg(0, 1);
+        let (req_a, rx_a) = pending_with_body("a", body);
+        mgr.enqueue(&op, req_a).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        assert_eq!(a.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            std::str::from_utf8(&a.body).unwrap(),
+            "invoke payload too large"
+        );
+
+        assert_eq!(invoker.calls.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn idle_batcher_is_evicted() {
         let invoker = Arc::new(EchoInvoker {
@@ -939,6 +1235,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_millis(10),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -994,6 +1291,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -1083,6 +1381,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -1091,6 +1390,74 @@ mod tests {
         mgr.enqueue(&op, req_a).unwrap();
         let a = rx_a.await.expect("a response");
         assert_eq!(a.status, StatusCode::OK);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_stream_accepts_crlf_records() {
+        let invoker = Arc::new(StreamOnceInvoker {
+            chunks: vec![Bytes::from_static(
+                b"{\"v\":1,\"id\":\"a\",\"statusCode\":200,\"headers\":{},\"body\":\"ok\",\"isBase64Encoded\":false}\r\n",
+            )],
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let op = op_cfg_stream(0, 1);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let a = rx_a.await.expect("a response");
+        assert_eq!(a.status, StatusCode::OK);
+    }
+
+    struct StreamErrorInvoker;
+
+    #[async_trait]
+    impl LambdaInvoker for StreamErrorInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            _payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::ResponseStream);
+            let (tx, rx) = tokio::sync::mpsc::channel::<anyhow::Result<Bytes>>(8);
+            tokio::spawn(async move {
+                let _ = tx.send(Err(anyhow::anyhow!("boom"))).await;
+            });
+            Ok(LambdaInvokeResult::ResponseStream(rx))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_stream_error_fails_all() {
+        let invoker = Arc::new(StreamErrorInvoker);
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let op = op_cfg_stream(10_000, 2);
+        let (req_a, rx_a) = pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+        let (req_b, rx_b) = pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
+
+        let a = rx_a.await.expect("a response");
+        let b = rx_b.await.expect("b response");
+        assert_eq!(a.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1107,6 +1474,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
@@ -1133,6 +1501,7 @@ mod tests {
                 max_inflight_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
             },
         );
 
