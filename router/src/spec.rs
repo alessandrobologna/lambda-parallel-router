@@ -55,6 +55,8 @@ pub struct LprOperationConfig {
 pub enum BatchKeyDimension {
     /// Partition batches by the value of a request header.
     Header(HeaderName),
+    /// Partition batches by the value of a single query parameter.
+    Query(String),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -265,6 +267,7 @@ fn add_op(
 fn parse_batch_key_dimensions(raw: &[String]) -> anyhow::Result<Vec<BatchKeyDimension>> {
     let mut dims = Vec::with_capacity(raw.len());
     let mut headers = std::collections::HashSet::new();
+    let mut queries = std::collections::HashSet::new();
 
     for entry in raw {
         let entry = entry.trim();
@@ -300,6 +303,16 @@ fn parse_batch_key_dimensions(raw: &[String]) -> anyhow::Result<Vec<BatchKeyDime
                     anyhow::bail!("duplicate header dimension: {}", header.as_str());
                 }
                 dims.push(BatchKeyDimension::Header(header));
+            }
+            "query" => {
+                let name = rest.trim();
+                if name.is_empty() {
+                    anyhow::bail!("query dimension requires a name");
+                }
+                if !queries.insert(name.to_string()) {
+                    anyhow::bail!("duplicate query dimension: {name}");
+                }
+                dims.push(BatchKeyDimension::Query(name.to_string()));
             }
             other => anyhow::bail!("unsupported key dimension type: {other}"),
         }
@@ -516,6 +529,44 @@ paths:
         max_wait_ms: 1
         max_batch_size: 1
         key: ["header:x-tenant-id", "header:X-Tenant-Id"]
+"#;
+        assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
+    }
+
+    #[test]
+    fn parses_query_key_dimension() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr:
+        max_wait_ms: 1
+        max_batch_size: 1
+        key:
+          - query:version
+"#;
+        let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
+        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+            panic!("expected match");
+        };
+        assert_eq!(
+            op.key,
+            vec![BatchKeyDimension::Query("version".to_string())]
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_query_key_dimensions() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr:
+        max_wait_ms: 1
+        max_batch_size: 1
+        key: ["query:version", "query:version"]
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
     }

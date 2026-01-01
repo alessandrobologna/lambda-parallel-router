@@ -97,6 +97,7 @@ impl BatchKey {
             .iter()
             .map(|dim| match dim {
                 BatchKeyDimension::Header(name) => req.headers.get(name.as_str()).cloned(),
+                BatchKeyDimension::Query(name) => req.query.get(name).cloned(),
             })
             .collect();
         Self {
@@ -1015,6 +1016,77 @@ mod tests {
         req_b
             .headers
             .insert("x-tenant-id".to_string(), "t2".to_string());
+        mgr.enqueue(&op, req_b).unwrap();
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(rx_a.await.unwrap().status, StatusCode::OK);
+        assert_eq!(rx_b.await.unwrap().status, StatusCode::OK);
+
+        let mut sizes = invoker.batch_sizes.lock().await.clone();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![1, 1]);
+    }
+
+    #[tokio::test]
+    async fn query_key_dimension_batches_same_value_together() {
+        let invoker = Arc::new(RecordingInvoker {
+            batch_sizes: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let mgr = BatcherManager::new(
+            invoker.clone(),
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let mut op = op_cfg(10_000, 2);
+        op.key = vec![BatchKeyDimension::Query("version".to_string())];
+
+        let (mut req_a, rx_a) = pending("a");
+        req_a.query.insert("version".to_string(), "v1".to_string());
+        mgr.enqueue(&op, req_a).unwrap();
+
+        let (mut req_b, rx_b) = pending("b");
+        req_b.query.insert("version".to_string(), "v1".to_string());
+        mgr.enqueue(&op, req_b).unwrap();
+
+        assert_eq!(rx_a.await.unwrap().status, StatusCode::OK);
+        assert_eq!(rx_b.await.unwrap().status, StatusCode::OK);
+
+        let mut sizes = invoker.batch_sizes.lock().await.clone();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![2]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn query_key_dimension_separates_different_values() {
+        let invoker = Arc::new(RecordingInvoker {
+            batch_sizes: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let mgr = BatcherManager::new(
+            invoker.clone(),
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let mut op = op_cfg(10, 2);
+        op.key = vec![BatchKeyDimension::Query("version".to_string())];
+
+        let (mut req_a, rx_a) = pending("a");
+        req_a.query.insert("version".to_string(), "v1".to_string());
+        mgr.enqueue(&op, req_a).unwrap();
+
+        let (mut req_b, rx_b) = pending("b");
+        req_b.query.insert("version".to_string(), "v2".to_string());
         mgr.enqueue(&op, req_b).unwrap();
 
         tokio::time::advance(Duration::from_millis(10)).await;
