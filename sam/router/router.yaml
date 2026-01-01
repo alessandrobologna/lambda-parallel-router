@@ -1,0 +1,19 @@
+listen_addr: "0.0.0.0:8080"
+spec_path: "/app/spec.yaml"
+
+# For App Runner, set `AWS_REGION` / `AWS_DEFAULT_REGION` via environment variables.
+#
+# aws_region: "us-east-1"
+
+max_inflight_invocations: 64
+max_queue_depth_per_key: 1000
+idle_ttl_ms: 30000
+default_timeout_ms: 2000
+
+max_body_bytes: 1048576
+max_invoke_payload_bytes: 6291456
+
+forward_headers:
+  allow: []
+  deny: []
+

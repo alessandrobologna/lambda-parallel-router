@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: lambda-parallel-router demo (App Runner + sample Lambda batch handlers)
+
+Parameters:
+  CreateRouterService:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set to true after you push the router container image to ECR.
+
+  RouterImageTag:
+    Type: String
+    Default: latest
+    Description: Container image tag to deploy to App Runner (in the ECR repo created by this stack).
+
+Conditions:
+  ShouldCreateRouterService: !Equals [!Ref CreateRouterService, "true"]
+
+Resources:
+  # ------------------------------
+  # Sample Lambda functions
+  # ------------------------------
+  SampleBufferedFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: nodejs20.x
+      Handler: index.handler
+      CodeUri: lambda/buffered/
+      Description: Demo batch handler for buffered responses.
+      MemorySize: 256
+      Timeout: 10
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  SampleStreamingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: nodejs20.x
+      Handler: index.handler
+      CodeUri: lambda/streaming/
+      Description: Demo batch handler for NDJSON streaming responses.
+      MemorySize: 256
+      Timeout: 10
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  # ------------------------------
+  # Router container repository
+  # ------------------------------
+  RouterEcrRepository:
+    Type: AWS::ECR::Repository
+    Properties: {}
+
+  # ------------------------------
+  # App Runner roles
+  # ------------------------------
+  AppRunnerEcrAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  RouterInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeSampleLambdas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt SampleBufferedFunction.Arn
+                  - !GetAtt SampleStreamingFunction.Arn
+
+  # ------------------------------
+  # App Runner service (optional)
+  # ------------------------------
+  RouterService:
+    Type: AWS::AppRunner::Service
+    Condition: ShouldCreateRouterService
+    Properties:
+      ServiceName: !Sub "${AWS::StackName}-router"
+      SourceConfiguration:
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AppRunnerEcrAccessRole.Arn
+        AutoDeploymentsEnabled: true
+        ImageRepository:
+          ImageIdentifier: !Sub "${RouterEcrRepository.RepositoryUri}:${RouterImageTag}"
+          ImageRepositoryType: ECR
+          ImageConfiguration:
+            Port: "8080"
+            RuntimeEnvironmentVariables:
+              - Name: AWS_REGION
+                Value: !Ref AWS::Region
+              - Name: AWS_DEFAULT_REGION
+                Value: !Ref AWS::Region
+              - Name: RUST_LOG
+                Value: info
+              - Name: LPR_SAMPLE_BUFFERED_LAMBDA_ARN
+                Value: !GetAtt SampleBufferedFunction.Arn
+              - Name: LPR_SAMPLE_STREAMING_LAMBDA_ARN
+                Value: !GetAtt SampleStreamingFunction.Arn
+      InstanceConfiguration:
+        InstanceRoleArn: !GetAtt RouterInstanceRole.Arn
+
+Outputs:
+  SampleBufferedFunctionArn:
+    Value: !GetAtt SampleBufferedFunction.Arn
+
+  SampleStreamingFunctionArn:
+    Value: !GetAtt SampleStreamingFunction.Arn
+
+  RouterEcrRepositoryUri:
+    Value: !GetAtt RouterEcrRepository.RepositoryUri
+
+  RouterServiceUrl:
+    Condition: ShouldCreateRouterService
+    Value: !GetAtt RouterService.ServiceUrl
+
