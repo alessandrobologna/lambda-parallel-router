@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     batching::{BatcherManager, BatchingConfig, EnqueueError, PendingRequest, RouterResponse},
-    config::RouterConfig,
+    config::{ForwardHeadersConfig, RouterConfig},
     lambda::AwsLambdaInvoker,
     spec::{CompiledSpec, RouteMatch},
 };
@@ -28,6 +28,63 @@ struct AppState {
     spec: Arc<CompiledSpec>,
     batchers: BatcherManager,
     max_body_bytes: usize,
+    forward_headers: HeaderForwardPolicy,
+}
+
+#[derive(Clone)]
+struct HeaderForwardPolicy {
+    allow: Option<std::collections::HashSet<http::HeaderName>>,
+    deny: std::collections::HashSet<http::HeaderName>,
+}
+
+impl HeaderForwardPolicy {
+    fn try_from_cfg(cfg: &ForwardHeadersConfig) -> anyhow::Result<Self> {
+        let allow = if cfg.allow.is_empty() {
+            None
+        } else {
+            let mut set = std::collections::HashSet::with_capacity(cfg.allow.len());
+            for name in &cfg.allow {
+                set.insert(http::HeaderName::from_bytes(name.as_bytes())?);
+            }
+            Some(set)
+        };
+
+        let mut deny = std::collections::HashSet::with_capacity(cfg.deny.len());
+        for name in &cfg.deny {
+            deny.insert(http::HeaderName::from_bytes(name.as_bytes())?);
+        }
+
+        Ok(Self { allow, deny })
+    }
+
+    fn should_forward(&self, name: &http::HeaderName) -> bool {
+        if is_hop_by_hop_header(name) {
+            return false;
+        }
+        if self.deny.contains(name) {
+            return false;
+        }
+        match &self.allow {
+            Some(allow) => allow.contains(name),
+            None => true,
+        }
+    }
+}
+
+fn is_hop_by_hop_header(name: &http::HeaderName) -> bool {
+    // https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
+    // (plus `TE` per common implementations)
+    matches!(
+        name.as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
 
 fn build_app(state: AppState) -> Router {
@@ -50,10 +107,13 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
         },
     );
 
+    let forward_headers = HeaderForwardPolicy::try_from_cfg(&cfg.forward_headers)?;
+
     let state = AppState {
         spec: Arc::new(spec),
         batchers,
         max_body_bytes: cfg.max_body_bytes,
+        forward_headers,
     };
 
     let app = build_app(state);
@@ -98,6 +158,9 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
 
     let mut headers = HashMap::new();
     for (name, value) in parts.headers.iter() {
+        if !state.forward_headers.should_forward(name) {
+            continue;
+        }
         if let Ok(v) = value.to_str() {
             headers.insert(name.as_str().to_string(), v.to_string());
         }
@@ -225,6 +288,8 @@ mod tests {
             spec: Arc::new(spec),
             batchers,
             max_body_bytes,
+            forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
+                .unwrap(),
         }
     }
 
@@ -232,6 +297,15 @@ mod tests {
         invoker: Arc<dyn LambdaInvoker>,
         spec_yaml: &[u8],
         max_body_bytes: usize,
+    ) -> Router {
+        app_with_invoker_and_forward_headers(invoker, spec_yaml, max_body_bytes, Default::default())
+    }
+
+    fn app_with_invoker_and_forward_headers(
+        invoker: Arc<dyn LambdaInvoker>,
+        spec_yaml: &[u8],
+        max_body_bytes: usize,
+        forward_headers: ForwardHeadersConfig,
     ) -> Router {
         let spec = CompiledSpec::from_yaml_bytes(spec_yaml, 1000).unwrap();
         let batchers = BatcherManager::new(
@@ -248,6 +322,7 @@ mod tests {
             spec: Arc::new(spec),
             batchers,
             max_body_bytes,
+            forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
         })
     }
 
@@ -401,6 +476,7 @@ paths:
             assert_eq!(item["query"]["x"], "1");
             assert_eq!(item["query"]["y"], "2");
             assert_eq!(item["headers"]["x-foo"], "bar");
+            assert!(item["headers"]["connection"].is_null());
             assert_eq!(item["isBase64Encoded"], true);
             assert_eq!(item["body"], "aGk=");
 
@@ -438,7 +514,72 @@ paths:
                     .method("POST")
                     .uri("/hello?x=1&y=2")
                     .header("x-foo", "bar")
+                    .header("connection", "close")
                     .body(Body::from("hi"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    struct AllowlistInvoker;
+
+    #[async_trait]
+    impl LambdaInvoker for AllowlistInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::Buffered);
+            let v: serde_json::Value = serde_json::from_slice(&payload)?;
+            let item = &v["batch"].as_array().unwrap()[0];
+
+            assert_eq!(item["headers"]["x-allow"], "1");
+            assert!(item["headers"]["x-other"].is_null());
+
+            let id = item["id"].as_str().unwrap();
+            let out = serde_json::json!({
+              "v": 1,
+              "responses": [
+                { "id": id, "statusCode": 200, "headers": {}, "body": "ok", "isBase64Encoded": false }
+              ]
+            });
+            Ok(LambdaInvokeResult::Buffered(Bytes::from(
+                serde_json::to_vec(&out)?,
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn header_allowlist_is_applied() {
+        let app = app_with_invoker_and_forward_headers(
+            Arc::new(AllowlistInvoker),
+            br#"
+paths:
+  /hello:
+    get:
+      x-target-lambda: fn
+      x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
+"#,
+            1024,
+            ForwardHeadersConfig {
+                allow: vec!["x-allow".to_string()],
+                deny: vec![],
+            },
+        );
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/hello")
+                    .header("x-allow", "1")
+                    .header("x-other", "2")
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await

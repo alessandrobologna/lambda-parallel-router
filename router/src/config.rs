@@ -30,6 +30,20 @@ fn default_max_invoke_payload_bytes() -> usize {
     6 * 1024 * 1024
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+/// Header forwarding policy.
+///
+/// By default (empty `allow` + empty `deny`) the router forwards all headers that can be decoded as
+/// UTF-8, except hop-by-hop headers.
+pub struct ForwardHeadersConfig {
+    /// If non-empty, only forward these headers (case-insensitive).
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Always drop these headers (case-insensitive).
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 /// Top-level router configuration.
 pub struct RouterConfig {
@@ -68,6 +82,10 @@ pub struct RouterConfig {
     /// If a batch exceeds this limit, the router will split it into multiple invocations when
     /// possible; otherwise the affected requests will fail.
     pub max_invoke_payload_bytes: usize,
+
+    /// Header forwarding allow/deny configuration.
+    #[serde(default)]
+    pub forward_headers: ForwardHeadersConfig,
 }
 
 impl RouterConfig {
@@ -94,6 +112,8 @@ spec_path: "spec.yaml"
         assert_eq!(cfg.default_timeout_ms, 2_000);
         assert_eq!(cfg.max_body_bytes, 1024 * 1024);
         assert_eq!(cfg.max_invoke_payload_bytes, 6 * 1024 * 1024);
+        assert!(cfg.forward_headers.allow.is_empty());
+        assert!(cfg.forward_headers.deny.is_empty());
         assert!(cfg.aws_region.is_none());
     }
 }
