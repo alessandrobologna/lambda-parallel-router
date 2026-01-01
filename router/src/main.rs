@@ -1,6 +1,8 @@
 use clap::Parser;
 
-use lpr_router::{config::RouterConfig, server, spec::CompiledSpec};
+use lpr_router::{
+    config::RouterConfig, server, spec::CompiledSpec, template::render_env_template_with,
+};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -21,7 +23,13 @@ async fn main() -> anyhow::Result<()> {
     let cfg = RouterConfig::from_yaml_bytes(&cfg_bytes)?;
 
     let spec_bytes = tokio::fs::read(&cfg.spec_path).await?;
-    let spec = CompiledSpec::from_yaml_bytes(&spec_bytes, cfg.default_timeout_ms)?;
+    let spec = match std::str::from_utf8(&spec_bytes) {
+        Ok(s) => {
+            let rendered = render_env_template_with(s, |k| std::env::var(k).ok())?;
+            CompiledSpec::from_yaml_bytes(rendered.as_bytes(), cfg.default_timeout_ms)?
+        }
+        Err(_) => CompiledSpec::from_yaml_bytes(&spec_bytes, cfg.default_timeout_ms)?,
+    };
 
     tracing::info!(listen_addr = %cfg.listen_addr, "loaded config + spec");
     server::run(cfg, spec).await
