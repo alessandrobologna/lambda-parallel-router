@@ -3,20 +3,9 @@ Transform: AWS::Serverless-2016-10-31
 Description: lambda-parallel-router demo (App Runner + sample Lambda batch handlers)
 
 Parameters:
-  RouterRepositoryName:
+  RouterImageIdentifier:
     Type: String
-    Default: "lambda-parallel-router/router"
-    Description: ECR repository name for the router image (will be auto-created on first push).
-
-  RouterRepositoryPrefix:
-    Type: String
-    Default: "lambda-parallel-router"
-    Description: ECR repository creation template prefix (applies to repos under this namespace).
-
-  RouterImageTag:
-    Type: String
-    Default: latest
-    Description: Container image tag to deploy to App Runner (in the ECR repo created by this stack).
+    Description: ECR image identifier for the router container (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:latest).
 
 Resources:
   # ------------------------------
@@ -45,48 +34,6 @@ Resources:
       Timeout: 10
       Policies:
         - AWSLambdaBasicExecutionRole
-
-  # ------------------------------
-  # Router container repository (auto-created on push)
-  # ------------------------------
-  RouterRepositoryCreationTemplate:
-    Type: AWS::ECR::RepositoryCreationTemplate
-    Properties:
-      Prefix: !Ref RouterRepositoryPrefix
-      AppliedFor:
-        - CREATE_ON_PUSH
-
-  # ------------------------------
-  # CloudFormation custom resource: wait for router image
-  # ------------------------------
-  RouterImageWaiterFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Runtime: python3.11
-      Handler: app.handler
-      CodeUri: lambda/image-waiter/
-      Description: Waits until a specific ECR image tag exists, then signals CloudFormation.
-      MemorySize: 128
-      Timeout: 900
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ecr:DescribeImages
-                - ecr:DescribeRepositories
-              Resource: "*"
-
-  RouterImageReady:
-    Type: Custom::EcrImageReady
-    DependsOn:
-      - RouterRepositoryCreationTemplate
-    Properties:
-      ServiceToken: !GetAtt RouterImageWaiterFunction.Arn
-      RepositoryName: !Ref RouterRepositoryName
-      ImageTag: !Ref RouterImageTag
-      TimeoutSeconds: 840
-      PollSeconds: 5
 
   # ------------------------------
   # App Runner roles
@@ -131,8 +78,6 @@ Resources:
   # ------------------------------
   RouterService:
     Type: AWS::AppRunner::Service
-    DependsOn:
-      - RouterImageReady
     Properties:
       ServiceName: !Sub "${AWS::StackName}-router"
       SourceConfiguration:
@@ -140,7 +85,7 @@ Resources:
           AccessRoleArn: !GetAtt AppRunnerEcrAccessRole.Arn
         AutoDeploymentsEnabled: true
         ImageRepository:
-          ImageIdentifier: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RouterRepositoryName}:${RouterImageTag}"
+          ImageIdentifier: !Ref RouterImageIdentifier
           ImageRepositoryType: ECR
           ImageConfiguration:
             Port: "8080"
@@ -165,8 +110,8 @@ Outputs:
   SampleStreamingFunctionArn:
     Value: !GetAtt SampleStreamingFunction.Arn
 
-  RouterEcrRepositoryUri:
-    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RouterRepositoryName}"
+  RouterImageIdentifier:
+    Value: !Ref RouterImageIdentifier
 
   RouterServiceUrl:
     Value: !GetAtt RouterService.ServiceUrl

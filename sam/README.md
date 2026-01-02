@@ -5,51 +5,39 @@ This folder contains an AWS SAM template that deploys:
 - Two sample Lambda functions that implement the router batch contract:
   - buffered (`/hello`)
   - response streaming via NDJSON (`/hello-stream`)
-- An ECR **repository creation template** so the router image repository is created automatically
-  on first push (create-on-push)
-- An App Runner service that runs the router container
+- IAM roles for App Runner
+- An App Runner service that runs the router container (ECR image)
 
 The router image includes `sam/router/spec.yaml`, which references deployed Lambda ARNs via
 environment variables injected by the App Runner service.
 
 ## Deploy
 
-The stack uses a CloudFormation custom resource to wait until the router image exists in ECR
-before creating the App Runner service. This avoids a “deploy twice” workflow.
+The SAM template expects the router image to already exist in ECR and is passed via the
+`RouterImageIdentifier` parameter.
 
-1) Start the deployment:
+### Recommended: `make deploy` (repo root)
 
 ```bash
-sam build --template-file sam/template.yaml
-sam deploy --guided --template-file sam/template.yaml
+make deploy
 ```
 
-CloudFormation will pause while waiting for the image tag defined by `RouterImageTag` (default:
-`latest`) to exist.
+This runs:
+1) create/update an ECR repository creation template (CREATE_ON_PUSH)
+2) docker login to ECR
+3) build + push the router image (`Dockerfile.router`)
+4) `sam build` + `sam deploy` with `RouterImageIdentifier=...`
 
-2) In another terminal, build + push the router container image:
+Common overrides:
 
 ```bash
-REGION="$(aws configure get region)"
-ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-REPO_NAME="lambda-parallel-router/router"  # same as RouterRepositoryName
-TAG="latest" # same as RouterImageTag
-
-REPO_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
-
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
-docker build -f Dockerfile.router -t "${REPO_URI}:${TAG}" .
-docker push "${REPO_URI}:${TAG}"
+make deploy AWS_REGION=us-east-1 STACK_NAME=lambda-parallel-router-demo
+make deploy ROUTER_REPO_PREFIX=lambda-parallel-router ROUTER_REPO_NAME=lambda-parallel-router/router ROUTER_IMAGE_TAG=latest
 ```
 
 Notes:
-- Create-on-push requires a matching repository creation template prefix; the template in `sam/template.yaml`
-  defaults to `RouterRepositoryPrefix=lambda-parallel-router`, so `RouterRepositoryName` should start with
-  `lambda-parallel-router/`.
-- If you push before the repository creation template exists, ECR may return “repository not found”.
-  Wait a few seconds and retry the `docker push`.
-
-3) Once the image is pushed, the stack should finish creating and output `RouterServiceUrl`.
+- Repository creation templates are account+region scoped and are **not** managed by the stack.
+  Use `make ecr-template-delete` if you want to remove the template.
 
 ## Try it
 
