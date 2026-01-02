@@ -166,6 +166,52 @@ where
     deserializer.deserialize_option(V)
 }
 
+pub fn de_f64_or_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct V;
+
+    impl<'de> Visitor<'de> for V {
+        type Value = f64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a number (f64) or a string containing a number")
+        }
+
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(v as f64)
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(v as f64)
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            let trimmed = v.trim();
+            trimmed
+                .parse::<f64>()
+                .map_err(|_| E::custom("expected a string containing a number"))
+        }
+
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&v)
+        }
+    }
+
+    deserializer.deserialize_any(V)
+}
+
 #[cfg(test)]
 mod tests {
     use serde::Deserialize;
@@ -180,6 +226,8 @@ mod tests {
         n: usize,
         #[serde(default, deserialize_with = "de_option_u64_or_string")]
         o: Option<u64>,
+        #[serde(deserialize_with = "de_f64_or_string")]
+        f: f64,
     }
 
     #[test]
@@ -188,11 +236,13 @@ mod tests {
 v: "25"
 n: "4"
 o: 12
+f: "1.5"
 "#;
         let t: T = serde_yaml::from_slice(yaml).unwrap();
         assert_eq!(t.v, 25);
         assert_eq!(t.n, 4);
         assert_eq!(t.o, Some(12));
+        assert_eq!(t.f, 1.5);
     }
 
     #[test]
@@ -200,6 +250,7 @@ o: 12
         let yaml = br#"
 v: 1
 n: 1
+f: 0.5
 "#;
         let t: T = serde_yaml::from_slice(yaml).unwrap();
         assert_eq!(t.o, None);

@@ -139,13 +139,61 @@ Client  ──HTTP──>  Router (axum)  ──Invoke/Stream──>  Lambda
 #### Batcher task loop
 For each key, run a Tokio task:
 1) Wait for first item.
-2) Start a timer `flush_at = now + max_wait_ms`.
+2) Compute a batching window (`wait_ms`) and start a timer `flush_at = now + wait_ms`.
 3) Accumulate items until either:
    - `len == max_batch_size`, flush immediately, OR
    - `now >= flush_at`, flush.
 4) On flush, build a `BatchInvocation` and call Lambda.
 5) Dispatch responses back to waiting clients.
 6) If no activity for `idle_ttl`, evict batcher task to prevent unbounded map growth.
+
+#### Adaptive batching (optional)
+In addition to a fixed `max_wait_ms`, the router can **adaptively** choose `wait_ms` based on the
+observed request rate for the current `BatchKey`.
+
+**Goal**
+- Low load: keep `wait_ms` near `min_wait_ms` (almost no batching).
+- High load: increase `wait_ms` smoothly toward `max_wait_ms` (bigger batches, fewer invocations).
+- Avoid hard thresholds (continuous mapping from load → delay).
+
+**Core idea**
+1) Maintain an estimate of current request rate (requests/sec) for the key using periodic sampling
+   + smoothing.
+2) Convert request rate → `wait_ms` using a sigmoid, which asymptotically approaches the min/max
+   bounds.
+
+**Parameters (per operation)**
+- `x-lpr.max_wait_ms` (`u64`): the upper bound for `wait_ms`.
+- `x-lpr.adaptive_wait.min_wait_ms` (`u64`): the lower bound for `wait_ms`.
+- `x-lpr.adaptive_wait.target_rps` (`f64`): request rate where the sigmoid is centered.
+- `x-lpr.adaptive_wait.steepness` (`f64`): transition sharpness around `target_rps`.
+- `x-lpr.adaptive_wait.sampling_interval_ms` (`u64`): sampling period for request counts.
+- `x-lpr.adaptive_wait.smoothing_samples` (`usize`): moving average window size.
+
+**Sampling + smoothing**
+Every `sampling_interval_ms`, the batcher:
+- snapshots and resets a per-key request counter
+- converts it to requests/sec
+- pushes it into a fixed-size sample deque (`smoothing_samples`)
+
+The smoothed rate is the average of the deque (or 0 if empty).
+
+**Sigmoid mapping**
+Let:
+- `rps` = smoothed requests/sec
+- `min` = `min_wait_ms`
+- `max` = `max_wait_ms`
+
+Compute:
+```
+adjusted = (rps - target_rps) * steepness
+sigmoid  = 1 / (1 + exp(-adjusted))        // 0..1
+wait_ms  = min + sigmoid * (max - min)
+```
+Then round and clamp to `[min, max]`.
+
+The batcher still flushes as soon as `max_batch_size` is reached; the adaptive window only affects
+the time-based flush condition.
 
 #### Cancellation handling
 - If client disconnects **before flush**, remove item from queue.
@@ -277,6 +325,7 @@ Per operation:
   - `max_batch_size`
   - optional `key` dimensions
   - optional `timeouts` and `retries`
+  - optional `adaptive_wait` (adaptive batching window)
 
 Example:
 
@@ -289,6 +338,12 @@ paths:
       x-lpr:
         max_wait_ms: 10
         max_batch_size: 16
+        adaptive_wait:
+          min_wait_ms: 1
+          target_rps: 50
+          steepness: 0.01
+          sampling_interval_ms: 100
+          smoothing_samples: 10
         key:
           - method
           - route
@@ -509,4 +564,3 @@ Per route (labels: route_template, method, target_lambda):
 - Handling of binary bodies in NDJSON (base64 always vs conditional).
 - Support matrix for streaming invocation methods (per deployment choice).
 - Router behavior when Lambda returns fewer/more records than expected.
-

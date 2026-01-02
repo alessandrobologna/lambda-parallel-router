@@ -5,7 +5,7 @@
 //! per-request responses back to the waiting HTTP handlers.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 
 use crate::{
     lambda::{LambdaInvokeResult, LambdaInvoker},
-    spec::{BatchKeyDimension, InvokeMode, OperationConfig},
+    spec::{AdaptiveWaitConfig, BatchKeyDimension, InvokeMode, OperationConfig},
 };
 
 #[derive(Debug, Clone)]
@@ -85,8 +85,6 @@ struct BatchKey {
     method: Method,
     route: String,
     invoke_mode: InvokeMode,
-    max_wait_ms: u64,
-    max_batch_size: usize,
     key_values: Vec<Option<String>>,
 }
 
@@ -105,9 +103,24 @@ impl BatchKey {
             method: op.method.clone(),
             route: op.route_template.clone(),
             invoke_mode: op.invoke_mode,
+            key_values,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BatcherConfig {
+    max_wait_ms: u64,
+    max_batch_size: usize,
+    adaptive_wait: Option<AdaptiveWaitConfig>,
+}
+
+impl BatcherConfig {
+    fn from_operation(op: &OperationConfig) -> Self {
+        Self {
             max_wait_ms: op.max_wait_ms,
             max_batch_size: op.max_batch_size,
-            key_values,
+            adaptive_wait: op.adaptive_wait.clone(),
         }
     }
 }
@@ -159,13 +172,18 @@ impl BatcherManager {
                 Entry::Vacant(v) => {
                     let (tx, rx) = mpsc::channel(self.cfg.max_queue_depth_per_key);
                     v.insert(tx.clone());
+                    let batch_cfg = BatcherConfig::from_operation(op);
+                    let runtime = BatcherRuntime {
+                        invoker: Arc::clone(&self.invoker),
+                        idle_ttl: self.cfg.idle_ttl,
+                        inflight: Arc::clone(&self.inflight),
+                        max_invoke_payload_bytes: self.cfg.max_invoke_payload_bytes,
+                    };
                     tokio::spawn(batcher_task(
                         key.clone(),
+                        batch_cfg,
                         rx,
-                        Arc::clone(&self.invoker),
-                        self.cfg.idle_ttl,
-                        Arc::clone(&self.inflight),
-                        self.cfg.max_invoke_payload_bytes,
+                        runtime,
                         Arc::clone(&self.batchers),
                     ));
                     tx
@@ -185,6 +203,14 @@ impl BatcherManager {
 
         Err(EnqueueError::BatcherClosed)
     }
+}
+
+#[derive(Clone)]
+struct BatcherRuntime {
+    invoker: Arc<dyn LambdaInvoker>,
+    idle_ttl: Duration,
+    inflight: Arc<Semaphore>,
+    max_invoke_payload_bytes: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -235,26 +261,121 @@ struct StreamResponseRecord {
 
 async fn batcher_task(
     key: BatchKey,
-    mut rx: mpsc::Receiver<PendingRequest>,
-    invoker: Arc<dyn LambdaInvoker>,
-    idle_ttl: Duration,
-    inflight: Arc<Semaphore>,
-    max_invoke_payload_bytes: usize,
+    cfg: BatcherConfig,
+    rx: mpsc::Receiver<PendingRequest>,
+    runtime: BatcherRuntime,
     batchers: Arc<DashMap<BatchKey, mpsc::Sender<PendingRequest>>>,
 ) {
+    if let Some(adaptive_wait) = cfg.adaptive_wait {
+        batcher_task_adaptive(
+            &key,
+            cfg.max_wait_ms,
+            cfg.max_batch_size,
+            adaptive_wait,
+            rx,
+            &runtime,
+        )
+        .await;
+    } else {
+        batcher_task_fixed(
+            &key,
+            cfg.max_wait_ms,
+            cfg.max_batch_size,
+            rx,
+            &runtime,
+        )
+        .await;
+    }
+
+    batchers.remove(&key);
+}
+
+fn sigmoid_wait_ms(
+    rps: f64,
+    min_wait_ms: u64,
+    max_wait_ms: u64,
+    target_rps: f64,
+    steepness: f64,
+) -> u64 {
+    if max_wait_ms <= min_wait_ms {
+        return max_wait_ms;
+    }
+
+    let adjusted = (rps - target_rps) * steepness;
+    let sigmoid = 1.0 / (1.0 + (-adjusted).exp());
+    let scaled = min_wait_ms as f64 + sigmoid * (max_wait_ms - min_wait_ms) as f64;
+    let rounded = scaled.round();
+    let clamped = rounded
+        .clamp(min_wait_ms as f64, max_wait_ms as f64)
+        .trunc();
+    clamped as u64
+}
+
+#[derive(Debug)]
+struct AdaptiveRateEstimator {
+    interval: Duration,
+    window_size: usize,
+    count: u64,
+    samples_rps: VecDeque<f64>,
+}
+
+impl AdaptiveRateEstimator {
+    fn new(interval: Duration, window_size: usize) -> Self {
+        Self {
+            interval,
+            window_size,
+            count: 0,
+            samples_rps: VecDeque::with_capacity(window_size),
+        }
+    }
+
+    fn record_request(&mut self) {
+        self.count = self.count.saturating_add(1);
+    }
+
+    fn tick(&mut self) {
+        let secs = self.interval.as_secs_f64();
+        let rps = if secs > 0.0 {
+            self.count as f64 / secs
+        } else {
+            0.0
+        };
+        self.count = 0;
+
+        self.samples_rps.push_back(rps);
+        while self.samples_rps.len() > self.window_size {
+            self.samples_rps.pop_front();
+        }
+    }
+
+    fn smoothed_rps(&self) -> f64 {
+        if self.samples_rps.is_empty() {
+            return 0.0;
+        }
+        self.samples_rps.iter().copied().sum::<f64>() / self.samples_rps.len() as f64
+    }
+}
+
+async fn batcher_task_fixed(
+    key: &BatchKey,
+    max_wait_ms: u64,
+    max_batch_size: usize,
+    mut rx: mpsc::Receiver<PendingRequest>,
+    runtime: &BatcherRuntime,
+) {
     loop {
-        let first = match tokio::time::timeout(idle_ttl, rx.recv()).await {
+        let first = match tokio::time::timeout(runtime.idle_ttl, rx.recv()).await {
             Ok(Some(req)) => req,
             Ok(None) => break,
             Err(_) => break,
         };
 
-        let max_wait = Duration::from_millis(key.max_wait_ms);
+        let max_wait = Duration::from_millis(max_wait_ms);
         let mut batch = vec![first];
 
-        if key.max_batch_size > 1 {
+        if max_batch_size > 1 {
             let flush_at = tokio::time::Instant::now() + max_wait;
-            while batch.len() < key.max_batch_size {
+            while batch.len() < max_batch_size {
                 let now = tokio::time::Instant::now();
                 if now >= flush_at {
                     break;
@@ -269,17 +390,94 @@ async fn batcher_task(
             }
         }
 
-        flush_batch(&key, &invoker, &inflight, max_invoke_payload_bytes, batch).await;
+        flush_batch(key, runtime, max_wait_ms, None, batch).await;
     }
+}
 
-    batchers.remove(&key);
+async fn batcher_task_adaptive(
+    key: &BatchKey,
+    max_wait_ms: u64,
+    max_batch_size: usize,
+    adaptive_wait: AdaptiveWaitConfig,
+    mut rx: mpsc::Receiver<PendingRequest>,
+    runtime: &BatcherRuntime,
+) {
+    let interval = Duration::from_millis(adaptive_wait.sampling_interval_ms);
+    let mut sampler = tokio::time::interval(interval);
+    sampler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Tokio intervals tick immediately; advance to the first full interval.
+    sampler.tick().await;
+
+    let mut est = AdaptiveRateEstimator::new(interval, adaptive_wait.smoothing_samples);
+
+    loop {
+        let idle_sleep = tokio::time::sleep(runtime.idle_ttl);
+        tokio::pin!(idle_sleep);
+
+        let first = loop {
+            tokio::select! {
+                _ = &mut idle_sleep => return,
+                _ = sampler.tick() => {
+                    est.tick();
+                }
+                req = rx.recv() => match req {
+                    Some(r) => break r,
+                    None => return,
+                }
+            }
+        };
+
+        est.record_request();
+        let wait_ms = sigmoid_wait_ms(
+            est.smoothed_rps(),
+            adaptive_wait.min_wait_ms,
+            max_wait_ms,
+            adaptive_wait.target_rps,
+            adaptive_wait.steepness,
+        );
+        let mut batch = vec![first];
+
+        let flush_at = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+        let flush_sleep = tokio::time::sleep_until(flush_at);
+        tokio::pin!(flush_sleep);
+
+        let mut closed = false;
+        while batch.len() < max_batch_size {
+            tokio::select! {
+                _ = &mut flush_sleep => break,
+                _ = sampler.tick() => {
+                    est.tick();
+                }
+                req = rx.recv() => match req {
+                    Some(r) => {
+                        est.record_request();
+                        batch.push(r);
+                        if batch.len() >= max_batch_size {
+                            break;
+                        }
+                    }
+                    None => {
+                        closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let smoothed_rps = est.smoothed_rps();
+        flush_batch(key, runtime, wait_ms, Some(smoothed_rps), batch).await;
+
+        if closed {
+            return;
+        }
+    }
 }
 
 async fn flush_batch(
     key: &BatchKey,
-    invoker: &Arc<dyn LambdaInvoker>,
-    inflight: &Arc<Semaphore>,
-    max_invoke_payload_bytes: usize,
+    runtime: &BatcherRuntime,
+    wait_ms: u64,
+    estimated_rps: Option<f64>,
     batch: Vec<PendingRequest>,
 ) {
     let mut pending: HashMap<String, oneshot::Sender<RouterResponse>> = HashMap::new();
@@ -307,7 +505,7 @@ async fn flush_batch(
     for plan in plan_invocations(
         key,
         received_at_ms,
-        max_invoke_payload_bytes,
+        runtime.max_invoke_payload_bytes,
         pending,
         batch_items,
     ) {
@@ -318,7 +516,7 @@ async fn flush_batch(
                 msg,
             } => fail_all(pending, status, msg),
             InvocationPlan::Invoke { pending, payload } => {
-                let _permit = match inflight.acquire().await {
+                let _permit = match runtime.inflight.acquire().await {
                     Ok(p) => p,
                     Err(_) => {
                         fail_all(
@@ -336,14 +534,15 @@ async fn flush_batch(
                     method = %key.method,
                     route = %key.route,
                     invoke_mode = ?key.invoke_mode,
-                    max_wait_ms = key.max_wait_ms,
-                    max_batch_size = key.max_batch_size,
+                    wait_ms,
+                    estimated_rps = estimated_rps,
                     batch_size = pending.len(),
                     payload_bytes = payload.len(),
                     "invoking"
                 );
 
-                match invoker
+                match runtime
+                    .invoker
                     .invoke(&key.target_lambda, payload, key.invoke_mode)
                     .await
                 {
@@ -805,6 +1004,7 @@ mod tests {
             key: vec![],
             timeout_ms: 1000,
             invoke_mode: InvokeMode::Buffered,
+            adaptive_wait: None,
         }
     }
 
@@ -819,6 +1019,7 @@ mod tests {
             key: vec![],
             timeout_ms: 1000,
             invoke_mode: InvokeMode::ResponseStream,
+            adaptive_wait: None,
         }
     }
 
@@ -1320,8 +1521,6 @@ mod tests {
             method: Method::GET,
             route: "/hello".to_string(),
             invoke_mode: InvokeMode::Buffered,
-            max_wait_ms: 10_000,
-            max_batch_size: 2,
             key_values: vec![],
         };
 
@@ -1403,8 +1602,6 @@ mod tests {
             method: Method::GET,
             route: "/hello".to_string(),
             invoke_mode: InvokeMode::Buffered,
-            max_wait_ms: 0,
-            max_batch_size: 1,
             key_values: vec![],
         };
 
@@ -1741,5 +1938,24 @@ mod tests {
         assert!(std::str::from_utf8(&a.body)
             .unwrap()
             .contains("bad ndjson record"));
+    }
+
+    #[test]
+    fn sigmoid_wait_ms_respects_bounds() {
+        assert_eq!(sigmoid_wait_ms(0.0, 1, 100, 50.0, 1.0), 1);
+        assert_eq!(sigmoid_wait_ms(100.0, 1, 100, 50.0, 1.0), 100);
+    }
+
+    #[test]
+    fn adaptive_rate_estimator_smooths_samples() {
+        let mut est = AdaptiveRateEstimator::new(Duration::from_millis(100), 3);
+        est.record_request();
+        est.record_request();
+        est.tick();
+        assert_eq!(est.smoothed_rps(), 20.0);
+
+        // Second interval with no requests should decay the average.
+        est.tick();
+        assert_eq!(est.smoothed_rps(), 10.0);
     }
 }

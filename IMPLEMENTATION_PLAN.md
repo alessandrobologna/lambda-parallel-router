@@ -9,7 +9,7 @@ This document is the implementation roadmap for the project spec in `http_microb
   - `RouterConfig` from YAML (see `examples/router.yaml`)
   - an OpenAPI-ish spec from YAML (see `examples/spec.yaml`)
 - Routes requests by `(method, path)` using `matchit` with OpenAPI-style `{param}` templates
-- Micro-batches requests per `(target_lambda, method, route_template, invoke_mode, max_wait_ms, max_batch_size)`
+- Micro-batches requests per `(target_lambda, method, route_template, invoke_mode, key dimensions)`
 - Invokes Lambda with either:
   - **Buffered** invoke (sync) returning `{ v: 1, responses: [...] }`
   - **Response streaming** invoke (`InvokeWithResponseStream`) returning **NDJSON** records (one JSON object per line)
@@ -40,6 +40,8 @@ This document is the implementation roadmap for the project spec in `http_microb
    - Parse spec YAML `paths.*.<method>` operations with required vendor extensions:
      - `x-target-lambda`
      - `x-lpr: { max_wait_ms, max_batch_size, timeout_ms?, invoke_mode? }`
+     - optional adaptive batching window:
+       - `x-lpr.adaptive_wait: { min_wait_ms, target_rps?, steepness?, sampling_interval_ms?, smoothing_samples? }`
 2. **Request lifecycle**
    - Accept HTTP (axum)
    - Match route template + method via compiled matcher
@@ -50,7 +52,10 @@ This document is the implementation roadmap for the project spec in `http_microb
    - One Tokio task per BatchKey
    - Flush conditions:
      - `max_batch_size` reached (immediate)
-     - `max_wait_ms` elapsed since first item
+     - `wait_ms` elapsed since first item, where:
+       - fixed mode: `wait_ms = max_wait_ms`
+       - adaptive mode: `wait_ms` is computed from the request rate via a sigmoid in
+         `[min_wait_ms, max_wait_ms]`
    - Backpressure:
      - per-key bounded queue (`max_queue_depth_per_key`)
      - global in-flight invocation semaphore (`max_inflight_invocations`)
@@ -81,9 +86,14 @@ This document is the implementation roadmap for the project spec in `http_microb
    - structured logs + request ids
    - Prometheus metrics (batch sizes, waits, invoke durations, queue depth)
    - optional tracing (OpenTelemetry)
-6. **Integration testing**
+6. **Adaptive batching**
+   - per-key request rate estimation using periodic sampling + smoothing
+   - map request rate → `wait_ms` via a sigmoid so the batching window approaches:
+     - `min_wait_ms` under low load
+     - `max_wait_ms` under high load
+7. **Integration testing**
    - local router + a mock Lambda endpoint that emits buffered and streamed responses
-7. **Load testing**
+8. **Load testing**
    - validate p50/p95 latency impact vs `max_wait_ms`
    - measure invocation reduction under bursty load
 
@@ -145,4 +155,3 @@ This document is the implementation roadmap for the project spec in `http_microb
 - How to represent multi-value query params and headers in v1 schema
 - Maximum payload sizing policy and failure mode
 - Whether to include per-request deadlines and propagate them to Lambda
-
