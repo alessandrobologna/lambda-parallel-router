@@ -32,6 +32,11 @@ docker build -f Dockerfile.router -t "$REPO_URI:latest" .
 docker push "$REPO_URI:latest"
 ```
 
+Notes:
+- Create-on-push requires a matching repository creation template prefix; the template in `sam/template.yaml`
+  defaults to `RouterRepositoryPrefix=lambda-parallel-router`, so `RouterRepositoryName` should start with
+  `lambda-parallel-router/`.
+
 3) Update the stack to create the App Runner service:
 
 ```bash

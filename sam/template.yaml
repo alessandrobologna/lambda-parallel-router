@@ -14,6 +14,11 @@ Parameters:
     Default: "lambda-parallel-router/router"
     Description: ECR repository name for the router image (will be auto-created on first push).
 
+  RouterRepositoryPrefix:
+    Type: String
+    Default: "lambda-parallel-router"
+    Description: ECR repository creation template prefix (applies to repos under this namespace).
+
   RouterImageTag:
     Type: String
     Default: latest
@@ -56,7 +61,7 @@ Resources:
   RouterRepositoryCreationTemplate:
     Type: AWS::ECR::RepositoryCreationTemplate
     Properties:
-      Prefix: !Ref RouterRepositoryName
+      Prefix: !Ref RouterRepositoryPrefix
       AppliedFor:
         - CREATE_ON_PUSH
 
