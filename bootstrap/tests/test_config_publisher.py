@@ -1,13 +1,15 @@
-import hashlib
-import sys
 import unittest
+import importlib.util
 from pathlib import Path
 from unittest import mock
 
 BOOTSTRAP_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BOOTSTRAP_DIR / "config_publisher"))
 
-import app  # noqa: E402
+_APP_PATH = BOOTSTRAP_DIR / "config_publisher" / "app.py"
+_SPEC = importlib.util.spec_from_file_location("config_publisher_app", _APP_PATH)
+assert _SPEC and _SPEC.loader
+app = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(app)  # type: ignore[union-attr]
 
 
 class _FakeS3:
@@ -35,58 +37,66 @@ class ConfigPublisherTests(unittest.TestCase):
         self.assertEqual(app._normalize_prefix("/lpr"), "lpr/")
         self.assertEqual(app._normalize_prefix(" /lpr/ "), "lpr/")
 
-    def test_parse_objects_from_list(self) -> None:
-        objects = app._parse_objects(
-            {
-                "Objects": [
-                    {"Name": "spec", "Content": "openapi: 3.0.0"},
-                    {
-                        "Name": "config",
-                        "Content": "listen_addr: 0.0.0.0:8080",
-                        "Suffix": ".yml",
-                        "ContentType": "text/plain",
-                    },
-                ]
-            }
-        )
-        self.assertEqual([o.name for o in objects], ["spec", "config"])
-        self.assertEqual(objects[0].suffix, ".yaml")
-        self.assertEqual(objects[1].suffix, ".yml")
-        self.assertEqual(objects[1].content_type, "text/plain")
-
-    def test_parse_objects_empty_list_rejected(self) -> None:
+    def test_parse_port(self) -> None:
+        self.assertEqual(app._parse_port(None), 8080)
+        self.assertEqual(app._parse_port(8080), 8080)
+        self.assertEqual(app._parse_port("8080"), 8080)
+        self.assertEqual(app._parse_port(" 8080 "), 8080)
         with self.assertRaises(ValueError):
-            app._parse_objects({"Objects": []})
-
-    def test_parse_objects_convenience_both(self) -> None:
-        objects = app._parse_objects({"ConfigYaml": "a: 1", "SpecYaml": "openapi: 3.0.0"})
-        self.assertEqual([o.name for o in objects], ["config", "spec"])
+            app._parse_port(True)
+        with self.assertRaises(ValueError):
+            app._parse_port("not-a-port")
 
     def test_publish_uses_hashed_key(self) -> None:
         fake_s3 = _FakeS3()
         fake_boto3 = _FakeBoto3(fake_s3)
 
-        obj = app.PublishObject(name="spec", content="hello")
-        expected_sha = hashlib.sha256(b"hello").hexdigest()
-        expected_key = f"lpr/spec/{expected_sha}.yaml"
+        router_config = {"max_inflight_invocations": 1}
+        spec = {"openapi": "3.0.0", "paths": {}}
 
         with mock.patch.object(app, "boto3", fake_boto3):
-            data, physical_id = app._publish(bucket="my-bucket", prefix="lpr", objects=[obj])
+            data, physical_id = app._publish(
+                bucket="my-bucket",
+                prefix="lpr",
+                router_config=router_config,
+                spec=spec,
+                port=8080,
+            )
 
         self.assertEqual(physical_id, "lpr-config-publisher:my-bucket:lpr/")
         self.assertEqual(data["BucketName"], "my-bucket")
-        self.assertEqual(data["Published"]["spec"]["Key"], expected_key)
-        self.assertEqual(data["Published"]["spec"]["Sha256"], expected_sha)
-        self.assertEqual(data["Published"]["spec"]["S3Uri"], f"s3://my-bucket/{expected_key}")
+        self.assertTrue(data["SpecKey"].startswith("lpr/spec/"))
+        self.assertTrue(data["SpecKey"].endswith(".json"))
+        self.assertEqual(data["SpecS3Uri"], f"s3://my-bucket/{data['SpecKey']}")
+        self.assertTrue(data["ConfigKey"].startswith("lpr/config/"))
+        self.assertTrue(data["ConfigKey"].endswith(".json"))
+        self.assertEqual(data["ConfigS3Uri"], f"s3://my-bucket/{data['ConfigKey']}")
 
-        self.assertEqual(len(fake_s3.put_calls), 1)
-        call = fake_s3.put_calls[0]
-        self.assertEqual(call["Bucket"], "my-bucket")
-        self.assertEqual(call["Key"], expected_key)
-        self.assertEqual(call["Body"], b"hello")
-        self.assertEqual(call["ContentType"], "text/yaml; charset=utf-8")
-        self.assertEqual(call["Metadata"]["lpr-sha256"], expected_sha)
-        self.assertEqual(call["Metadata"]["lpr-name"], "spec")
+        self.assertEqual(len(fake_s3.put_calls), 2)
+        calls_by_key = {c["Key"]: c for c in fake_s3.put_calls}
+        self.assertIn(data["SpecKey"], calls_by_key)
+        self.assertIn(data["ConfigKey"], calls_by_key)
+
+        spec_call = calls_by_key[data["SpecKey"]]
+        self.assertEqual(spec_call["Bucket"], "my-bucket")
+        self.assertEqual(spec_call["ContentType"], "application/json")
+        self.assertEqual(spec_call["Metadata"]["lpr-name"], "spec")
+
+        config_call = calls_by_key[data["ConfigKey"]]
+        self.assertEqual(config_call["Bucket"], "my-bucket")
+        self.assertEqual(config_call["ContentType"], "application/json")
+        self.assertEqual(config_call["Metadata"]["lpr-name"], "config")
+
+        self.assertIn("spec_path", app.json.loads(config_call["Body"].decode("utf-8")))
+        self.assertIn("listen_addr", app.json.loads(config_call["Body"].decode("utf-8")))
+        self.assertEqual(
+            app.json.loads(config_call["Body"].decode("utf-8"))["spec_path"],
+            data["SpecS3Uri"],
+        )
+        self.assertEqual(
+            app.json.loads(config_call["Body"].decode("utf-8"))["listen_addr"],
+            "0.0.0.0:8080",
+        )
 
     def test_handler_delete_success(self) -> None:
         event = {
@@ -112,7 +122,7 @@ class ConfigPublisherTests(unittest.TestCase):
             "StackId": "stack",
             "RequestId": "req",
             "LogicalResourceId": "MyResource",
-            "ResourceProperties": {"ConfigYaml": "a: 1"},
+            "ResourceProperties": {"RouterConfig": {}, "Spec": {}},
         }
 
         with mock.patch.object(app, "_cfn_send_response") as send:
@@ -126,4 +136,3 @@ class ConfigPublisherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

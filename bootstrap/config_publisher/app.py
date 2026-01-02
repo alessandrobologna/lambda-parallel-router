@@ -2,11 +2,9 @@ import hashlib
 import json
 import logging
 import os
-import re
 import traceback
 import urllib.request
-from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 try:
     import boto3
@@ -17,11 +15,12 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
 
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
-
-
 def _sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -35,70 +34,24 @@ def _normalize_prefix(prefix: str) -> str:
     return prefix
 
 
-def _validate_object_name(name: str) -> None:
-    if not _NAME_RE.fullmatch(name):
-        raise ValueError(
-            "Invalid object name. Expected 1-128 chars matching "
-            r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
-        )
-
-
-@dataclass(frozen=True)
-class PublishObject:
-    name: str
-    content: str
-    suffix: str = ".yaml"
-    content_type: str = "text/yaml; charset=utf-8"
-
-
-def _parse_objects(props: Mapping[str, Any]) -> List[PublishObject]:
-    objects: List[PublishObject] = []
-
-    if "Objects" in props and props["Objects"] is not None:
-        raw_objects = props["Objects"]
-        if not isinstance(raw_objects, list):
-            raise ValueError("Objects must be a list.")
-        for item in raw_objects:
-            if not isinstance(item, dict):
-                raise ValueError("Objects entries must be objects.")
-            name = item.get("Name")
-            content = item.get("Content")
-            suffix = item.get("Suffix", ".yaml")
-            content_type = item.get("ContentType", "text/yaml; charset=utf-8")
-            if not isinstance(name, str) or not name:
-                raise ValueError("Objects[].Name is required.")
-            if not isinstance(content, str):
-                raise ValueError("Objects[].Content must be a string.")
-            if not isinstance(suffix, str) or not suffix:
-                raise ValueError("Objects[].Suffix must be a non-empty string.")
-            if not isinstance(content_type, str) or not content_type:
-                raise ValueError("Objects[].ContentType must be a non-empty string.")
-            objects.append(
-                PublishObject(
-                    name=name, content=content, suffix=suffix, content_type=content_type
-                )
-            )
-        if not objects:
-            raise ValueError("Objects must not be empty.")
-
-    if not objects:
-        config_yaml = props.get("ConfigYaml")
-        if isinstance(config_yaml, str):
-            objects.append(PublishObject(name="config", content=config_yaml))
-
-        spec_yaml = props.get("SpecYaml")
-        if isinstance(spec_yaml, str):
-            objects.append(PublishObject(name="spec", content=spec_yaml))
-
-    if not objects:
-        raise ValueError(
-            "No objects to publish. Provide Objects[] or (ConfigYaml and/or SpecYaml)."
-        )
-
-    for obj in objects:
-        _validate_object_name(obj.name)
-
-    return objects
+def _parse_port(value: Any) -> int:
+    if value is None:
+        return 8080
+    if isinstance(value, bool):
+        raise ValueError("Port must be a number or string.")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 8080
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ValueError("Port must be an integer string.") from exc
+    raise ValueError("Port must be a number or string.")
 
 
 def _cfn_send_response(
@@ -136,7 +89,9 @@ def _publish(
     *,
     bucket: str,
     prefix: str,
-    objects: List[PublishObject],
+    router_config: Mapping[str, Any],
+    spec: Mapping[str, Any],
+    port: int,
 ) -> Tuple[Dict[str, Any], str]:
     if boto3 is None:
         raise RuntimeError("boto3 is required in the Lambda runtime.")
@@ -144,38 +99,54 @@ def _publish(
     prefix = _normalize_prefix(prefix)
     s3 = boto3.client("s3")
 
-    published: Dict[str, Any] = {}
-    for obj in objects:
-        sha256 = _sha256_hex(obj.content)
-        key = f"{prefix}{obj.name}/{sha256}{obj.suffix}"
-        body = obj.content.encode("utf-8")
+    spec_json = _canonical_json(spec)
+    spec_sha256 = _sha256_hex(spec_json)
+    spec_key = f"{prefix}spec/{spec_sha256}.json"
+    spec_body = spec_json.encode("utf-8")
+    spec_s3_uri = f"s3://{bucket}/{spec_key}"
 
-        logger.info("Publishing %s to s3://%s/%s (%d bytes)", obj.name, bucket, key, len(body))
-        s3.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType=obj.content_type,
-            Metadata={"lpr-sha256": sha256, "lpr-name": obj.name},
-        )
+    config_obj = dict(router_config)
+    config_obj.setdefault("listen_addr", f"0.0.0.0:{port}")
+    config_obj["spec_path"] = spec_s3_uri
 
-        published[obj.name] = {
-            "Key": key,
-            "Sha256": sha256,
-            "S3Uri": f"s3://{bucket}/{key}",
-            "Bytes": len(body),
-        }
+    config_json = _canonical_json(config_obj)
+    config_sha256 = _sha256_hex(config_json)
+    config_key = f"{prefix}config/{config_sha256}.json"
+    config_body = config_json.encode("utf-8")
+    config_s3_uri = f"s3://{bucket}/{config_key}"
 
-    data: Dict[str, Any] = {"BucketName": bucket, "Prefix": prefix, "Published": published}
+    logger.info(
+        "Publishing spec to s3://%s/%s (%d bytes)", bucket, spec_key, len(spec_body)
+    )
+    s3.put_object(
+        Bucket=bucket,
+        Key=spec_key,
+        Body=spec_body,
+        ContentType="application/json",
+        Metadata={"lpr-sha256": spec_sha256, "lpr-name": "spec"},
+    )
 
-    if "config" in published:
-        data["ConfigKey"] = published["config"]["Key"]
-        data["ConfigS3Uri"] = published["config"]["S3Uri"]
-        data["ConfigSha256"] = published["config"]["Sha256"]
-    if "spec" in published:
-        data["SpecKey"] = published["spec"]["Key"]
-        data["SpecS3Uri"] = published["spec"]["S3Uri"]
-        data["SpecSha256"] = published["spec"]["Sha256"]
+    logger.info(
+        "Publishing config to s3://%s/%s (%d bytes)", bucket, config_key, len(config_body)
+    )
+    s3.put_object(
+        Bucket=bucket,
+        Key=config_key,
+        Body=config_body,
+        ContentType="application/json",
+        Metadata={"lpr-sha256": config_sha256, "lpr-name": "config"},
+    )
+
+    data: Dict[str, Any] = {
+        "BucketName": bucket,
+        "Prefix": prefix,
+        "SpecKey": spec_key,
+        "SpecS3Uri": spec_s3_uri,
+        "SpecSha256": spec_sha256,
+        "ConfigKey": config_key,
+        "ConfigS3Uri": config_s3_uri,
+        "ConfigSha256": config_sha256,
+    }
 
     physical_resource_id = f"lpr-config-publisher:{bucket}:{prefix or '-'}"
     return data, physical_resource_id
@@ -188,11 +159,11 @@ def handler(event: Mapping[str, Any], context: Any) -> None:
     Properties:
       - BucketName (optional): target S3 bucket (defaults to env LPR_DEFAULT_BUCKET)
       - Prefix (optional): object key prefix (default: "lpr/")
-      - Objects: [{ Name, Content, Suffix?, ContentType? }]
-      - ConfigYaml / SpecYaml convenience properties (used only when Objects is omitted)
+      - Port (optional): port number used to default `listen_addr` when omitted in `RouterConfig`
+      - RouterConfig: object (YAML/JSON object)
+      - Spec: object (YAML/JSON object)
     """
-
-    logger.info("Event: %s", json.dumps(event))
+    logger.info("RequestType=%s LogicalResourceId=%s", event.get("RequestType"), event.get("LogicalResourceId"))
 
     request_type = event.get("RequestType")
     props = event.get("ResourceProperties") or {}
@@ -219,11 +190,22 @@ def handler(event: Mapping[str, Any], context: Any) -> None:
         if not isinstance(prefix, str):
             raise ValueError("Prefix must be a string.")
 
-        objects = _parse_objects(props)
+        router_config = props.get("RouterConfig")
+        if not isinstance(router_config, dict):
+            raise ValueError("RouterConfig is required and must be an object.")
+
+        spec = props.get("Spec")
+        if not isinstance(spec, dict):
+            raise ValueError("Spec is required and must be an object.")
+
+        port = _parse_port(props.get("Port"))
+
         data, physical_resource_id = _publish(
             bucket=bucket,
             prefix=prefix,
-            objects=objects,
+            router_config=router_config,
+            spec=spec,
+            port=port,
         )
 
         _cfn_send_response(

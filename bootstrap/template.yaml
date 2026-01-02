@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: lambda-parallel-router bootstrap (shared config bucket + config publisher custom resource)
+Description: lambda-parallel-router bootstrap (shared config bucket + macro + config publisher custom resource)
 
 Parameters:
   UseExistingBucket:
@@ -54,7 +54,7 @@ Resources:
       Runtime: python3.13
       Handler: app.handler
       CodeUri: config_publisher/
-      Description: CloudFormation custom resource that uploads LPR config/spec YAML to S3.
+      Description: CloudFormation custom resource that uploads LPR config/spec documents to S3.
       MemorySize: 256
       Timeout: 30
       Policies:
@@ -76,11 +76,37 @@ Resources:
         Variables:
           LPR_DEFAULT_BUCKET: !If [CreateConfigBucket, !Ref ConfigBucket, !Ref UseExistingBucket]
 
+  RouterMacroFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.13
+      Handler: app.handler
+      CodeUri: router_macro/
+      Description: CloudFormation macro that expands Lpr::Router::Service into App Runner + supporting resources.
+      MemorySize: 256
+      Timeout: 30
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  RouterMacro:
+    Type: AWS::CloudFormation::Macro
+    Properties:
+      Name: LprRouter
+      FunctionName: !GetAtt RouterMacroFunction.Arn
+
 Outputs:
   ConfigBucketName:
     Description: S3 bucket name where router config/spec objects are stored.
     Value: !If [CreateConfigBucket, !Ref ConfigBucket, !Ref UseExistingBucket]
+    Export:
+      Name: LprConfigBucketName
 
   ConfigPublisherServiceToken:
     Description: Service token (Lambda ARN) for the Custom::LprConfigPublisher resource.
     Value: !GetAtt ConfigPublisherFunction.Arn
+    Export:
+      Name: LprConfigPublisherServiceToken
+
+  RouterMacroName:
+    Description: CloudFormation macro name to add to the Transform section.
+    Value: LprRouter
