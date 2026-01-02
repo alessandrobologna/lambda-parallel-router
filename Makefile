@@ -19,22 +19,21 @@ SAM_DEPLOY_FLAGS ?= --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-chan
 
 .PHONY: help
 help:
-	@cat <<'EOF'
-Targets:
-  make deploy              Create ECR template, push image, and deploy SAM stack
-  make ecr-template         Create/update ECR repository creation template (CREATE_ON_PUSH)
-  make ecr-login            Docker login to ECR
-  make image-build          Build router container image
-  make image-push           Push router container image (auto-creates repo on first push)
-  make sam-build            sam build
-  make sam-deploy           sam deploy (uses RouterImageIdentifier parameter)
-  make print-vars           Show computed variables
-  make ecr-template-delete  Delete the ECR repository creation template
-
-Common overrides:
-  make deploy AWS_REGION=us-east-1 STACK_NAME=my-stack
-  make deploy ROUTER_REPO_PREFIX=my-prefix ROUTER_REPO_NAME=my-prefix/router ROUTER_IMAGE_TAG=latest
-EOF
+	@printf '%s\n' \
+		'Targets:' \
+		'  make deploy              Create ECR template, push image, and deploy SAM stack' \
+		'  make ecr-template         Create/update ECR repository creation template (CREATE_ON_PUSH)' \
+		'  make ecr-login            Docker login to ECR' \
+		'  make image-build          Build router container image' \
+		'  make image-push           Push router container image (auto-creates repo on first push)' \
+		'  make sam-build            sam build' \
+		'  make sam-deploy           sam deploy (uses RouterImageIdentifier parameter)' \
+		'  make print-vars           Show computed variables' \
+		'  make ecr-template-delete  Delete the ECR repository creation template' \
+		'' \
+		'Common overrides:' \
+		'  make deploy AWS_REGION=us-east-1 STACK_NAME=my-stack' \
+		'  make deploy ROUTER_REPO_PREFIX=my-prefix ROUTER_REPO_NAME=my-prefix/router ROUTER_IMAGE_TAG=latest'
 
 .PHONY: check
 check:
@@ -47,17 +46,16 @@ check:
 
 .PHONY: print-vars
 print-vars: check
-	@cat <<EOF
-AWS_REGION=$(AWS_REGION)
-AWS_ACCOUNT_ID=$(AWS_ACCOUNT_ID)
-ECR_REGISTRY=$(ECR_REGISTRY)
-ROUTER_REPO_PREFIX=$(ROUTER_REPO_PREFIX)
-ROUTER_REPO_NAME=$(ROUTER_REPO_NAME)
-ROUTER_IMAGE_TAG=$(ROUTER_IMAGE_TAG)
-ROUTER_IMAGE_IDENTIFIER=$(ROUTER_IMAGE_IDENTIFIER)
-STACK_NAME=$(STACK_NAME)
-SAM_TEMPLATE=$(SAM_TEMPLATE)
-EOF
+	@printf '%s\n' \
+		"AWS_REGION=$(AWS_REGION)" \
+		"AWS_ACCOUNT_ID=$(AWS_ACCOUNT_ID)" \
+		"ECR_REGISTRY=$(ECR_REGISTRY)" \
+		"ROUTER_REPO_PREFIX=$(ROUTER_REPO_PREFIX)" \
+		"ROUTER_REPO_NAME=$(ROUTER_REPO_NAME)" \
+		"ROUTER_IMAGE_TAG=$(ROUTER_IMAGE_TAG)" \
+		"ROUTER_IMAGE_IDENTIFIER=$(ROUTER_IMAGE_IDENTIFIER)" \
+		"STACK_NAME=$(STACK_NAME)" \
+		"SAM_TEMPLATE=$(SAM_TEMPLATE)"
 
 .PHONY: ecr-template
 ecr-template: check
