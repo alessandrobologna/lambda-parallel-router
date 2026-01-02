@@ -42,6 +42,7 @@ Resources:
   RouterService:
     Type: Lpr::Router::Service
     Properties:
+      ServiceName: !Sub '${AWS::StackName}-router'
       ImageIdentifier: !Ref RouterImageIdentifier
       Port: 8080
       Environment:
