@@ -33,11 +33,13 @@ Common overrides:
 ```bash
 make deploy AWS_REGION=us-east-1 STACK_NAME=lambda-parallel-router-demo
 make deploy ROUTER_REPO_PREFIX=lambda-parallel-router ROUTER_REPO_NAME=lambda-parallel-router/router ROUTER_IMAGE_TAG=latest
+make deploy ROUTER_IMAGE_PLATFORM=linux/amd64
 ```
 
 Notes:
 - Repository creation templates are account+region scoped and are **not** managed by the stack.
   Use `make ecr-template-delete` if you want to remove the template.
+- The Makefile defaults to building `linux/amd64` images. This matches the App Runner runtime in this demo.
 
 ## Try it
 
