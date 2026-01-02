@@ -91,6 +91,21 @@ This document is the implementation roadmap for the project spec in `http_microb
    - map request rate → `wait_ms` via a sigmoid so the batching window approaches:
      - `min_wait_ms` under low load
      - `max_wait_ms` under high load
+   - algorithm (per BatchKey):
+     - maintain `req_count` (incremented per enqueued request)
+     - every `sampling_interval_ms`:
+       - `sample_rps = req_count / sampling_interval_secs` (then reset `req_count = 0`)
+       - push `sample_rps` into a fixed-size deque of length `smoothing_samples`
+       - `smoothed_rps = avg(samples)` (or 0 if empty)
+     - at the start of each batch window, compute:
+       - `adjusted = (smoothed_rps - target_rps) * steepness`
+       - `sigmoid = 1 / (1 + exp(-adjusted))` (range 0..1)
+       - `wait_ms = min_wait_ms + sigmoid * (max_wait_ms - min_wait_ms)` (round + clamp)
+   - important notes:
+     - units matter: `target_rps` is requests/sec; it must match the sampling conversion
+     - choose `sampling_interval_ms` small enough to react, but large enough to avoid noise (e.g. 50–200ms)
+     - choose `smoothing_samples` small enough to react, but large enough to damp spikes (e.g. 5–20)
+     - current implementation computes `wait_ms` once per batch (no mid-batch timer adjustment)
 7. **Integration testing**
    - local router + a mock Lambda endpoint that emits buffered and streamed responses
 8. **Load testing**
