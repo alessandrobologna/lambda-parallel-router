@@ -17,3 +17,6 @@ pnpm-debug.log*
 # Python
 __pycache__/
 *.py[cod]
+
+# AWS SAM
+.aws-sam/
