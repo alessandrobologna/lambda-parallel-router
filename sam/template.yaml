@@ -3,12 +3,6 @@ Transform: AWS::Serverless-2016-10-31
 Description: lambda-parallel-router demo (App Runner + sample Lambda batch handlers)
 
 Parameters:
-  CreateRouterService:
-    Type: String
-    Default: "false"
-    AllowedValues: ["true", "false"]
-    Description: Set to true after you push the router container image to ECR.
-
   RouterRepositoryName:
     Type: String
     Default: "lambda-parallel-router/router"
@@ -23,9 +17,6 @@ Parameters:
     Type: String
     Default: latest
     Description: Container image tag to deploy to App Runner (in the ECR repo created by this stack).
-
-Conditions:
-  ShouldCreateRouterService: !Equals [!Ref CreateRouterService, "true"]
 
 Resources:
   # ------------------------------
@@ -64,6 +55,38 @@ Resources:
       Prefix: !Ref RouterRepositoryPrefix
       AppliedFor:
         - CREATE_ON_PUSH
+
+  # ------------------------------
+  # CloudFormation custom resource: wait for router image
+  # ------------------------------
+  RouterImageWaiterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      Handler: app.handler
+      CodeUri: lambda/image-waiter/
+      Description: Waits until a specific ECR image tag exists, then signals CloudFormation.
+      MemorySize: 128
+      Timeout: 900
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ecr:DescribeImages
+                - ecr:DescribeRepositories
+              Resource: "*"
+
+  RouterImageReady:
+    Type: Custom::EcrImageReady
+    DependsOn:
+      - RouterRepositoryCreationTemplate
+    Properties:
+      ServiceToken: !GetAtt RouterImageWaiterFunction.Arn
+      RepositoryName: !Ref RouterRepositoryName
+      ImageTag: !Ref RouterImageTag
+      TimeoutSeconds: 840
+      PollSeconds: 5
 
   # ------------------------------
   # App Runner roles
@@ -108,7 +131,8 @@ Resources:
   # ------------------------------
   RouterService:
     Type: AWS::AppRunner::Service
-    Condition: ShouldCreateRouterService
+    DependsOn:
+      - RouterImageReady
     Properties:
       ServiceName: !Sub "${AWS::StackName}-router"
       SourceConfiguration:
@@ -145,5 +169,4 @@ Outputs:
     Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RouterRepositoryName}"
 
   RouterServiceUrl:
-    Condition: ShouldCreateRouterService
     Value: !GetAtt RouterService.ServiceUrl
