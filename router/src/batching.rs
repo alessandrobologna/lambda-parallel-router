@@ -330,6 +330,19 @@ async fn flush_batch(
                     }
                 };
 
+                tracing::info!(
+                    event = "lambda_invoke",
+                    target_lambda = %key.target_lambda,
+                    method = %key.method,
+                    route = %key.route,
+                    invoke_mode = ?key.invoke_mode,
+                    max_wait_ms = key.max_wait_ms,
+                    max_batch_size = key.max_batch_size,
+                    batch_size = pending.len(),
+                    payload_bytes = payload.len(),
+                    "invoking"
+                );
+
                 match invoker
                     .invoke(&key.target_lambda, payload, key.invoke_mode)
                     .await

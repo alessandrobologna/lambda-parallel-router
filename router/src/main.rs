@@ -35,6 +35,8 @@ fn resolve_config_location(args: &Args) -> anyhow::Result<String> {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .json()
+        .with_ansi(false)
         .init();
 
     let args = Args::parse();

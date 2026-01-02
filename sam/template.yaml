@@ -9,33 +9,32 @@ Parameters:
     Type: String
     Description: ECR image identifier for the router container (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:latest).
 
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Handler: index.handler
+    Timeout: 10
+    MemorySize: 256
+    LoggingConfig:
+      ApplicationLogLevel: INFO
+      LogFormat: JSON
+
 Resources:
+
   # ------------------------------
   # Sample Lambda functions
   # ------------------------------
   SampleBufferedFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: nodejs20.x
-      Handler: index.handler
       CodeUri: lambda/buffered/
       Description: Demo batch handler for buffered responses.
-      MemorySize: 256
-      Timeout: 10
-      Policies:
-        - AWSLambdaBasicExecutionRole
 
   SampleStreamingFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: nodejs20.x
-      Handler: index.handler
       CodeUri: lambda/streaming/
       Description: Demo batch handler for NDJSON streaming responses.
-      MemorySize: 256
-      Timeout: 10
-      Policies:
-        - AWSLambdaBasicExecutionRole
 
   # ------------------------------
   # Router service (expanded by the LprRouter macro)
