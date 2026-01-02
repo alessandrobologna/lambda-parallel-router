@@ -74,7 +74,7 @@ Resources:
                   - !GetAtt SampleStreamingFunction.Arn
 
   # ------------------------------
-  # App Runner service (optional)
+  # App Runner service
   # ------------------------------
   RouterService:
     Type: AWS::AppRunner::Service
