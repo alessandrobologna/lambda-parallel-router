@@ -14,7 +14,7 @@ ROUTER_IMAGE_IDENTIFIER ?= $(ECR_REGISTRY)/$(ROUTER_REPO_NAME):$(ROUTER_IMAGE_TA
 
 STACK_NAME ?= lambda-parallel-router-demo
 SAM_TEMPLATE ?= sam/template.yaml
-SAM_DEPLOY_FLAGS ?= --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset
+SAM_DEPLOY_FLAGS ?= --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset
 
 BOOTSTRAP_STACK_NAME ?= lpr-bootstrap
 BOOTSTRAP_TEMPLATE ?= bootstrap/template.yaml
