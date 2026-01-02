@@ -16,11 +16,16 @@ STACK_NAME ?= lambda-parallel-router-demo
 SAM_TEMPLATE ?= sam/template.yaml
 SAM_DEPLOY_FLAGS ?= --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset
 
+BOOTSTRAP_STACK_NAME ?= lpr-bootstrap
+BOOTSTRAP_TEMPLATE ?= bootstrap/template.yaml
+BOOTSTRAP_BUCKET ?=
+
 .PHONY: help
 help:
 	@printf '%s\n' \
 		'Targets:' \
-		'  make deploy              Create ECR template, push image, and deploy SAM stack' \
+		'  make deploy              Deploy bootstrap + push image + deploy demo stack' \
+		'  make bootstrap-deploy     Deploy the bootstrap stack (macro + shared config bucket)' \
 		'  make ecr-template         Create/update ECR repository creation template (CREATE_ON_PUSH)' \
 		'  make ecr-login            Docker login to ECR' \
 		'  make image-build          Build router container image' \
@@ -32,6 +37,7 @@ help:
 		'' \
 		'Common overrides:' \
 		'  make deploy AWS_REGION=us-east-1 STACK_NAME=my-stack' \
+		'  make deploy BOOTSTRAP_BUCKET=my-existing-bucket' \
 		'  make deploy ROUTER_REPO_PREFIX=my-prefix ROUTER_REPO_NAME=my-prefix/router ROUTER_IMAGE_TAG=latest'
 
 .PHONY: check
@@ -53,6 +59,9 @@ print-vars: check
 		"ROUTER_REPO_NAME=$(ROUTER_REPO_NAME)" \
 		"ROUTER_IMAGE_TAG=$(ROUTER_IMAGE_TAG)" \
 		"ROUTER_IMAGE_IDENTIFIER=$(ROUTER_IMAGE_IDENTIFIER)" \
+		"BOOTSTRAP_STACK_NAME=$(BOOTSTRAP_STACK_NAME)" \
+		"BOOTSTRAP_TEMPLATE=$(BOOTSTRAP_TEMPLATE)" \
+		"BOOTSTRAP_BUCKET=$(BOOTSTRAP_BUCKET)" \
 		"STACK_NAME=$(STACK_NAME)" \
 		"SAM_TEMPLATE=$(SAM_TEMPLATE)"
 
@@ -107,5 +116,15 @@ sam-deploy: check sam-build
 			$(SAM_DEPLOY_FLAGS) \
 			--parameter-overrides RouterImageIdentifier="$(ROUTER_IMAGE_IDENTIFIER)"
 
+.PHONY: bootstrap-deploy
+bootstrap-deploy: check
+	@set -euo pipefail; \
+	AWS_REGION="$(AWS_REGION)" AWS_DEFAULT_REGION="$(AWS_REGION)" \
+		sam deploy \
+			--stack-name "$(BOOTSTRAP_STACK_NAME)" \
+			--template-file "$(BOOTSTRAP_TEMPLATE)" \
+			$(SAM_DEPLOY_FLAGS) \
+			$$(if [[ -n "$(BOOTSTRAP_BUCKET)" ]]; then echo "--parameter-overrides UseExistingBucket=$(BOOTSTRAP_BUCKET)"; fi)
+
 .PHONY: deploy
-deploy: image-push sam-deploy
+deploy: bootstrap-deploy image-push sam-deploy

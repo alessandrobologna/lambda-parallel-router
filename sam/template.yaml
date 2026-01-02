@@ -1,5 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform: AWS::Serverless-2016-10-31
+Transform:
+  - AWS::Serverless-2016-10-31
+  - LprRouter
 Description: lambda-parallel-router demo (App Runner + sample Lambda batch handlers)
 
 Parameters:
@@ -36,72 +38,39 @@ Resources:
         - AWSLambdaBasicExecutionRole
 
   # ------------------------------
-  # App Runner roles
-  # ------------------------------
-  AppRunnerEcrAccessRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: build.apprunner.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
-
-  RouterInstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: tasks.apprunner.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: InvokeSampleLambdas
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - lambda:InvokeFunction
-                Resource:
-                  - !GetAtt SampleBufferedFunction.Arn
-                  - !GetAtt SampleStreamingFunction.Arn
-
-  # ------------------------------
-  # App Runner service
+  # Router service (expanded by the LprRouter macro)
   # ------------------------------
   RouterService:
-    Type: AWS::AppRunner::Service
+    Type: Lpr::Router::Service
     Properties:
-      ServiceName: !Sub "${AWS::StackName}-router"
-      SourceConfiguration:
-        AuthenticationConfiguration:
-          AccessRoleArn: !GetAtt AppRunnerEcrAccessRole.Arn
-        AutoDeploymentsEnabled: true
-        ImageRepository:
-          ImageIdentifier: !Ref RouterImageIdentifier
-          ImageRepositoryType: ECR
-          ImageConfiguration:
-            Port: "8080"
-            RuntimeEnvironmentVariables:
-              - Name: AWS_REGION
-                Value: !Ref AWS::Region
-              - Name: AWS_DEFAULT_REGION
-                Value: !Ref AWS::Region
-              - Name: RUST_LOG
-                Value: info
-              - Name: LPR_SAMPLE_BUFFERED_LAMBDA_ARN
-                Value: !GetAtt SampleBufferedFunction.Arn
-              - Name: LPR_SAMPLE_STREAMING_LAMBDA_ARN
-                Value: !GetAtt SampleStreamingFunction.Arn
-      InstanceConfiguration:
-        InstanceRoleArn: !GetAtt RouterInstanceRole.Arn
+      ImageIdentifier: !Ref RouterImageIdentifier
+      Port: 8080
+      Environment:
+        RUST_LOG: info
+      InvokeLambdaArns:
+        - !GetAtt SampleBufferedFunction.Arn
+        - !GetAtt SampleStreamingFunction.Arn
+      RouterConfig: {}
+      Spec:
+        openapi: 3.0.0
+        info:
+          title: lambda-parallel-router demo
+          version: "1"
+        paths:
+          /hello:
+            get:
+              x-target-lambda: !GetAtt SampleBufferedFunction.Arn
+              x-lpr:
+                max_wait_ms: 25
+                max_batch_size: 4
+                invoke_mode: buffered
+          /hello-stream:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingFunction.Arn
+              x-lpr:
+                max_wait_ms: 25
+                max_batch_size: 4
+                invoke_mode: response_stream
 
 Outputs:
   SampleBufferedFunctionArn:

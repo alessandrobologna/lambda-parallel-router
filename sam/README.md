@@ -5,11 +5,25 @@ This folder contains an AWS SAM template that deploys:
 - Two sample Lambda functions that implement the router batch contract:
   - buffered (`/hello`)
   - response streaming via NDJSON (`/hello-stream`)
-- IAM roles for App Runner
 - An App Runner service that runs the router container (ECR image)
 
-The router image includes `sam/router/spec.yaml`, which references deployed Lambda ARNs via
-environment variables injected by the App Runner service.
+The router service definition is intentionally concise and is expanded by the `LprRouter`
+CloudFormation macro (see `bootstrap/`).
+
+At deploy time, the macro publishes the inline `RouterConfig` + `Spec` documents to S3 and sets an
+environment variable on the App Runner service pointing the router to the generated `s3://...`
+config URI.
+
+## Prerequisite: bootstrap stack
+
+Deploy the bootstrap stack once per account+region:
+
+```bash
+sam deploy \
+  --template-file bootstrap/template.yaml \
+  --stack-name lpr-bootstrap \
+  --capabilities CAPABILITY_IAM
+```
 
 ## Deploy
 
