@@ -63,6 +63,19 @@ Resources:
                 max_wait_ms: 25
                 max_batch_size: 4
                 invoke_mode: buffered
+          /hello-adaptive:
+            get:
+              x-target-lambda: !GetAtt SampleBufferedFunction.Arn
+              x-lpr:
+                max_wait_ms: 100
+                max_batch_size: 16
+                invoke_mode: buffered
+                adaptive_wait:
+                  min_wait_ms: 1
+                  target_rps: 50
+                  steepness: 0.05
+                  sampling_interval_ms: 100
+                  smoothing_samples: 5
           /hello-stream:
             get:
               x-target-lambda: !GetAtt SampleStreamingFunction.Arn
