@@ -29,8 +29,10 @@ impl Default for InvokeMode {
 /// `x-lpr` vendor extension (per operation).
 pub struct LprOperationConfig {
     /// Maximum time (in milliseconds) to wait before flushing a batch.
+    #[serde(deserialize_with = "crate::serde_ext::de_u64_or_string")]
     pub max_wait_ms: u64,
     /// Maximum number of requests per batch.
+    #[serde(deserialize_with = "crate::serde_ext::de_usize_or_string")]
     pub max_batch_size: usize,
 
     #[serde(default)]
@@ -41,7 +43,10 @@ pub struct LprOperationConfig {
     /// semantics differ (e.g. multi-tenant traffic).
     pub key: Vec<String>,
 
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_ext::de_option_u64_or_string"
+    )]
     /// Optional per-request timeout override (milliseconds).
     pub timeout_ms: Option<u64>,
 
@@ -569,5 +574,26 @@ paths:
         key: ["query:version", "query:version"]
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
+    }
+
+    #[test]
+    fn accepts_numeric_fields_as_strings() {
+        let yaml = br#"
+paths:
+  /x:
+    get:
+      x-target-lambda: fn
+      x-lpr:
+        max_wait_ms: "25"
+        max_batch_size: "4"
+        timeout_ms: "123"
+"#;
+        let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
+        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+            panic!("expected match");
+        };
+        assert_eq!(op.max_wait_ms, 25);
+        assert_eq!(op.max_batch_size, 4);
+        assert_eq!(op.timeout_ms, 123);
     }
 }

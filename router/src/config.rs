@@ -56,27 +56,45 @@ pub struct RouterConfig {
     /// Optional AWS region override for the Lambda client.
     pub aws_region: Option<String>,
 
-    #[serde(default = "default_max_inflight_invocations")]
+    #[serde(
+        default = "default_max_inflight_invocations",
+        deserialize_with = "crate::serde_ext::de_usize_or_string"
+    )]
     /// Maximum number of concurrent in-flight Lambda invocations across all routes.
     pub max_inflight_invocations: usize,
 
-    #[serde(default = "default_max_queue_depth_per_key")]
+    #[serde(
+        default = "default_max_queue_depth_per_key",
+        deserialize_with = "crate::serde_ext::de_usize_or_string"
+    )]
     /// Per-batch-key enqueue depth. When full, requests are rejected with 503.
     pub max_queue_depth_per_key: usize,
 
-    #[serde(default = "default_idle_ttl_ms")]
+    #[serde(
+        default = "default_idle_ttl_ms",
+        deserialize_with = "crate::serde_ext::de_u64_or_string"
+    )]
     /// If a batch key sees no traffic for this long, its batching task is evicted.
     pub idle_ttl_ms: u64,
 
-    #[serde(default = "default_default_timeout_ms")]
+    #[serde(
+        default = "default_default_timeout_ms",
+        deserialize_with = "crate::serde_ext::de_u64_or_string"
+    )]
     /// Default per-request timeout (used when an operation doesn't specify `x-lpr.timeout_ms`).
     pub default_timeout_ms: u64,
 
-    #[serde(default = "default_max_body_bytes")]
+    #[serde(
+        default = "default_max_body_bytes",
+        deserialize_with = "crate::serde_ext::de_usize_or_string"
+    )]
     /// Maximum accepted request body size.
     pub max_body_bytes: usize,
 
-    #[serde(default = "default_max_invoke_payload_bytes")]
+    #[serde(
+        default = "default_max_invoke_payload_bytes",
+        deserialize_with = "crate::serde_ext::de_usize_or_string"
+    )]
     /// Maximum JSON payload size sent to Lambda per invocation.
     ///
     /// If a batch exceeds this limit, the router will split it into multiple invocations when
@@ -115,5 +133,26 @@ spec_path: "spec.yaml"
         assert!(cfg.forward_headers.allow.is_empty());
         assert!(cfg.forward_headers.deny.is_empty());
         assert!(cfg.aws_region.is_none());
+    }
+
+    #[test]
+    fn accepts_numeric_fields_as_strings() {
+        let yaml = br#"
+listen_addr: "127.0.0.1:3000"
+spec_path: "spec.yaml"
+max_inflight_invocations: "12"
+max_queue_depth_per_key: "34"
+idle_ttl_ms: "56000"
+default_timeout_ms: "789"
+max_body_bytes: "1024"
+max_invoke_payload_bytes: "2048"
+"#;
+        let cfg = RouterConfig::from_yaml_bytes(yaml).unwrap();
+        assert_eq!(cfg.max_inflight_invocations, 12);
+        assert_eq!(cfg.max_queue_depth_per_key, 34);
+        assert_eq!(cfg.idle_ttl_ms, 56_000);
+        assert_eq!(cfg.default_timeout_ms, 789);
+        assert_eq!(cfg.max_body_bytes, 1024);
+        assert_eq!(cfg.max_invoke_payload_bytes, 2048);
     }
 }
