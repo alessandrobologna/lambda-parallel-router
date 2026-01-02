@@ -1,6 +1,4 @@
 SHELL := bash
-.ONESHELL:
-.SHELLFLAGS := -eu -o pipefail -c
 
 .DEFAULT_GOAL := help
 
@@ -11,6 +9,7 @@ ECR_REGISTRY ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 ROUTER_REPO_PREFIX ?= lambda-parallel-router
 ROUTER_REPO_NAME ?= $(ROUTER_REPO_PREFIX)/router
 ROUTER_IMAGE_TAG ?= latest
+ROUTER_IMAGE_PLATFORM ?= linux/amd64
 ROUTER_IMAGE_IDENTIFIER ?= $(ECR_REGISTRY)/$(ROUTER_REPO_NAME):$(ROUTER_IMAGE_TAG)
 
 STACK_NAME ?= lambda-parallel-router-demo
@@ -59,23 +58,24 @@ print-vars: check
 
 .PHONY: ecr-template
 ecr-template: check
-	applied_for="$$(aws ecr describe-repository-creation-templates --region "$(AWS_REGION)" --prefixes "$(ROUTER_REPO_PREFIX)" --query 'repositoryCreationTemplates[0].appliedFor' --output text 2>/dev/null || true)"
-	if [[ -z "$$applied_for" || "$$applied_for" == "None" ]]; then
-		echo "Creating ECR repository creation template for prefix $(ROUTER_REPO_PREFIX) (CREATE_ON_PUSH)"
+	@set -euo pipefail; \
+	applied_for="$$(aws ecr describe-repository-creation-templates --region "$(AWS_REGION)" --prefixes "$(ROUTER_REPO_PREFIX)" --query 'repositoryCreationTemplates[0].appliedFor' --output text 2>/dev/null || true)"; \
+	if [[ -z "$$applied_for" || "$$applied_for" == "None" ]]; then \
+		echo "Creating ECR repository creation template for prefix $(ROUTER_REPO_PREFIX) (CREATE_ON_PUSH)"; \
 		aws ecr create-repository-creation-template \
 			--region "$(AWS_REGION)" \
 			--prefix "$(ROUTER_REPO_PREFIX)" \
-			--applied-for CREATE_ON_PUSH >/dev/null
-	else
-		if echo "$$applied_for" | grep -q "CREATE_ON_PUSH"; then
-			echo "ECR repository creation template already includes CREATE_ON_PUSH ($$applied_for)"
-		else
-			echo "Updating ECR repository creation template to include CREATE_ON_PUSH (was: $$applied_for)"
+			--applied-for CREATE_ON_PUSH >/dev/null; \
+	else \
+		if echo "$$applied_for" | grep -q "CREATE_ON_PUSH"; then \
+			echo "ECR repository creation template already includes CREATE_ON_PUSH ($$applied_for)"; \
+		else \
+			echo "Updating ECR repository creation template to include CREATE_ON_PUSH (was: $$applied_for)"; \
 			aws ecr update-repository-creation-template \
 				--region "$(AWS_REGION)" \
 				--prefix "$(ROUTER_REPO_PREFIX)" \
-				--applied-for $$applied_for CREATE_ON_PUSH >/dev/null
-		fi
+				--applied-for $$applied_for CREATE_ON_PUSH >/dev/null; \
+		fi; \
 	fi
 
 .PHONY: ecr-template-delete
@@ -88,7 +88,7 @@ ecr-login: check
 
 .PHONY: image-build
 image-build: check
-	docker build -f Dockerfile.router -t "$(ROUTER_IMAGE_IDENTIFIER)" .
+	docker build --platform "$(ROUTER_IMAGE_PLATFORM)" -f Dockerfile.router -t "$(ROUTER_IMAGE_IDENTIFIER)" .
 
 .PHONY: image-push
 image-push: ecr-template ecr-login image-build
