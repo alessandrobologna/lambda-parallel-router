@@ -9,6 +9,7 @@ anyhow = "1"
 async-trait = "0.1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-lambda = "1"
+aws-sdk-s3 = "1"
 axum = "0.8"
 base64 = "0.22"
 bytes = "1"

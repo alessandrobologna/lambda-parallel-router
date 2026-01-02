@@ -14,6 +14,7 @@
 pub mod batching;
 pub mod config;
 pub mod lambda;
+pub mod location;
 pub mod server;
 pub mod spec;
 pub mod template;

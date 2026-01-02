@@ -25,5 +25,4 @@ COPY sam/router/router.yaml /app/router.yaml
 COPY sam/router/spec.yaml /app/spec.yaml
 
 EXPOSE 8080
-CMD ["/app/lpr-router", "--config", "/app/router.yaml"]
-
+CMD ["/app/lpr-router"]
