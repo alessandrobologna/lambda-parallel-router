@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: lambda-parallel-router bootstrap (shared config bucket + config publisher custom resource)
+
+Parameters:
+  UseExistingBucket:
+    Type: String
+    Default: ""
+    Description: Optional existing S3 bucket name to use for router config/spec objects. Leave empty to create a bucket named lpr-config-<account>-<region>.
+
+Conditions:
+  CreateConfigBucket: !Equals [!Ref UseExistingBucket, ""]
+
+Resources:
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateConfigBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "lpr-config-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ConfigBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateConfigBucket
+    Properties:
+      Bucket: !Ref ConfigBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${ConfigBucket}"
+              - !Sub "arn:aws:s3:::${ConfigBucket}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  ConfigPublisherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.13
+      Handler: app.handler
+      CodeUri: config_publisher/
+      Description: CloudFormation custom resource that uploads LPR config/spec YAML to S3.
+      MemorySize: 256
+      Timeout: 30
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Sid: WriteConfigObjects
+              Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:PutObjectTagging
+                - s3:DeleteObject
+                - s3:GetObject
+              Resource:
+                - !If
+                  - CreateConfigBucket
+                  - !Sub "arn:aws:s3:::${ConfigBucket}/*"
+                  - !Sub "arn:aws:s3:::${UseExistingBucket}/*"
+      Environment:
+        Variables:
+          LPR_DEFAULT_BUCKET: !If [CreateConfigBucket, !Ref ConfigBucket, !Ref UseExistingBucket]
+
+Outputs:
+  ConfigBucketName:
+    Description: S3 bucket name where router config/spec objects are stored.
+    Value: !If [CreateConfigBucket, !Ref ConfigBucket, !Ref UseExistingBucket]
+
+  ConfigPublisherServiceToken:
+    Description: Service token (Lambda ARN) for the Custom::LprConfigPublisher resource.
+    Value: !GetAtt ConfigPublisherFunction.Arn
