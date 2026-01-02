@@ -14,7 +14,7 @@ environment variables injected by the App Runner service.
 
 ## Deploy
 
-1) Deploy the stack **without** creating the App Runner service yet (creates Lambdas + ECR repo + roles):
+1) Deploy the stack **without** creating the App Runner service yet (creates Lambdas + ECR create-on-push template + roles):
 
 ```bash
 sam build --template-file sam/template.yaml
