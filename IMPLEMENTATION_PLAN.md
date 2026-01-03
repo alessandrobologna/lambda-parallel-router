@@ -7,7 +7,7 @@ This document is the implementation roadmap for the project spec in `http_microb
 **Router (Rust, `router/`)**
 - Long-running HTTP service (axum) that loads:
   - `RouterConfig` from YAML (see `examples/router.yaml`)
-  - an OpenAPI-ish spec from YAML (see `examples/spec.yaml`)
+  - an OpenAPI-ish spec from YAML (provide your own; `sam/template.yaml` contains a working example under `RouterService.Properties.Spec`)
 - Routes requests by `(method, path)` using `matchit` with OpenAPI-style `{param}` templates
 - Micro-batches requests per `(target_lambda, method, route_template, invoke_mode, key dimensions)`
 - Invokes Lambda with either:

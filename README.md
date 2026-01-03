@@ -8,7 +8,9 @@ This repo currently includes:
 
 ## Local dev (router)
 
-1) Create a router config and spec (see `examples/`).
+1) Create a router config and spec.
+   - `examples/router.yaml` is a starting point.
+   - A working example spec is embedded in `sam/template.yaml` under `RouterService.Properties.Spec.paths`.
 2) Run:
 
 ```bash
@@ -18,4 +20,3 @@ cargo run -p lpr-router -- --config examples/router.yaml
 ## Status
 
 Experimental, implementation in progress.
-
