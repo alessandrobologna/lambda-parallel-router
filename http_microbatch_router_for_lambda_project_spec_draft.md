@@ -248,6 +248,11 @@ Include `"v": 1` in top-level objects.
 
 ### 6.2 Batch request event (Router → Lambda)
 
+Each `batch[]` item is an **API Gateway v2 (HTTP API) proxy request event** (payload format version `2.0`).
+The router assigns a correlation id by setting `batch[].requestContext.requestId`.
+For request bodies, the router prefers UTF-8 (`isBase64Encoded: false`) and falls back to base64 when needed.
+The router may include additional compatibility fields (e.g. `httpMethod`); consumers should treat unknown fields as ignorable.
+
 ```json
 {
   "v": 1,
@@ -258,19 +263,28 @@ Include `"v": 1` in top-level objects.
   },
   "batch": [
     {
-      "id": "r-uuid",
-      "method": "GET",
-      "path": "/v1/items/123",
-      "route": "/v1/items/{id}",
+      "version": "2.0",
+      "routeKey": "GET /v1/items/{id}",
+      "rawPath": "/v1/items/123",
+      "rawQueryString": "a=b",
       "headers": {"x-foo": "bar"},
-      "query": {"a": "b"},
-      "body": "...base64...",
-      "isBase64Encoded": true,
-      "context": {
-        "deadlineMs": 1730000000100,
-        "sourceIp": "203.0.113.1",
-        "principal": "tenant:abc:user:123"
-      }
+      "queryStringParameters": {"a": "b"},
+      "pathParameters": {"id": "123"},
+      "requestContext": {
+        "routeKey": "GET /v1/items/{id}",
+        "stage": "$default",
+        "requestId": "r-uuid",
+        "timeEpoch": 1730000000000,
+        "http": {
+          "method": "GET",
+          "path": "/v1/items/123",
+          "protocol": "HTTP/1.1",
+          "sourceIp": "203.0.113.1",
+          "userAgent": "curl/8.0.0"
+        }
+      },
+      "body": "{\"hello\":\"world\"}",
+      "isBase64Encoded": false
     }
   ]
 }
@@ -307,8 +321,9 @@ If a single request fails inside a batch, return an error record with a normal s
 
 ### 6.4 Required invariants
 - Every request in `batch[]` must produce exactly one response record **or** the router will synthesize a timeout/5xx.
-- `id` must be unique within the batch.
-- Router must tolerate extra records (ignore unknown ids).
+- `batch[].requestContext.requestId` must be unique within the batch.
+- Every response `id` must equal the corresponding `batch[].requestContext.requestId`.
+- Router must tolerate extra records (ignore unknown response ids).
 
 ---
 
@@ -369,15 +384,15 @@ paths:
 
 #### Adapter contract
 The adapter accepts the batch event and calls a user handler of signature:
-- `(SingleRequest) -> SingleResponse` (async)
+- `(ApiGatewayV2RequestEvent) -> ApiGatewayResponse` (async)
 
 Adapter responsibilities:
-- Parse `batch[]` into internal requests.
-- Run user handler for each item with a concurrency limit:
+- Run user handler for each `batch[]` item with a concurrency limit:
   - `concurrency = min(user_config, batch_len)`
 - Emit responses as:
   - buffered array, or
   - NDJSON streaming records upon completion.
+  - each response object includes `id = batch[].requestContext.requestId`
 
 #### Node adapter sketch
 - Provide `batchAdapter(handler, { concurrency, output: 'ndjson'|'array' })`.

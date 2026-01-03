@@ -46,7 +46,7 @@ This document is the implementation roadmap for the project spec in `http_microb
    - Accept HTTP (axum)
    - Match route template + method via compiled matcher
    - Normalize request into a `PendingRequest`:
-     - `id`, `method`, `path`, `route_template`, `headers`, `query`, `body` (base64 on the wire)
+     - `id`, `method`, `path`, `route_template`, `path_params`, `headers`, `query`, `raw_query_string`, `body` (bytes)
    - Enqueue into per-key microbatcher and await response up to `timeout_ms`
 3. **Microbatcher**
    - One Tokio task per BatchKey
@@ -60,7 +60,7 @@ This document is the implementation roadmap for the project spec in `http_microb
      - per-key bounded queue (`max_queue_depth_per_key`)
      - global in-flight invocation semaphore (`max_inflight_invocations`)
 4. **Lambda invoke**
-   - Encode Router→Lambda event as JSON (v1) with `batch[]`
+   - Encode Router→Lambda event as JSON (v1) with `batch[]` (API Gateway v2 HTTP request events)
    - Invoke Lambda once per flush and demux responses by `id`
 
 ### 2.2 Phase B — Early-return via response streaming (v1.1)
@@ -116,7 +116,7 @@ This document is the implementation roadmap for the project spec in `http_microb
 
 ### 3.1 Buffered adapter (`batchAdapter`)
 - Input: v1 `event.batch[]`
-- Decode request `body` into a `Buffer` for the user handler
+- Call a standard API Gateway v2 handler once per `event.batch[]` item
 - Execute handler for each request with a concurrency cap
 - Output: `{ v: 1, responses: [...] }` with one response per request id
 - Error mapping: handler throws → a 500 response for that request id
@@ -141,8 +141,8 @@ This document is the implementation roadmap for the project spec in `http_microb
 
 **Node**
 - Unit tests:
-  - base64 request body decoding to `Buffer`
   - Buffer response body encoding to base64
+  - passing API Gateway v2 events through
   - concurrency limiting
   - error mapping to 500
   - NDJSON writer behavior for streaming adapter (stubbed stream)
