@@ -251,7 +251,6 @@ Include `"v": 1` in top-level objects.
 Each `batch[]` item is an **API Gateway v2 (HTTP API) proxy request event** (payload format version `2.0`).
 The router assigns a correlation id by setting `batch[].requestContext.requestId`.
 For request bodies, the router prefers UTF-8 (`isBase64Encoded: false`) and falls back to base64 when needed.
-The router may include additional compatibility fields (e.g. `httpMethod`); consumers should treat unknown fields as ignorable.
 
 ```json
 {

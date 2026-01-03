@@ -225,9 +225,6 @@ struct BatchItem {
     /// This is serialized into the request event as `requestContext.requestId`.
     #[serde(skip_serializing)]
     id: String,
-    /// Top-level HTTP method (not part of the official HTTP API v2.0 event shape, but included
-    /// for compatibility with common Lambda event structs).
-    http_method: String,
     version: &'static str,
     route_key: String,
     raw_path: String,
@@ -546,7 +543,6 @@ async fn flush_batch(
 
         batch_items.push(BatchItem {
             id: id.clone(),
-            http_method: req.method.to_string(),
             version: "2.0",
             route_key: route_key.clone(),
             raw_path: req.path.clone(),
@@ -1071,7 +1067,6 @@ mod tests {
 
         let item = BatchItem {
             id: "r-1".to_string(),
-            http_method: "GET".to_string(),
             version: "2.0",
             route_key: "GET /hello".to_string(),
             raw_path: "/hello".to_string(),
@@ -1104,6 +1099,8 @@ mod tests {
         };
 
         let payload = build_payload_bytes(&key, 1_700_000_000_000, &[item]).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert!(raw["batch"][0]["httpMethod"].is_null());
         let env: Envelope = serde_json::from_slice(&payload).unwrap();
         assert_eq!(env.v, 1);
         assert_eq!(env.batch.len(), 1);
@@ -1115,7 +1112,6 @@ mod tests {
         assert_eq!(evt.raw_query_string.as_deref(), Some("x=1"));
         assert_eq!(evt.request_context.request_id.as_deref(), Some("r-1"));
         assert_eq!(evt.request_context.http.method, Method::GET);
-        assert_eq!(evt.http_method, Method::GET);
     }
 
     struct EchoInvoker {
@@ -1715,7 +1711,6 @@ mod tests {
 
         let item_a_one = BatchItem {
             id: "a".to_string(),
-            http_method: "GET".to_string(),
             version: "2.0",
             route_key: "GET /hello".to_string(),
             raw_path: "/hello".to_string(),
@@ -1748,7 +1743,6 @@ mod tests {
         };
         let item_a_two = BatchItem {
             id: "a".to_string(),
-            http_method: "GET".to_string(),
             version: "2.0",
             route_key: "GET /hello".to_string(),
             raw_path: "/hello".to_string(),
@@ -1781,7 +1775,6 @@ mod tests {
         };
         let item_b_two = BatchItem {
             id: "b".to_string(),
-            http_method: "GET".to_string(),
             version: "2.0",
             route_key: "GET /hello".to_string(),
             raw_path: "/hello".to_string(),
@@ -1866,7 +1859,6 @@ mod tests {
         let received_at_ms = 1_700_000_000_000u64;
         let item = BatchItem {
             id: "a".to_string(),
-            http_method: "GET".to_string(),
             version: "2.0",
             route_key: "GET /hello".to_string(),
             raw_path: "/hello".to_string(),
