@@ -42,18 +42,10 @@ async function forEachConcurrent(items, concurrency, fn) {
   await Promise.all(workers);
 }
 
-function decodeRequestBody(item) {
-  if (item == null) return Buffer.alloc(0);
-
-  const { body, isBase64Encoded } = item;
-  if (typeof body === "string") {
-    if (isBase64Encoded) return Buffer.from(body, "base64");
-    return Buffer.from(body, "utf8");
-  }
-
-  if (body == null) return Buffer.alloc(0);
-  if (Buffer.isBuffer(body)) return body;
-  return Buffer.from(String(body), "utf8");
+function getRequestId(item) {
+  if (typeof item?.requestContext?.requestId === "string") return item.requestContext.requestId;
+  if (typeof item?.id === "string") return item.id;
+  return "";
 }
 
 function normalizeHeaders(headers) {
@@ -83,21 +75,14 @@ function batchAdapter(userHandler, options = {}) {
   }
   const concurrency = normalizeConcurrency(options.concurrency ?? 16);
 
-  return async function handler(event) {
+  return async function handler(event, context) {
     const batch = Array.isArray(event?.batch) ? event.batch : [];
 
     const responses = await mapConcurrent(batch, concurrency, async (item) => {
-      const id = typeof item?.id === "string" ? item.id : "";
-      const req = {
-        ...item,
-        id,
-        body: decodeRequestBody(item),
-        headers: normalizeHeaders(item?.headers),
-        query: item?.query && typeof item.query === "object" ? item.query : {},
-      };
+      const id = getRequestId(item);
 
       try {
-        const userResp = await userHandler(req);
+        const userResp = await userHandler(item, context);
         const statusCode = Number(userResp?.statusCode ?? 200);
         const headers = normalizeHeaders(userResp?.headers);
         const { body, isBase64Encoded } = normalizeResponseBody(
@@ -134,7 +119,7 @@ function batchAdapterStream(userHandler, options = {}) {
     );
   }
 
-  return streamifyResponse(async (event, responseStream) => {
+  return streamifyResponse(async (event, responseStream, context) => {
     try {
       if (typeof responseStream?.setContentType === "function") {
         responseStream.setContentType("application/x-ndjson");
@@ -142,18 +127,11 @@ function batchAdapterStream(userHandler, options = {}) {
 
       const batch = Array.isArray(event?.batch) ? event.batch : [];
       await forEachConcurrent(batch, concurrency, async (item) => {
-        const id = typeof item?.id === "string" ? item.id : "";
-        const req = {
-          ...item,
-          id,
-          body: decodeRequestBody(item),
-          headers: normalizeHeaders(item?.headers),
-          query: item?.query && typeof item.query === "object" ? item.query : {},
-        };
+        const id = getRequestId(item);
 
         let record;
         try {
-          const userResp = await userHandler(req);
+          const userResp = await userHandler(item, context);
           const statusCode = Number(userResp?.statusCode ?? 200);
           const headers = normalizeHeaders(userResp?.headers);
           const { body, isBase64Encoded } = normalizeResponseBody(

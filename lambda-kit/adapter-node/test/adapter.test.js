@@ -6,11 +6,19 @@ const assert = require("node:assert/strict");
 const { batchAdapter, batchAdapterStream } = require("../index");
 
 test("batchAdapter returns v1 responses array", async () => {
-  const handler = batchAdapter(async (req) => {
-    return { statusCode: 200, headers: { "x-id": req.id }, body: "ok", isBase64Encoded: false };
+  const handler = batchAdapter(async (evt) => {
+    return {
+      statusCode: 200,
+      headers: { "x-id": evt.requestContext.requestId },
+      body: "ok",
+      isBase64Encoded: false,
+    };
   });
 
-  const out = await handler({ v: 1, batch: [{ id: "a" }, { id: "b" }] });
+  const out = await handler({
+    v: 1,
+    batch: [{ requestContext: { requestId: "a" } }, { requestContext: { requestId: "b" } }],
+  });
   assert.equal(out.v, 1);
   assert.equal(out.responses.length, 2);
   assert.deepEqual(out.responses[0], {
@@ -22,10 +30,11 @@ test("batchAdapter returns v1 responses array", async () => {
   });
 });
 
-test("decodes base64 request bodies to Buffer", async () => {
-  const handler = batchAdapter(async (req) => {
-    assert.ok(Buffer.isBuffer(req.body));
-    assert.equal(req.body.toString("utf8"), "hello");
+test("passes request event items to user handler", async () => {
+  const handler = batchAdapter(async (evt) => {
+    assert.equal(evt.requestContext.requestId, "a");
+    assert.equal(evt.body, Buffer.from("hello", "utf8").toString("base64"));
+    assert.equal(evt.isBase64Encoded, true);
     return { statusCode: 200, headers: {}, body: "ok", isBase64Encoded: false };
   });
 
@@ -33,7 +42,7 @@ test("decodes base64 request bodies to Buffer", async () => {
     v: 1,
     batch: [
       {
-        id: "a",
+        requestContext: { requestId: "a" },
         body: Buffer.from("hello", "utf8").toString("base64"),
         isBase64Encoded: true,
       },
@@ -48,7 +57,7 @@ test("encodes Buffer response bodies as base64", async () => {
     return { statusCode: 200, headers: {}, body: Buffer.from("bin", "utf8") };
   });
 
-  const out = await handler({ v: 1, batch: [{ id: "a" }] });
+  const out = await handler({ v: 1, batch: [{ requestContext: { requestId: "a" } }] });
   assert.equal(out.responses[0].isBase64Encoded, true);
   assert.equal(Buffer.from(out.responses[0].body, "base64").toString("utf8"), "bin");
 });
@@ -70,19 +79,28 @@ test("limits handler concurrency", async () => {
 
   await handler({
     v: 1,
-    batch: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }],
+    batch: [
+      { requestContext: { requestId: "a" } },
+      { requestContext: { requestId: "b" } },
+      { requestContext: { requestId: "c" } },
+      { requestContext: { requestId: "d" } },
+      { requestContext: { requestId: "e" } },
+    ],
   });
 
   assert.ok(maxInFlight <= 2);
 });
 
 test("returns 500 for thrown handler errors", async () => {
-  const handler = batchAdapter(async (req) => {
-    if (req.id === "b") throw new Error("boom");
+  const handler = batchAdapter(async (evt) => {
+    if (evt.requestContext.requestId === "b") throw new Error("boom");
     return { statusCode: 200, headers: {}, body: "ok", isBase64Encoded: false };
   });
 
-  const out = await handler({ v: 1, batch: [{ id: "a" }, { id: "b" }] });
+  const out = await handler({
+    v: 1,
+    batch: [{ requestContext: { requestId: "a" } }, { requestContext: { requestId: "b" } }],
+  });
   const b = out.responses.find((r) => r.id === "b");
   assert.equal(b.statusCode, 500);
 });
@@ -106,13 +124,21 @@ test("batchAdapterStream writes NDJSON response records", async () => {
 
   const streamifyResponse = (fn) => fn;
   const handler = batchAdapterStream(
-    async (req) => {
-      return { statusCode: 200, headers: {}, body: req.id, isBase64Encoded: false };
+    async (evt) => {
+      return {
+        statusCode: 200,
+        headers: {},
+        body: evt.requestContext.requestId,
+        isBase64Encoded: false,
+      };
     },
     { streamifyResponse, concurrency: 2 },
   );
 
-  await handler({ v: 1, batch: [{ id: "a" }, { id: "b" }] }, responseStream);
+  await handler(
+    { v: 1, batch: [{ requestContext: { requestId: "a" } }, { requestContext: { requestId: "b" } }] },
+    responseStream,
+  );
 
   assert.equal(contentType, "application/x-ndjson");
   assert.equal(ended, true);

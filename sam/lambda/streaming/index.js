@@ -12,6 +12,12 @@ function decodeBody(item) {
   return Buffer.from(body, isB64 ? "base64" : "utf8");
 }
 
+function getRequestId(item) {
+  if (typeof item?.requestContext?.requestId === "string") return item.requestContext.requestId;
+  if (typeof item?.id === "string") return item.id;
+  return "";
+}
+
 exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
   if (typeof responseStream?.setContentType === "function") {
     responseStream.setContentType("application/x-ndjson");
@@ -23,19 +29,23 @@ exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
     // Write records in completion order.
     await Promise.all(
       batch.map(async (item) => {
-        const id = typeof item?.id === "string" ? item.id : "";
+        const id = getRequestId(item);
 
-        const sleepMs = item?.query?.sleep_ms ?? item?.headers?.["x-sleep-ms"] ?? 0;
+        const sleepMs =
+          item?.queryStringParameters?.sleep_ms ??
+          item?.query?.sleep_ms ??
+          item?.headers?.["x-sleep-ms"] ??
+          0;
         await sleep(sleepMs);
 
         const bodyBuf = decodeBody(item);
         const out = {
           ok: true,
           id,
-          method: item?.method ?? "",
-          path: item?.path ?? "",
-          route: item?.route ?? "",
-          query: item?.query ?? {},
+          method: item?.requestContext?.http?.method ?? item?.httpMethod ?? item?.method ?? "",
+          path: item?.rawPath ?? item?.path ?? "",
+          routeKey: item?.routeKey ?? item?.requestContext?.routeKey ?? "",
+          query: item?.queryStringParameters ?? item?.query ?? {},
           bodyUtf8: bodyBuf.toString("utf8"),
           sleptMs: Number(sleepMs) || 0,
         };
@@ -56,4 +66,3 @@ exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
     responseStream.end();
   }
 });
-

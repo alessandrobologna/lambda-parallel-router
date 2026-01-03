@@ -7,8 +7,9 @@
 ```js
 const { batchAdapter } = require("./index");
 
-async function handler(req) {
-  // `req.body` is a Buffer (decoded from base64 when `isBase64Encoded` is true).
+async function handler(event) {
+  // `event` is an API Gateway v2 (HTTP API) request event.
+  // Correlation id is available as `event.requestContext.requestId`.
   return { statusCode: 200, headers: { "content-type": "text/plain" }, body: "ok" };
 }
 
@@ -22,7 +23,7 @@ If your router operation uses `invoke_mode: response_stream`, export a streaming
 ```js
 const { batchAdapterStream } = require("./index");
 
-async function handler(req) {
+async function handler(event) {
   return { statusCode: 200, headers: { "content-type": "text/plain" }, body: "ok" };
 }
 
