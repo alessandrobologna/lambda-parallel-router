@@ -102,7 +102,7 @@ Client  ──HTTP──>  Router (axum)  ──Invoke/Stream──>  Lambda
 **Match output:**
 - `route_template` (string)
 - `operation_id` (optional)
-- `target_lambda` (ARN/name/alias)
+- `target_lambda` (ARN)
 - batching config
 - request transformation config
 

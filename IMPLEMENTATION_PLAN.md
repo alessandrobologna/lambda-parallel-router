@@ -154,7 +154,7 @@ This document is the implementation roadmap for the project spec in `http_microb
   - `batchAdapter` (buffered)
   - `batchAdapterStream` (response streaming)
 - Outputs:
-  - function name/ARNs to reference from `x-target-lambda` in the spec
+  - function ARNs to reference from `x-target-lambda` in the spec
 
 ### 5.2 Router runtime (App Runner or ECS)
 - Build/publish router container

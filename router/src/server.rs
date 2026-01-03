@@ -352,7 +352,7 @@ paths: {}
 paths:
   /hello:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
 "#,
             1024,
@@ -372,7 +372,7 @@ paths:
 paths:
   /hello:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
 "#,
             1024,
@@ -399,7 +399,7 @@ paths:
 paths:
   /hello:
     post:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
 "#,
             1,
@@ -425,7 +425,7 @@ paths:
 paths:
   /hello:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
 "#,
             1024,
@@ -505,7 +505,7 @@ paths:
 paths:
   /hello:
     post:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
 "#,
             1024,
@@ -565,7 +565,7 @@ paths:
 paths:
   /hello:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
 "#,
             1024,

@@ -9,6 +9,26 @@ use http::{HeaderName, Method};
 use matchit::Router;
 use serde::Deserialize;
 
+fn is_lambda_function_arn(value: &str) -> bool {
+    // Expected shape:
+    // arn:partition:lambda:region:account-id:function:function-name[:qualifier]
+    let value = value.trim();
+    if !value.starts_with("arn:") {
+        return false;
+    }
+    let parts: Vec<&str> = value.split(':').collect();
+    if parts.len() < 7 {
+        return false;
+    }
+    if parts[2] != "lambda" {
+        return false;
+    }
+    if parts[5] != "function" {
+        return false;
+    }
+    !parts[6].is_empty()
+}
+
 fn default_adaptive_target_rps() -> f64 {
     50.0
 }
@@ -130,7 +150,7 @@ pub struct Operation {
     pub operation_id: Option<String>,
 
     #[serde(rename = "x-target-lambda")]
-    /// Lambda function name or ARN.
+    /// Lambda function ARN.
     pub target_lambda: String,
 
     #[serde(rename = "x-lpr")]
@@ -313,6 +333,13 @@ fn add_op(
         return Ok(());
     };
 
+    if !is_lambda_function_arn(&op.target_lambda) {
+        anyhow::bail!(
+            "x-target-lambda must be a Lambda function ARN for {method} {route_template} (got: {})",
+            op.target_lambda
+        );
+    }
+
     if op.lpr.max_batch_size == 0 {
         anyhow::bail!("x-lpr.max_batch_size must be > 0 for {method} {route_template}");
     }
@@ -489,7 +516,7 @@ paths:
   /v1/items/{id}:
     get:
       operationId: getItem
-      x-target-lambda: my-fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
       x-lpr:
         max_wait_ms: 10
         max_batch_size: 16
@@ -503,7 +530,10 @@ paths:
         };
 
         assert_eq!(op.route_template, "/v1/items/{id}");
-        assert_eq!(op.target_lambda, "my-fn");
+        assert_eq!(
+            op.target_lambda,
+            "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        );
         assert_eq!(op.max_wait_ms, 10);
         assert_eq!(op.max_batch_size, 16);
         assert_eq!(op.timeout_ms, 2000);
@@ -522,10 +552,10 @@ paths:
 paths:
   /x:
     post:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
@@ -564,7 +594,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { max_wait_ms: 1, max_batch_size: 0 }
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
@@ -576,7 +606,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 1
         max_batch_size: 1
@@ -594,7 +624,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 1
         max_batch_size: 1
@@ -620,7 +650,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 1
         max_batch_size: 1
@@ -635,7 +665,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 1
         max_batch_size: 1
@@ -650,7 +680,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 1
         max_batch_size: 1
@@ -673,7 +703,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 1
         max_batch_size: 1
@@ -688,7 +718,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: "25"
         max_batch_size: "4"
@@ -709,7 +739,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 100
         max_batch_size: 2
@@ -739,7 +769,7 @@ paths:
 paths:
   /x:
     get:
-      x-target-lambda: fn
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
         max_wait_ms: 10
         max_batch_size: 2
