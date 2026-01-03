@@ -23,9 +23,18 @@ class RouterMacroTests(unittest.TestCase):
                             "ImageIdentifier": {"Ref": "RouterImageIdentifier"},
                             "Port": 8080,
                             "Environment": {"RUST_LOG": "debug"},
-                            "InvokeLambdaArns": [{"Fn::GetAtt": ["Fn", "Arn"]}],
                             "RouterConfig": {"max_inflight_invocations": 1},
-                            "Spec": {"openapi": "3.0.0", "paths": {}},
+                            "Spec": {
+                                "openapi": "3.0.0",
+                                "paths": {
+                                    "/hello": {
+                                        "get": {
+                                            "x-target-lambda": {"Fn::GetAtt": ["Fn", "Arn"]},
+                                            "x-lpr": {"max_wait_ms": 1, "max_batch_size": 1},
+                                        }
+                                    }
+                                },
+                            },
                         },
                     }
                 }
@@ -49,6 +58,11 @@ class RouterMacroTests(unittest.TestCase):
         self.assertIn("RouterLprInstanceRole", resources)
         self.assertEqual(resources["RouterLprInstanceRole"]["Type"], "AWS::IAM::Role")
 
+        policy_doc = resources["RouterLprInstanceRole"]["Properties"]["Policies"][0]["PolicyDocument"]
+        invoke_stmt = next(s for s in policy_doc["Statement"] if s.get("Sid") == "InvokeTargetLambdas")
+        self.assertEqual(invoke_stmt["Action"], ["lambda:InvokeFunction", "lambda:InvokeWithResponseStream"])
+        self.assertIn({"Fn::GetAtt": ["Fn", "Arn"]}, invoke_stmt["Resource"])
+
         svc_env = (
             resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
                 "RuntimeEnvironmentVariables"
@@ -58,7 +72,7 @@ class RouterMacroTests(unittest.TestCase):
         self.assertEqual(env_map["RUST_LOG"], "debug")
         self.assertIn("LPR_CONFIG_S3_URI", env_map)
 
-    def test_rejects_instance_role_and_invoke_list(self) -> None:
+    def test_allows_instance_role_override(self) -> None:
         event = {
             "requestId": "req-2",
             "fragment": {
@@ -68,9 +82,18 @@ class RouterMacroTests(unittest.TestCase):
                         "Properties": {
                             "ImageIdentifier": "x",
                             "InstanceRoleArn": "arn:aws:iam::123:role/Existing",
-                            "InvokeLambdaArns": ["arn:aws:lambda:us-east-1:123:function:fn"],
                             "RouterConfig": {},
-                            "Spec": {"openapi": "3.0.0", "paths": {}},
+                            "Spec": {
+                                "openapi": "3.0.0",
+                                "paths": {
+                                    "/hello": {
+                                        "get": {
+                                            "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
+                                            "x-lpr": {"max_wait_ms": 1, "max_batch_size": 1},
+                                        }
+                                    }
+                                },
+                            },
                         },
                     }
                 }
@@ -78,7 +101,13 @@ class RouterMacroTests(unittest.TestCase):
         }
 
         out = app.handler(event, context=None)
-        self.assertEqual(out["status"], "failed")
+        self.assertEqual(out["status"], "success")
+        resources = out["fragment"]["Resources"]
+        self.assertNotIn("RouterLprInstanceRole", resources)
+        self.assertEqual(
+            resources["Router"]["Properties"]["InstanceConfiguration"]["InstanceRoleArn"],
+            "arn:aws:iam::123:role/Existing",
+        )
 
 
 if __name__ == "__main__":

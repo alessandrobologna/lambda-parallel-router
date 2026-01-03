@@ -51,6 +51,40 @@ def _ensure_no_collision(resources: Mapping[str, Any], logical_id: str) -> None:
             f"Macro expansion would overwrite an existing resource '{logical_id}'."
         )
 
+def _collect_target_lambda_arns(spec: Mapping[str, Any]) -> list[Any]:
+    paths = spec.get("paths") or {}
+    if not isinstance(paths, dict):
+        raise ValueError("Spec.paths must be an object.")
+
+    found: list[Any] = []
+    for path_item in paths.values():
+        if not isinstance(path_item, dict):
+            continue
+        for op in path_item.values():
+            if not isinstance(op, dict):
+                continue
+            if "x-target-lambda" not in op:
+                continue
+            target = op["x-target-lambda"]
+            if not isinstance(target, (str, dict)):
+                raise ValueError("x-target-lambda must be a string or an intrinsic function object.")
+            if isinstance(target, str) and not target.startswith("arn:"):
+                raise ValueError(
+                    f"x-target-lambda must be a Lambda function ARN (got: {target!r})."
+                )
+            found.append(target)
+
+    # De-duplicate while preserving order.
+    out: list[Any] = []
+    seen: set[str] = set()
+    for v in found:
+        key = v if isinstance(v, str) else json.dumps(v, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(v)
+    return out
+
 
 def _expand_router_service(
     *,
@@ -82,15 +116,8 @@ def _expand_router_service(
     if not isinstance(env, dict):
         raise ValueError(f"{logical_id}.Properties.Environment must be an object.")
 
-    invoke_lambda_arns = props.get("InvokeLambdaArns") or []
-    if not isinstance(invoke_lambda_arns, list):
-        raise ValueError(f"{logical_id}.Properties.InvokeLambdaArns must be a list.")
-
     instance_role_arn = props.get("InstanceRoleArn")
-    if instance_role_arn is not None and invoke_lambda_arns:
-        raise ValueError(
-            f"{logical_id}: cannot set both InstanceRoleArn and InvokeLambdaArns (macro can't attach policies to an imported role)."
-        )
+    invoke_lambda_arns = _collect_target_lambda_arns(spec)
 
     service_name = props.get("ServiceName")
 
@@ -263,4 +290,3 @@ def handler(event: Mapping[str, Any], context: Any) -> Dict[str, Any]:
             "errorMessage": str(exc),
             "fragment": fragment,
         }
-

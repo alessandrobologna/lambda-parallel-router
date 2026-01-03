@@ -47,9 +47,6 @@ Resources:
       Port: 8080
       Environment:
         RUST_LOG: info
-      InvokeLambdaArns:
-        - !GetAtt SampleBufferedFunction.Arn
-        - !GetAtt SampleStreamingFunction.Arn
       RouterConfig: {}
       Spec:
         openapi: 3.0.0
