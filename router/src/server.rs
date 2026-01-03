@@ -132,7 +132,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
     let method = parts.method.clone();
     let path = parts.uri.path().to_string();
 
-    let op = match state.spec.match_request(&method, &path) {
+    let (op, path_params) = match state.spec.match_request(&method, &path) {
         RouteMatch::NotFound => return RouterResponse::text(StatusCode::NOT_FOUND, "not found"),
         RouteMatch::MethodNotAllowed { allowed } => {
             let mut resp =
@@ -148,7 +148,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
             }
             return resp;
         }
-        RouteMatch::Matched(op) => op.clone(),
+        RouteMatch::Matched { op, path_params } => (op.clone(), path_params),
     };
 
     let body = match to_bytes(body, state.max_body_bytes).await {
@@ -167,8 +167,9 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
     }
 
     let mut query = HashMap::new();
-    if let Some(q) = parts.uri.query() {
-        for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
+    let raw_query_string = parts.uri.query().unwrap_or("").to_string();
+    if !raw_query_string.is_empty() {
+        for (k, v) in url::form_urlencoded::parse(raw_query_string.as_bytes()) {
             query.insert(k.into_owned(), v.into_owned());
         }
     }
@@ -180,8 +181,10 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
         method,
         path,
         route: op.route_template.clone(),
+        path_params,
         headers,
         query,
+        raw_query_string,
         body,
         respond_to: tx,
     };
@@ -225,15 +228,8 @@ mod tests {
         ) -> anyhow::Result<LambdaInvokeResult> {
             assert_eq!(mode, InvokeMode::Buffered);
 
-            #[derive(serde::Deserialize)]
-            struct In {
-                batch: Vec<InItem>,
-            }
-            #[derive(serde::Deserialize)]
-            struct InItem {
-                id: String,
-            }
-            let input: In = serde_json::from_slice(&payload)?;
+            let input: serde_json::Value = serde_json::from_slice(&payload)?;
+            let batch = input["batch"].as_array().expect("batch array");
 
             #[derive(serde::Serialize)]
             struct Out {
@@ -252,11 +248,13 @@ mod tests {
             }
             let out = Out {
                 v: 1,
-                responses: input
-                    .batch
+                responses: batch
                     .iter()
                     .map(|item| OutItem {
-                        id: item.id.clone(),
+                        id: item["requestContext"]["requestId"]
+                            .as_str()
+                            .expect("requestId")
+                            .to_string(),
                         status_code: 200,
                         headers: HashMap::new(),
                         body: "ok".to_string(),
@@ -470,17 +468,22 @@ paths:
             let batch = v["batch"].as_array().unwrap();
             assert_eq!(batch.len(), 1);
             let item = &batch[0];
-            assert_eq!(item["method"], "POST");
-            assert_eq!(item["path"], "/hello");
-            assert_eq!(item["route"], "/hello");
-            assert_eq!(item["query"]["x"], "1");
-            assert_eq!(item["query"]["y"], "2");
+            assert_eq!(item["version"], "2.0");
+            assert_eq!(item["routeKey"], "POST /hello");
+            assert_eq!(item["rawPath"], "/hello");
+            assert_eq!(item["rawQueryString"], "x=1&y=2");
+            assert_eq!(item["queryStringParameters"]["x"], "1");
+            assert_eq!(item["queryStringParameters"]["y"], "2");
             assert_eq!(item["headers"]["x-foo"], "bar");
             assert!(item["headers"]["connection"].is_null());
-            assert_eq!(item["isBase64Encoded"], true);
-            assert_eq!(item["body"], "aGk=");
+            assert_eq!(item["isBase64Encoded"], false);
+            assert_eq!(item["body"], "hi");
 
-            let id = item["id"].as_str().unwrap();
+            assert_eq!(item["requestContext"]["http"]["method"], "POST");
+            assert_eq!(item["requestContext"]["http"]["path"], "/hello");
+            assert_eq!(item["requestContext"]["routeKey"], "POST /hello");
+
+            let id = item["requestContext"]["requestId"].as_str().unwrap();
             let out = serde_json::json!({
               "v": 1,
               "responses": [
@@ -541,7 +544,7 @@ paths:
             assert_eq!(item["headers"]["x-allow"], "1");
             assert!(item["headers"]["x-other"].is_null());
 
-            let id = item["id"].as_str().unwrap();
+            let id = item["requestContext"]["requestId"].as_str().unwrap();
             let out = serde_json::json!({
               "v": 1,
               "responses": [

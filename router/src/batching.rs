@@ -60,8 +60,12 @@ pub struct PendingRequest {
     pub path: String,
     /// The matched OpenAPI route template (e.g. `/v1/items/{id}`).
     pub route: String,
+    /// Path parameters extracted from the route template (e.g. `{ "id": "123" }`).
+    pub path_params: HashMap<String, String>,
     pub headers: HashMap<String, String>,
     pub query: HashMap<String, String>,
+    /// Raw query string as received (without the leading `?`).
+    pub raw_query_string: String,
     pub body: Bytes,
     pub respond_to: oneshot::Sender<RouterResponse>,
 }
@@ -214,16 +218,66 @@ struct BatcherRuntime {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BatchItem {
+    /// Router-generated request identifier (used for correlating batch responses).
+    ///
+    /// This is serialized into the request event as `requestContext.requestId`.
+    #[serde(skip_serializing)]
     id: String,
-    method: String,
-    path: String,
-    route: String,
+    /// Top-level HTTP method (not part of the official HTTP API v2.0 event shape, but included
+    /// for compatibility with common Lambda event structs).
+    http_method: String,
+    version: &'static str,
+    route_key: String,
+    raw_path: String,
+    raw_query_string: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cookies: Option<Vec<String>>,
     headers: HashMap<String, String>,
-    query: HashMap<String, String>,
-    body: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    query_string_parameters: HashMap<String, String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    path_parameters: HashMap<String, String>,
+    request_context: ApiGatewayV2RequestContext,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    stage_variables: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
     #[serde(rename = "isBase64Encoded")]
     is_base64_encoded: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiGatewayV2RequestContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domain_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domain_prefix: Option<String>,
+    route_key: String,
+    stage: &'static str,
+    request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time: Option<String>,
+    time_epoch: i64,
+    http: ApiGatewayV2HttpDescription,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiGatewayV2HttpDescription {
+    method: String,
+    path: String,
+    protocol: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,14 +331,7 @@ async fn batcher_task(
         )
         .await;
     } else {
-        batcher_task_fixed(
-            &key,
-            cfg.max_wait_ms,
-            cfg.max_batch_size,
-            rx,
-            &runtime,
-        )
-        .await;
+        batcher_task_fixed(&key, cfg.max_wait_ms, cfg.max_batch_size, rx, &runtime).await;
     }
 
     batchers.remove(&key);
@@ -480,27 +527,57 @@ async fn flush_batch(
     estimated_rps: Option<f64>,
     batch: Vec<PendingRequest>,
 ) {
-    let mut pending: HashMap<String, oneshot::Sender<RouterResponse>> = HashMap::new();
-    let mut batch_items = Vec::with_capacity(batch.len());
-    for req in batch {
-        let body_b64 = STANDARD.encode(&req.body);
-        pending.insert(req.id.clone(), req.respond_to);
-        batch_items.push(BatchItem {
-            id: req.id,
-            method: req.method.to_string(),
-            path: req.path,
-            route: req.route,
-            headers: req.headers,
-            query: req.query,
-            body: body_b64,
-            is_base64_encoded: true,
-        });
-    }
-
     let received_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
+
+    let mut pending: HashMap<String, oneshot::Sender<RouterResponse>> = HashMap::new();
+    let mut batch_items = Vec::with_capacity(batch.len());
+    for req in batch {
+        let id = req.id;
+        pending.insert(id.clone(), req.respond_to);
+
+        let route_key = format!("{} {}", req.method, req.route);
+        let source_ip = extract_source_ip(&req.headers);
+        let user_agent = req.headers.get("user-agent").cloned();
+        let cookies = parse_cookie_header(&req.headers);
+        let (body, is_base64_encoded) = encode_body(&req.body);
+
+        batch_items.push(BatchItem {
+            id: id.clone(),
+            http_method: req.method.to_string(),
+            version: "2.0",
+            route_key: route_key.clone(),
+            raw_path: req.path.clone(),
+            raw_query_string: req.raw_query_string,
+            cookies,
+            headers: req.headers,
+            query_string_parameters: req.query,
+            path_parameters: req.path_params,
+            request_context: ApiGatewayV2RequestContext {
+                account_id: None,
+                api_id: None,
+                domain_name: None,
+                domain_prefix: None,
+                route_key: route_key.clone(),
+                stage: "$default",
+                request_id: id,
+                time: None,
+                time_epoch: received_at_ms as i64,
+                http: ApiGatewayV2HttpDescription {
+                    method: req.method.to_string(),
+                    path: req.path,
+                    protocol: "HTTP/1.1",
+                    source_ip,
+                    user_agent,
+                },
+            },
+            stage_variables: HashMap::new(),
+            body,
+            is_base64_encoded,
+        });
+    }
 
     for plan in plan_invocations(
         key,
@@ -557,6 +634,47 @@ async fn flush_batch(
             }
         }
     }
+}
+
+fn encode_body(body: &Bytes) -> (Option<String>, bool) {
+    if body.is_empty() {
+        return (None, false);
+    }
+
+    // JSON strings must escape control characters; a binary body that happens to be valid UTF-8
+    // (e.g. many `\0` bytes) can balloon in size when serialized. Prefer base64 for such bodies.
+    if memchr(b'\0', body.as_ref()).is_some() {
+        return (Some(STANDARD.encode(body.as_ref())), true);
+    }
+
+    match std::str::from_utf8(body.as_ref()) {
+        Ok(s) => (Some(s.to_string()), false),
+        Err(_) => (Some(STANDARD.encode(body.as_ref())), true),
+    }
+}
+
+fn parse_cookie_header(headers: &HashMap<String, String>) -> Option<Vec<String>> {
+    let header_value = headers.get("cookie")?;
+    let cookies: Vec<String> = header_value
+        .split(';')
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .collect();
+    if cookies.is_empty() {
+        None
+    } else {
+        Some(cookies)
+    }
+}
+
+fn extract_source_ip(headers: &HashMap<String, String>) -> Option<String> {
+    let forwarded = headers.get("x-forwarded-for")?;
+    forwarded
+        .split(',')
+        .next()
+        .map(|ip| ip.trim().to_string())
+        .filter(|ip| !ip.is_empty())
 }
 
 enum InvocationPlan {
@@ -906,6 +1024,7 @@ mod tests {
     use crate::lambda::LambdaInvoker;
     use crate::spec::InvokeMode;
     use async_trait::async_trait;
+    use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn pending(id: &str) -> (PendingRequest, oneshot::Receiver<RouterResponse>) {
@@ -923,13 +1042,80 @@ mod tests {
                 method: Method::GET,
                 path: "/hello".to_string(),
                 route: "/hello".to_string(),
+                path_params: HashMap::new(),
                 headers: HashMap::new(),
                 query: HashMap::new(),
+                raw_query_string: String::new(),
                 body,
                 respond_to: tx,
             },
             rx,
         )
+    }
+
+    #[test]
+    fn batch_items_deserialize_as_apigw_v2_events() {
+        #[derive(Deserialize)]
+        struct Envelope {
+            v: u8,
+            batch: Vec<ApiGatewayV2httpRequest>,
+        }
+
+        let key = BatchKey {
+            target_lambda: "fn".to_string(),
+            method: Method::GET,
+            route: "/hello".to_string(),
+            invoke_mode: InvokeMode::Buffered,
+            key_values: vec![],
+        };
+
+        let item = BatchItem {
+            id: "r-1".to_string(),
+            http_method: "GET".to_string(),
+            version: "2.0",
+            route_key: "GET /hello".to_string(),
+            raw_path: "/hello".to_string(),
+            raw_query_string: "x=1".to_string(),
+            cookies: None,
+            headers: HashMap::from([("x-foo".to_string(), "bar".to_string())]),
+            query_string_parameters: HashMap::from([("x".to_string(), "1".to_string())]),
+            path_parameters: HashMap::new(),
+            request_context: ApiGatewayV2RequestContext {
+                account_id: None,
+                api_id: None,
+                domain_name: None,
+                domain_prefix: None,
+                route_key: "GET /hello".to_string(),
+                stage: "$default",
+                request_id: "r-1".to_string(),
+                time: None,
+                time_epoch: 1_700_000_000_000,
+                http: ApiGatewayV2HttpDescription {
+                    method: "GET".to_string(),
+                    path: "/hello".to_string(),
+                    protocol: "HTTP/1.1",
+                    source_ip: None,
+                    user_agent: None,
+                },
+            },
+            stage_variables: HashMap::new(),
+            body: Some("hi".to_string()),
+            is_base64_encoded: false,
+        };
+
+        let payload = build_payload_bytes(&key, 1_700_000_000_000, &[item]).unwrap();
+        let env: Envelope = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(env.v, 1);
+        assert_eq!(env.batch.len(), 1);
+        let evt = &env.batch[0];
+
+        assert_eq!(evt.version.as_deref(), Some("2.0"));
+        assert_eq!(evt.route_key.as_deref(), Some("GET /hello"));
+        assert_eq!(evt.raw_path.as_deref(), Some("/hello"));
+        assert_eq!(evt.raw_query_string.as_deref(), Some("x=1"));
+        assert_eq!(evt.request_context.request_id.as_deref(), Some("r-1"));
+        assert_eq!(evt.request_context.http.method, Method::GET);
+        assert_eq!(evt.http_method, Method::GET);
     }
 
     struct EchoInvoker {
@@ -947,15 +1133,8 @@ mod tests {
             assert_eq!(mode, InvokeMode::Buffered);
             self.calls.fetch_add(1, Ordering::SeqCst);
 
-            #[derive(Deserialize)]
-            struct In {
-                batch: Vec<InItem>,
-            }
-            #[derive(Deserialize)]
-            struct InItem {
-                id: String,
-            }
-            let input: In = serde_json::from_slice(&payload)?;
+            let input: serde_json::Value = serde_json::from_slice(&payload)?;
+            let batch = input["batch"].as_array().expect("batch array");
 
             #[derive(Serialize)]
             struct Out {
@@ -974,11 +1153,13 @@ mod tests {
             }
             let out = Out {
                 v: 1,
-                responses: input
-                    .batch
+                responses: batch
                     .iter()
                     .map(|item| OutItem {
-                        id: item.id.clone(),
+                        id: item["requestContext"]["requestId"]
+                            .as_str()
+                            .expect("requestId")
+                            .to_string(),
                         status_code: 200,
                         headers: HashMap::new(),
                         body: "ok".to_string(),
@@ -1048,8 +1229,10 @@ mod tests {
                 method: Method::GET,
                 path: "/hello".to_string(),
                 route: "/hello".to_string(),
+                path_params: HashMap::new(),
                 headers: HashMap::new(),
                 query: HashMap::new(),
+                raw_query_string: String::new(),
                 body: Bytes::new(),
                 respond_to: tx1,
             },
@@ -1064,8 +1247,10 @@ mod tests {
                 method: Method::GET,
                 path: "/hello".to_string(),
                 route: "/hello".to_string(),
+                path_params: HashMap::new(),
                 headers: HashMap::new(),
                 query: HashMap::new(),
+                raw_query_string: String::new(),
                 body: Bytes::new(),
                 respond_to: tx2,
             },
@@ -1103,8 +1288,10 @@ mod tests {
                 method: Method::GET,
                 path: "/hello".to_string(),
                 route: "/hello".to_string(),
+                path_params: HashMap::new(),
                 headers: HashMap::new(),
                 query: HashMap::new(),
+                raw_query_string: String::new(),
                 body: Bytes::new(),
                 respond_to: tx,
             },
@@ -1138,7 +1325,9 @@ mod tests {
             let responses = batch
                 .iter()
                 .map(|item| {
-                    let id = item["id"].as_str().expect("id");
+                    let id = item["requestContext"]["requestId"]
+                        .as_str()
+                        .expect("requestId");
                     serde_json::json!({
                       "id": id,
                       "statusCode": 200,
@@ -1526,32 +1715,101 @@ mod tests {
 
         let item_a_one = BatchItem {
             id: "a".to_string(),
-            method: "GET".to_string(),
-            path: "/hello".to_string(),
-            route: "/hello".to_string(),
+            http_method: "GET".to_string(),
+            version: "2.0",
+            route_key: "GET /hello".to_string(),
+            raw_path: "/hello".to_string(),
+            raw_query_string: String::new(),
+            cookies: None,
             headers: HashMap::new(),
-            query: HashMap::new(),
-            body: body_b64.clone(),
+            query_string_parameters: HashMap::new(),
+            path_parameters: HashMap::new(),
+            request_context: ApiGatewayV2RequestContext {
+                account_id: None,
+                api_id: None,
+                domain_name: None,
+                domain_prefix: None,
+                route_key: "GET /hello".to_string(),
+                stage: "$default",
+                request_id: "a".to_string(),
+                time: None,
+                time_epoch: 1_700_000_000_000,
+                http: ApiGatewayV2HttpDescription {
+                    method: "GET".to_string(),
+                    path: "/hello".to_string(),
+                    protocol: "HTTP/1.1",
+                    source_ip: None,
+                    user_agent: None,
+                },
+            },
+            stage_variables: HashMap::new(),
+            body: Some(body_b64.clone()),
             is_base64_encoded: true,
         };
         let item_a_two = BatchItem {
             id: "a".to_string(),
-            method: "GET".to_string(),
-            path: "/hello".to_string(),
-            route: "/hello".to_string(),
+            http_method: "GET".to_string(),
+            version: "2.0",
+            route_key: "GET /hello".to_string(),
+            raw_path: "/hello".to_string(),
+            raw_query_string: String::new(),
+            cookies: None,
             headers: HashMap::new(),
-            query: HashMap::new(),
-            body: body_b64.clone(),
+            query_string_parameters: HashMap::new(),
+            path_parameters: HashMap::new(),
+            request_context: ApiGatewayV2RequestContext {
+                account_id: None,
+                api_id: None,
+                domain_name: None,
+                domain_prefix: None,
+                route_key: "GET /hello".to_string(),
+                stage: "$default",
+                request_id: "a".to_string(),
+                time: None,
+                time_epoch: 1_700_000_000_000,
+                http: ApiGatewayV2HttpDescription {
+                    method: "GET".to_string(),
+                    path: "/hello".to_string(),
+                    protocol: "HTTP/1.1",
+                    source_ip: None,
+                    user_agent: None,
+                },
+            },
+            stage_variables: HashMap::new(),
+            body: Some(body_b64.clone()),
             is_base64_encoded: true,
         };
         let item_b_two = BatchItem {
             id: "b".to_string(),
-            method: "GET".to_string(),
-            path: "/hello".to_string(),
-            route: "/hello".to_string(),
+            http_method: "GET".to_string(),
+            version: "2.0",
+            route_key: "GET /hello".to_string(),
+            raw_path: "/hello".to_string(),
+            raw_query_string: String::new(),
+            cookies: None,
             headers: HashMap::new(),
-            query: HashMap::new(),
-            body: body_b64,
+            query_string_parameters: HashMap::new(),
+            path_parameters: HashMap::new(),
+            request_context: ApiGatewayV2RequestContext {
+                account_id: None,
+                api_id: None,
+                domain_name: None,
+                domain_prefix: None,
+                route_key: "GET /hello".to_string(),
+                stage: "$default",
+                request_id: "b".to_string(),
+                time: None,
+                time_epoch: 1_700_000_000_000,
+                http: ApiGatewayV2HttpDescription {
+                    method: "GET".to_string(),
+                    path: "/hello".to_string(),
+                    protocol: "HTTP/1.1",
+                    source_ip: None,
+                    user_agent: None,
+                },
+            },
+            stage_variables: HashMap::new(),
+            body: Some(body_b64),
             is_base64_encoded: true,
         };
 
@@ -1608,12 +1866,35 @@ mod tests {
         let received_at_ms = 1_700_000_000_000u64;
         let item = BatchItem {
             id: "a".to_string(),
-            method: "GET".to_string(),
-            path: "/hello".to_string(),
-            route: "/hello".to_string(),
+            http_method: "GET".to_string(),
+            version: "2.0",
+            route_key: "GET /hello".to_string(),
+            raw_path: "/hello".to_string(),
+            raw_query_string: String::new(),
+            cookies: None,
             headers: HashMap::new(),
-            query: HashMap::new(),
-            body: body_b64,
+            query_string_parameters: HashMap::new(),
+            path_parameters: HashMap::new(),
+            request_context: ApiGatewayV2RequestContext {
+                account_id: None,
+                api_id: None,
+                domain_name: None,
+                domain_prefix: None,
+                route_key: "GET /hello".to_string(),
+                stage: "$default",
+                request_id: "a".to_string(),
+                time: None,
+                time_epoch: received_at_ms as i64,
+                http: ApiGatewayV2HttpDescription {
+                    method: "GET".to_string(),
+                    path: "/hello".to_string(),
+                    protocol: "HTTP/1.1",
+                    source_ip: None,
+                    user_agent: None,
+                },
+            },
+            stage_variables: HashMap::new(),
+            body: Some(body_b64),
             is_base64_encoded: true,
         };
         let one_len = build_payload_bytes(&key, received_at_ms, &[item])
@@ -1725,8 +2006,10 @@ mod tests {
                 method: Method::GET,
                 path: "/hello".to_string(),
                 route: "/hello".to_string(),
+                path_params: HashMap::new(),
                 headers: HashMap::new(),
                 query: HashMap::new(),
+                raw_query_string: String::new(),
                 body: Bytes::new(),
                 respond_to: tx_a,
             },
@@ -1741,8 +2024,10 @@ mod tests {
                 method: Method::GET,
                 path: "/hello".to_string(),
                 route: "/hello".to_string(),
+                path_params: HashMap::new(),
                 headers: HashMap::new(),
                 query: HashMap::new(),
+                raw_query_string: String::new(),
                 body: Bytes::new(),
                 respond_to: tx_b,
             },

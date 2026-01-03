@@ -197,7 +197,10 @@ pub enum RouteMatch<'a> {
     /// Path matched but method wasn't configured.
     MethodNotAllowed { allowed: Vec<Method> },
     /// Path+method matched and produced an operation config.
-    Matched(&'a OperationConfig),
+    Matched {
+        op: &'a OperationConfig,
+        path_params: HashMap<String, String>,
+    },
 }
 
 impl CompiledSpec {
@@ -216,7 +219,13 @@ impl CompiledSpec {
         };
 
         match matched.value.ops_by_method.get(method) {
-            Some(op) => RouteMatch::Matched(op),
+            Some(op) => {
+                let mut path_params = HashMap::new();
+                for (k, v) in matched.params.iter() {
+                    path_params.insert(k.to_string(), v.to_string());
+                }
+                RouteMatch::Matched { op, path_params }
+            }
             None => RouteMatch::MethodNotAllowed {
                 allowed: {
                     let mut methods: Vec<Method> =
@@ -487,7 +496,9 @@ paths:
         timeout_ms: 2000
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 2500).unwrap();
-        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/v1/items/123") else {
+        let RouteMatch::Matched { op, path_params } =
+            spec.match_request(&Method::GET, "/v1/items/123")
+        else {
             panic!("expected route match");
         };
 
@@ -497,6 +508,7 @@ paths:
         assert_eq!(op.max_batch_size, 16);
         assert_eq!(op.timeout_ms, 2000);
         assert_eq!(op.operation_id.as_deref(), Some("getItem"));
+        assert_eq!(path_params.get("id").map(String::as_str), Some("123"));
 
         assert!(matches!(
             spec.match_request(&Method::POST, "/v1/items/123"),
@@ -570,7 +582,7 @@ paths:
         max_batch_size: 1
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
-        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+        let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
             panic!("expected match");
         };
         assert_eq!(op.invoke_mode, InvokeMode::Buffered);
@@ -590,7 +602,7 @@ paths:
           - header:X-Tenant-Id
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
-        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+        let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
             panic!("expected match");
         };
         assert_eq!(op.key.len(), 1);
@@ -646,7 +658,7 @@ paths:
           - query:version
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
-        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+        let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
             panic!("expected match");
         };
         assert_eq!(
@@ -683,7 +695,7 @@ paths:
         timeout_ms: "123"
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
-        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+        let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
             panic!("expected match");
         };
         assert_eq!(op.max_wait_ms, 25);
@@ -709,7 +721,7 @@ paths:
           smoothing_samples: 10
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
-        let RouteMatch::Matched(op) = spec.match_request(&Method::GET, "/x") else {
+        let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
             panic!("expected match");
         };
 
