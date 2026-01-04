@@ -20,12 +20,7 @@ function getRequestId(item) {
 
 function parseDelayMs(item) {
   const query = item?.queryStringParameters ?? item?.query ?? {};
-  const raw =
-    query?.max_delay_ms ??
-    query?.max_delay ??
-    query?.sleep_ms ??
-    item?.headers?.["x-max-delay-ms"] ??
-    0;
+  const raw = query?.["max-delay"] ?? 0;
 
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 0;
