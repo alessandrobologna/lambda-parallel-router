@@ -25,7 +25,6 @@ function parseDelayMs(item) {
     query?.max_delay ??
     query?.sleep_ms ??
     item?.headers?.["x-max-delay-ms"] ??
-    item?.headers?.["x-sleep-ms"] ??
     0;
 
   const n = Number(raw);
