@@ -4,7 +4,11 @@
 //! - `/healthz` and `/readyz`
 //! - a catch-all handler that performs route matching and enqueues requests for batching
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     body::{to_bytes, Body},
@@ -214,6 +218,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
         }
     }
 
+    let wait_started = Instant::now();
     let timeout = Duration::from_millis(op.timeout_ms);
     match tokio::time::timeout(timeout, rx).await {
         Ok(Ok(resp)) => resp,
@@ -227,11 +232,13 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
             RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response")
         }
         Err(_) => {
+            let elapsed_ms = wait_started.elapsed().as_millis();
             tracing::warn!(
                 event = "request_timeout",
                 method = %method_str,
                 route = %op.route_template,
                 timeout_ms = op.timeout_ms,
+                elapsed_ms = elapsed_ms,
                 "request timed out waiting for batch response"
             );
             RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout")

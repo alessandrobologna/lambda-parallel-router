@@ -61,6 +61,7 @@ Resources:
                 max_wait_ms: 25
                 max_batch_size: 4
                 invoke_mode: buffered
+                timeout_ms: 8000
           /hello-adaptive:
             get:
               x-target-lambda: !GetAtt SampleBufferedFunction.Arn
@@ -68,6 +69,7 @@ Resources:
                 max_wait_ms: 100
                 max_batch_size: 16
                 invoke_mode: buffered
+                timeout_ms: 8000
                 adaptive_wait:
                   min_wait_ms: 1
                   target_rps: 50
@@ -81,6 +83,7 @@ Resources:
                 max_wait_ms: 25
                 max_batch_size: 4
                 invoke_mode: response_stream
+                timeout_ms: 8000
 
 Outputs:
   SampleBufferedFunctionArn:
