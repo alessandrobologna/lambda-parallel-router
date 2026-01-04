@@ -18,6 +18,34 @@ function getRequestId(item) {
   return "";
 }
 
+function parseDelayMs(item) {
+  const query = item?.queryStringParameters ?? item?.query ?? {};
+  const raw =
+    query?.max_delay_ms ??
+    query?.max_delay ??
+    query?.sleep_ms ??
+    item?.headers?.["x-max-delay-ms"] ??
+    item?.headers?.["x-sleep-ms"] ??
+    0;
+
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // Keep the demo from accidentally sleeping for a very long time.
+  return Math.min(Math.floor(n), 10_000);
+}
+
+function deterministicJitterMs(seed, maxDelayMs) {
+  if (!maxDelayMs) return 0;
+  const s = typeof seed === "string" ? seed : String(seed ?? "");
+  let hash = 2166136261;
+  for (let i = 0; i < s.length; i += 1) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const n = hash >>> 0;
+  return n % (maxDelayMs + 1);
+}
+
 exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
   if (typeof responseStream?.setContentType === "function") {
     responseStream.setContentType("application/x-ndjson");
@@ -31,12 +59,9 @@ exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
       batch.map(async (item) => {
         const id = getRequestId(item);
 
-        const sleepMs =
-          item?.queryStringParameters?.sleep_ms ??
-          item?.query?.sleep_ms ??
-          item?.headers?.["x-sleep-ms"] ??
-          0;
-        await sleep(sleepMs);
+        const maxDelayMs = parseDelayMs(item);
+        const delayMs = deterministicJitterMs(id, maxDelayMs);
+        await sleep(delayMs);
 
         const bodyBuf = decodeBody(item);
         const out = {
@@ -47,7 +72,8 @@ exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
           routeKey: item?.routeKey ?? item?.requestContext?.routeKey ?? "",
           query: item?.queryStringParameters ?? item?.query ?? {},
           bodyUtf8: bodyBuf.toString("utf8"),
-          sleptMs: Number(sleepMs) || 0,
+          maxDelayMs,
+          delayMs,
         };
 
         const record = {
