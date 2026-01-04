@@ -130,6 +130,7 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
 async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
+    let method_str = method.as_str().to_string();
     let path = parts.uri.path().to_string();
 
     let (op, path_params) = match state.spec.match_request(&method, &path) {
@@ -195,7 +196,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
             tracing::warn!(
                 event = "enqueue_rejected",
                 reason = "queue_full",
-                method = %method,
+                method = %method_str,
                 route = %op.route_template,
                 "request rejected"
             );
@@ -205,7 +206,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
             tracing::warn!(
                 event = "enqueue_rejected",
                 reason = "batcher_closed",
-                method = %method,
+                method = %method_str,
                 route = %op.route_template,
                 "request rejected"
             );
@@ -219,7 +220,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
         Ok(Err(_)) => {
             tracing::warn!(
                 event = "response_dropped",
-                method = %method,
+                method = %method_str,
                 route = %op.route_template,
                 "response channel dropped"
             );
@@ -228,7 +229,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
         Err(_) => {
             tracing::warn!(
                 event = "request_timeout",
-                method = %method,
+                method = %method_str,
                 route = %op.route_template,
                 timeout_ms = op.timeout_ms,
                 "request timed out waiting for batch response"
