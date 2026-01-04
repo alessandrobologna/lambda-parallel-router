@@ -192,18 +192,49 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
     match state.batchers.enqueue(&op, pending) {
         Ok(()) => {}
         Err(EnqueueError::QueueFull) => {
-            return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "queue full")
+            tracing::warn!(
+                event = "enqueue_rejected",
+                reason = "queue_full",
+                method = %method,
+                route = %op.route_template,
+                "request rejected"
+            );
+            return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "queue full");
         }
         Err(EnqueueError::BatcherClosed) => {
-            return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "batcher closed")
+            tracing::warn!(
+                event = "enqueue_rejected",
+                reason = "batcher_closed",
+                method = %method,
+                route = %op.route_template,
+                "request rejected"
+            );
+            return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "batcher closed");
         }
     }
 
     let timeout = Duration::from_millis(op.timeout_ms);
     match tokio::time::timeout(timeout, rx).await {
         Ok(Ok(resp)) => resp,
-        Ok(Err(_)) => RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response"),
-        Err(_) => RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout"),
+        Ok(Err(_)) => {
+            tracing::warn!(
+                event = "response_dropped",
+                method = %method,
+                route = %op.route_template,
+                "response channel dropped"
+            );
+            RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response")
+        }
+        Err(_) => {
+            tracing::warn!(
+                event = "request_timeout",
+                method = %method,
+                route = %op.route_template,
+                timeout_ms = op.timeout_ms,
+                "request timed out waiting for batch response"
+            );
+            RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout")
+        }
     }
 }
 
