@@ -28,18 +28,6 @@ function parseDelayMs(item) {
   return Math.min(Math.floor(n), 10_000);
 }
 
-function deterministicJitterMs(seed, maxDelayMs) {
-  if (!maxDelayMs) return 0;
-  const s = typeof seed === "string" ? seed : String(seed ?? "");
-  let hash = 2166136261;
-  for (let i = 0; i < s.length; i += 1) {
-    hash ^= s.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  const n = hash >>> 0;
-  return n % (maxDelayMs + 1);
-}
-
 exports.handler = async function handler(event) {
   const batch = Array.isArray(event?.batch) ? event.batch : [];
 
@@ -49,7 +37,7 @@ exports.handler = async function handler(event) {
       const bodyBuf = decodeBody(item);
 
       const maxDelayMs = parseDelayMs(item);
-      const delayMs = deterministicJitterMs(id, maxDelayMs);
+      const delayMs = maxDelayMs ? Math.floor(Math.random() * (maxDelayMs + 1)) : 0;
       await sleep(delayMs);
 
       const out = {
