@@ -85,7 +85,8 @@ Run:
 uv run benchmark/benchmark.py \
   --stack lambda-parallel-router-demo \
   --region us-east-1 \
-  --duration 2m \
+  --ramp-duration 3m \
+  --hold-duration 30s \
   --stage-targets 50,100,150 \
   --max-delay-ms 250
 ```

@@ -8,7 +8,7 @@ Run k6 load tests against the App Runner demo routes and plot results.
 
 Example:
   uv run benchmark.py --stack lambda-parallel-router-demo --region us-east-1 \
-    --duration 2m --stage-targets 50,100,150 --max-delay-ms 250
+    --ramp-duration 3m --hold-duration 30s --stage-targets 50,100,150 --max-delay-ms 250
 """
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ import seaborn as sns
 
 
 DEFAULT_STAGE_TARGETS = "50,100,150"
-DEFAULT_DURATION = "2m"
+DEFAULT_RAMP_DURATION = "3m"
+DEFAULT_HOLD_DURATION = "0s"
 
 
 def extract_endpoint(extra_tags: str) -> str:
@@ -76,6 +77,13 @@ def parse_stage_targets(value: str) -> list[int]:
     return targets
 
 
+def should_add_hold(duration: str) -> bool:
+    if not duration:
+        return False
+    normalized = duration.strip().lower()
+    return normalized not in {"0", "0s", "0m", "0h", "0ms"}
+
+
 def run_k6_test(
     targets: list[dict[str, str]],
     csv_path: Path,
@@ -84,7 +92,7 @@ def run_k6_test(
     mode: str,
     executor: str,
     max_delay_ms: int,
-    duration: str,
+    ramp_duration: str,
     vus: int,
     arrival_time_unit: str,
     arrival_preallocated_vus: int,
@@ -98,7 +106,7 @@ def run_k6_test(
     env["MODE"] = mode
     env["EXECUTOR"] = executor
     env["MAX_DELAY_MS"] = str(max_delay_ms)
-    env["DURATION"] = duration
+    env["DURATION"] = ramp_duration
     env["VUS"] = str(vus)
     env["ARRIVAL_TIME_UNIT"] = arrival_time_unit
     env["ARRIVAL_VUS_MULTIPLIER"] = str(arrival_vus_multiplier)
@@ -325,7 +333,20 @@ def plot_results(
     default="ramping-arrival-rate",
     show_default=True,
 )
-@click.option("--duration", default=DEFAULT_DURATION, show_default=True)
+@click.option(
+    "--duration",
+    "--ramp-duration",
+    "ramp_duration",
+    default=DEFAULT_RAMP_DURATION,
+    show_default=True,
+    help="Per-stage ramp duration (slower ramp if larger).",
+)
+@click.option(
+    "--hold-duration",
+    default=DEFAULT_HOLD_DURATION,
+    show_default=True,
+    help="Optional hold time after each ramp stage (e.g. 30s). Use 0s to disable.",
+)
 @click.option("--stage-targets", default=DEFAULT_STAGE_TARGETS, show_default=True)
 @click.option("--stages-json", default=None, help="Override with full JSON stages array")
 @click.option("--max-delay-ms", type=int, default=250, show_default=True)
@@ -343,7 +364,8 @@ def main(
     output_dir: Path,
     mode: str,
     executor: str,
-    duration: str,
+    ramp_duration: str,
+    hold_duration: str,
     stage_targets: str,
     stages_json: str | None,
     max_delay_ms: int,
@@ -370,7 +392,12 @@ def main(
             targets = parse_stage_targets(stage_targets)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
-        stages = [{"duration": duration, "target": target} for target in targets]
+        stages = []
+        add_hold = should_add_hold(hold_duration)
+        for target in targets:
+            stages.append({"duration": ramp_duration, "target": target})
+            if add_hold:
+                stages.append({"duration": hold_duration, "target": target})
 
     if max_delay_ms < 0:
         raise SystemExit("--max-delay-ms must be >= 0")
@@ -393,7 +420,7 @@ def main(
             mode=mode,
             executor=executor,
             max_delay_ms=max_delay_ms,
-            duration=duration,
+            ramp_duration=ramp_duration,
             vus=vus,
             arrival_time_unit=arrival_time_unit,
             arrival_preallocated_vus=arrival_preallocated_vus,
