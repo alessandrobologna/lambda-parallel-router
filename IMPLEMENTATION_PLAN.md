@@ -56,6 +56,10 @@ This document is the implementation roadmap for the project spec in `http_microb
        - fixed mode: `wait_ms = max_wait_ms`
        - adaptive mode: `wait_ms` is computed from the request rate via a sigmoid in
          `[min_wait_ms, max_wait_ms]`
+   - **Do not serialize per-key invocations**:
+     - Each flush schedules a Lambda invoke asynchronously.
+     - Multiple in-flight invocations per BatchKey are allowed; rely on Lambda concurrency limits
+       plus the global `max_inflight_invocations` cap.
    - Backpressure:
      - per-key bounded queue (`max_queue_depth_per_key`)
      - global in-flight invocation semaphore (`max_inflight_invocations`)

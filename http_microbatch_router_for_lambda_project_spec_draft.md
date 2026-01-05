@@ -143,8 +143,12 @@ For each key, run a Tokio task:
 3) Accumulate items until either:
    - `len == max_batch_size`, flush immediately, OR
    - `now >= flush_at`, flush.
-4) On flush, build a `BatchInvocation` and call Lambda.
-5) Dispatch responses back to waiting clients.
+4) On flush, build a `BatchInvocation` and **schedule** a Lambda invoke.
+   - Invokes are **not serialized** per key: the batcher should be able to dispatch multiple
+     in-flight invocations for the same `BatchKey`.
+   - The router relies on Lambda’s own concurrency limits (and an optional per‑key cap) rather
+     than forcing sequential execution.
+5) Dispatch responses back to waiting clients as each invocation completes.
 6) If no activity for `idle_ttl`, evict batcher task to prevent unbounded map growth.
 
 #### Adaptive batching (optional)
@@ -202,6 +206,7 @@ the time-based flush condition.
 #### Backpressure
 - Per-key channel capacity `max_queue_depth_per_key`.
 - Global semaphore `max_inflight_invocations`.
+- Optional per-key cap on in-flight invocations (defaults to unlimited; rely on Lambda throttling).
 - Optional global cap on total queued requests.
 
 ### 5.6 Router HTTP handling
