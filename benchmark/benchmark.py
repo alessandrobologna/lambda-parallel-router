@@ -151,7 +151,8 @@ def parse_k6_latencies(df: pd.DataFrame) -> pd.DataFrame:
     lat = df[df["metric_name"] == "http_req_duration"].copy()
     lat["timestamp"] = pd.to_datetime(lat["timestamp"], unit="s", utc=True)
     lat["latency_ms"] = lat["metric_value"]
-    return lat[["timestamp", "endpoint", "latency_ms"]]
+    lat["status"] = pd.to_numeric(lat["status"], errors="coerce")
+    return lat[["timestamp", "endpoint", "latency_ms", "status"]]
 
 
 def calculate_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -218,37 +219,97 @@ def plot_results(
     latency_df["endpoint"] = pd.Categorical(latency_df["endpoint"], endpoint_order, ordered=True)
     latency_df = latency_df.dropna(subset=["endpoint"])
 
-    per_second = latency_df.copy()
-    per_second = per_second.set_index("timestamp")
-    per_second = (
-        per_second.groupby("endpoint")["latency_ms"]
+    base_ts = latency_df["timestamp"].min() if not latency_df.empty else None
+
+    per_second_all = (
+        latency_df.set_index("timestamp")
+        .groupby("endpoint")["latency_ms"]
         .resample("1s")
         .median()
         .reset_index()
     )
-    if not per_second.empty:
-        min_ts = per_second["timestamp"].min()
-        per_second["elapsed_s"] = (per_second["timestamp"] - min_ts).dt.total_seconds()
+    if base_ts is not None and not per_second_all.empty:
+        per_second_all["elapsed_s"] = (per_second_all["timestamp"] - base_ts).dt.total_seconds()
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    ok_only = latency_df[latency_df["status"] == 200].copy()
+    per_second_ok = (
+        ok_only.set_index("timestamp")
+        .groupby("endpoint")["latency_ms"]
+        .resample("1s")
+        .median()
+        .reset_index()
+    )
+    if base_ts is not None and not per_second_ok.empty:
+        per_second_ok["elapsed_s"] = (per_second_ok["timestamp"] - base_ts).dt.total_seconds()
+
+    error_over_time = latency_df.copy()
+    error_over_time["is_error"] = error_over_time["status"].fillna(0) >= 400
+    error_over_time = (
+        error_over_time.set_index("timestamp")
+        .groupby("endpoint")
+        .resample("1s")
+        .agg(requests=("latency_ms", "count"), errors=("is_error", "sum"))
+        .reset_index()
+    )
+    if not error_over_time.empty:
+        error_over_time["error_rate_pct"] = (
+            error_over_time["errors"] / error_over_time["requests"].replace(0, pd.NA)
+        ) * 100
+        error_over_time["error_rate_pct"] = error_over_time["error_rate_pct"].fillna(0)
+        if base_ts is not None:
+            error_over_time["elapsed_s"] = (error_over_time["timestamp"] - base_ts).dt.total_seconds()
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
     ax = axes[0, 0]
-    if per_second.empty:
-        ax.set_title("Median latency (per second)")
+    if per_second_all.empty:
+        ax.set_title("Median latency (all responses)")
         ax.text(0.5, 0.5, "No data", ha="center", va="center")
     else:
         sns.lineplot(
-            data=per_second,
+            data=per_second_all,
             x="elapsed_s",
             y="latency_ms",
             hue="endpoint",
             ax=ax,
         )
-        ax.set_title("Median latency (per second)")
+        ax.set_title("Median latency (all responses)")
         ax.set_xlabel("Elapsed time (s)")
         ax.set_ylabel("Latency (ms)")
 
     ax = axes[0, 1]
+    if per_second_ok.empty:
+        ax.set_title("Median latency (200 only)")
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+    else:
+        sns.lineplot(
+            data=per_second_ok,
+            x="elapsed_s",
+            y="latency_ms",
+            hue="endpoint",
+            ax=ax,
+        )
+        ax.set_title("Median latency (200 only)")
+        ax.set_xlabel("Elapsed time (s)")
+        ax.set_ylabel("Latency (ms)")
+
+    ax = axes[0, 2]
+    if error_over_time.empty:
+        ax.set_title("Error rate over time")
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+    else:
+        sns.lineplot(
+            data=error_over_time,
+            x="elapsed_s",
+            y="error_rate_pct",
+            hue="endpoint",
+            ax=ax,
+        )
+        ax.set_title("Error rate over time")
+        ax.set_xlabel("Elapsed time (s)")
+        ax.set_ylabel("Error rate (%)")
+
+    ax = axes[1, 0]
     if latency_df.empty:
         ax.set_title("Latency distribution")
         ax.text(0.5, 0.5, "No data", ha="center", va="center")
@@ -264,7 +325,7 @@ def plot_results(
         ax.set_ylabel("Latency (ms)")
         ax.tick_params(axis="x", rotation=20)
 
-    ax = axes[1, 0]
+    ax = axes[1, 1]
     if stats.empty:
         ax.set_title("Latency percentiles")
         ax.text(0.5, 0.5, "No data", ha="center", va="center")
@@ -287,7 +348,7 @@ def plot_results(
         ax.set_ylabel("Latency (ms)")
         ax.tick_params(axis="x", rotation=20)
 
-    ax = axes[1, 1]
+    ax = axes[1, 2]
     if error_stats.empty:
         ax.set_title("Error rate")
         ax.text(0.5, 0.5, "No data", ha="center", va="center")
