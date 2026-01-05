@@ -1,21 +1,52 @@
 paths:
-  /hello:
+  /buffering/simple/hello:
     get:
-      operationId: helloBuffered
-      x-target-lambda: ${LPR_SAMPLE_BUFFERED_LAMBDA_ARN}
+      operationId: bufferingSimpleHello
+      x-target-lambda: ${LPR_SAMPLE_BUFFERING_SIMPLE_LAMBDA_ARN}
       x-lpr:
-        max_wait_ms: 10
-        max_batch_size: 16
-        timeout_ms: 2000
+        max_wait_ms: 25
+        max_batch_size: 4
+        timeout_ms: 8000
         invoke_mode: buffered
 
-  /hello-stream:
+  /buffering/adaptive/hello:
     get:
-      operationId: helloStream
-      x-target-lambda: ${LPR_SAMPLE_STREAMING_LAMBDA_ARN}
+      operationId: bufferingAdaptiveHello
+      x-target-lambda: ${LPR_SAMPLE_BUFFERING_ADAPTIVE_LAMBDA_ARN}
       x-lpr:
-        max_wait_ms: 10
+        max_wait_ms: 100
         max_batch_size: 16
-        timeout_ms: 2000
+        timeout_ms: 8000
+        invoke_mode: buffered
+        adaptive_wait:
+          min_wait_ms: 1
+          target_rps: 50
+          steepness: 0.05
+          sampling_interval_ms: 100
+          smoothing_samples: 5
+
+  /streaming/simple/hello:
+    get:
+      operationId: streamingSimpleHello
+      x-target-lambda: ${LPR_SAMPLE_STREAMING_SIMPLE_LAMBDA_ARN}
+      x-lpr:
+        max_wait_ms: 25
+        max_batch_size: 4
+        timeout_ms: 8000
         invoke_mode: response_stream
 
+  /streaming/adaptive/hello:
+    get:
+      operationId: streamingAdaptiveHello
+      x-target-lambda: ${LPR_SAMPLE_STREAMING_ADAPTIVE_LAMBDA_ARN}
+      x-lpr:
+        max_wait_ms: 100
+        max_batch_size: 16
+        timeout_ms: 8000
+        invoke_mode: response_stream
+        adaptive_wait:
+          min_wait_ms: 1
+          target_rps: 50
+          steepness: 0.05
+          sampling_interval_ms: 100
+          smoothing_samples: 5

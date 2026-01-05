@@ -12,7 +12,7 @@ Parameters:
 Globals:
   Function:
     Runtime: nodejs24.x
-    Handler: index.handler
+    Handler: app.handler
     Timeout: 10
     MemorySize: 256
     LoggingConfig:
@@ -24,17 +24,69 @@ Resources:
   # ------------------------------
   # Sample Lambda functions
   # ------------------------------
-  SampleBufferedFunction:
+  SampleBufferingSimpleHelloFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: lambda/buffered/
-      Description: Demo batch handler for buffered responses.
+      CodeUri: lambda/buffering-simple/
+      FunctionName: !Sub '${AWS::StackName}-buffering-simple-hello'
+      Description: Demo batch handler (buffered, simple).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
 
-  SampleStreamingFunction:
+  SampleBufferingAdaptiveHelloFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: lambda/streaming/
-      Description: Demo batch handler for NDJSON streaming responses.
+      CodeUri: lambda/buffering-adaptive/
+      FunctionName: !Sub '${AWS::StackName}-buffering-adaptive-hello'
+      Description: Demo batch handler (buffered, adaptive).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
+
+  SampleStreamingSimpleHelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/streaming-simple/
+      FunctionName: !Sub '${AWS::StackName}-streaming-simple-hello'
+      Description: Demo batch handler (streaming, simple).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
+
+  SampleStreamingAdaptiveHelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/streaming-adaptive/
+      FunctionName: !Sub '${AWS::StackName}-streaming-adaptive-hello'
+      Description: Demo batch handler (streaming, adaptive).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
 
   # ------------------------------
   # Router service (expanded by the LprRouter macro)
@@ -42,7 +94,7 @@ Resources:
   RouterService:
     Type: Lpr::Router::Service
     Properties:
-      ServiceName: !Sub '${AWS::StackName}-router'
+      ServiceName: !Sub '${AWS::StackName}-service'
       ImageIdentifier: !Ref RouterImageIdentifier
       Port: 8080
       Environment:
@@ -54,17 +106,17 @@ Resources:
           title: lambda-parallel-router demo
           version: "1"
         paths:
-          /hello:
+          /buffering/simple/hello:
             get:
-              x-target-lambda: !GetAtt SampleBufferedFunction.Arn
+              x-target-lambda: !GetAtt SampleBufferingSimpleHelloFunction.Arn
               x-lpr:
                 max_wait_ms: 25
                 max_batch_size: 4
                 invoke_mode: buffered
                 timeout_ms: 8000
-          /hello-adaptive:
+          /buffering/adaptive/hello:
             get:
-              x-target-lambda: !GetAtt SampleBufferedFunction.Arn
+              x-target-lambda: !GetAtt SampleBufferingAdaptiveHelloFunction.Arn
               x-lpr:
                 max_wait_ms: 100
                 max_batch_size: 16
@@ -76,21 +128,41 @@ Resources:
                   steepness: 0.05
                   sampling_interval_ms: 100
                   smoothing_samples: 5
-          /hello-stream:
+          /streaming/simple/hello:
             get:
-              x-target-lambda: !GetAtt SampleStreamingFunction.Arn
+              x-target-lambda: !GetAtt SampleStreamingSimpleHelloFunction.Arn
               x-lpr:
                 max_wait_ms: 25
                 max_batch_size: 4
                 invoke_mode: response_stream
                 timeout_ms: 8000
+          /streaming/adaptive/hello:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingAdaptiveHelloFunction.Arn
+              x-lpr:
+                max_wait_ms: 100
+                max_batch_size: 16
+                invoke_mode: response_stream
+                timeout_ms: 8000
+                adaptive_wait:
+                  min_wait_ms: 1
+                  target_rps: 50
+                  steepness: 0.05
+                  sampling_interval_ms: 100
+                  smoothing_samples: 5
 
 Outputs:
-  SampleBufferedFunctionArn:
-    Value: !GetAtt SampleBufferedFunction.Arn
+  SampleBufferingSimpleHelloFunctionArn:
+    Value: !GetAtt SampleBufferingSimpleHelloFunction.Arn
 
-  SampleStreamingFunctionArn:
-    Value: !GetAtt SampleStreamingFunction.Arn
+  SampleBufferingAdaptiveHelloFunctionArn:
+    Value: !GetAtt SampleBufferingAdaptiveHelloFunction.Arn
+
+  SampleStreamingSimpleHelloFunctionArn:
+    Value: !GetAtt SampleStreamingSimpleHelloFunction.Arn
+
+  SampleStreamingAdaptiveHelloFunctionArn:
+    Value: !GetAtt SampleStreamingAdaptiveHelloFunction.Arn
 
   RouterImageIdentifier:
     Value: !Ref RouterImageIdentifier

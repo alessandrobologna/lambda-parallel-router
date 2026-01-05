@@ -1,34 +1,60 @@
-"use strict";
+const MAX_DELAY_MS = 10_000;
 
-function decodeBody(item) {
+type BatchItem = {
+  body?: string;
+  isBase64Encoded?: boolean;
+  requestContext?: { requestId?: string; http?: { method?: string }; routeKey?: string };
+  id?: string;
+  rawPath?: string;
+  path?: string;
+  routeKey?: string;
+  queryStringParameters?: Record<string, string>;
+  query?: Record<string, string>;
+  headers?: Record<string, string>;
+  httpMethod?: string;
+  method?: string;
+};
+
+type BatchEvent = { batch?: BatchItem[] };
+
+type BatchResponse = {
+  v: number;
+  responses: Array<{
+    id: string;
+    statusCode: number;
+    headers: Record<string, string>;
+    body: string;
+    isBase64Encoded: boolean;
+  }>;
+};
+
+function decodeBody(item: BatchItem): Buffer {
   const body = typeof item?.body === "string" ? item.body : "";
   const isB64 = Boolean(item?.isBase64Encoded);
   return Buffer.from(body, isB64 ? "base64" : "utf8");
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return Promise.resolve();
-  return new Promise((r) => setTimeout(r, Math.floor(n)));
+  return new Promise((resolve) => setTimeout(resolve, Math.floor(n)));
 }
 
-function getRequestId(item) {
+function getRequestId(item: BatchItem): string {
   if (typeof item?.requestContext?.requestId === "string") return item.requestContext.requestId;
   if (typeof item?.id === "string") return item.id;
   return "";
 }
 
-function parseDelayMs(item) {
+function parseDelayMs(item: BatchItem): number {
   const query = item?.queryStringParameters ?? item?.query ?? {};
-  const raw = query?.["max-delay"] ?? 0;
-
+  const raw = query["max-delay"] ?? 0;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 0;
-  // Keep the demo from accidentally sleeping for a very long time.
-  return Math.min(Math.floor(n), 10_000);
+  return Math.min(Math.floor(n), MAX_DELAY_MS);
 }
 
-exports.handler = async function handler(event) {
+export async function handler(event: BatchEvent): Promise<BatchResponse> {
   const batch = Array.isArray(event?.batch) ? event.batch : [];
 
   const responses = await Promise.all(
@@ -63,4 +89,4 @@ exports.handler = async function handler(event) {
   );
 
   return { v: 1, responses };
-};
+}
