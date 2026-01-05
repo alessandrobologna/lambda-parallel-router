@@ -9,6 +9,9 @@ Run k6 load tests against the App Runner demo routes and plot results.
 Example:
   uv run benchmark.py --stack lambda-parallel-router-demo --region us-east-1 \
     --ramp-duration 3m --hold-duration 30s --stage-targets 50,100,150 --max-delay-ms 250
+
+Rebuild charts from an existing CSV:
+  uv run benchmark.py --skip-test --csv-path benchmark-results/k6-20260105-151105.csv
 """
 from __future__ import annotations
 
@@ -28,6 +31,7 @@ import seaborn as sns
 DEFAULT_STAGE_TARGETS = "50,100,150"
 DEFAULT_RAMP_DURATION = "3m"
 DEFAULT_HOLD_DURATION = "0s"
+DEFAULT_OUTPUT_DIR = Path.cwd() / "benchmark-results"
 
 
 def extract_endpoint(extra_tags: str) -> str:
@@ -184,6 +188,13 @@ def calculate_error_stats(df: pd.DataFrame) -> pd.DataFrame:
     )
     errors["error_rate"] = (errors["errors"] / errors["requests"]).fillna(0.0)
     return errors
+
+
+def find_latest_csv(directory: Path) -> Path:
+    candidates = sorted(directory.glob("k6*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise RuntimeError(f"No k6 CSV files found in {directory}")
+    return candidates[0]
 
 
 def plot_results(
@@ -379,8 +390,22 @@ def plot_results(
     "--output-dir",
     "output_dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=Path.cwd() / "benchmark-results",
+    default=DEFAULT_OUTPUT_DIR,
     show_default=True,
+)
+@click.option(
+    "--csv-dir",
+    "csv_dir",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Directory containing an existing k6 CSV (uses newest file when --skip-test is set).",
+)
+@click.option(
+    "--csv-path",
+    "csv_path",
+    type=click.Path(file_okay=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to an existing k6 CSV (implies --skip-test).",
 )
 @click.option(
     "--mode",
@@ -423,6 +448,8 @@ def main(
     stack_name: str,
     region: str | None,
     output_dir: Path,
+    csv_dir: Path | None,
+    csv_path: Path | None,
     mode: str,
     executor: str,
     ramp_duration: str,
@@ -439,6 +466,14 @@ def main(
     skip_test: bool,
     label: str | None,
 ) -> None:
+    if csv_path:
+        skip_test = True
+
+    if csv_dir:
+        if output_dir == DEFAULT_OUTPUT_DIR:
+            output_dir = csv_dir
+        csv_dir.mkdir(parents=True, exist_ok=True)
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if stages_json:
@@ -469,14 +504,14 @@ def main(
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     label_suffix = f"-{label}" if label else ""
-    csv_path = output_dir / f"k6{label_suffix}-{timestamp}.csv"
+    derived_csv_path = output_dir / f"k6{label_suffix}-{timestamp}.csv"
     chart_path = output_dir / f"benchmark{label_suffix}-{timestamp}.png"
     stats_path = output_dir / f"summary{label_suffix}-{timestamp}.csv"
 
     if not skip_test:
         run_k6_test(
             targets,
-            csv_path,
+            derived_csv_path,
             stages=stages,
             mode=mode,
             executor=executor,
@@ -489,6 +524,14 @@ def main(
             arrival_vus_multiplier=arrival_vus_multiplier,
             arrival_max_vus_multiplier=arrival_max_vus_multiplier,
         )
+        csv_path = derived_csv_path
+
+    if csv_path is None:
+        source_dir = csv_dir or output_dir
+        csv_path = find_latest_csv(source_dir)
+
+    if skip_test:
+        print(f"Using existing CSV: {csv_path}")
 
     if not csv_path.exists():
         raise SystemExit(f"CSV not found: {csv_path}")
