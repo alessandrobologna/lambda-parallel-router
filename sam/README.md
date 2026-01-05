@@ -7,6 +7,8 @@ This folder contains an AWS SAM template that deploys:
   - buffering/adaptive (`/buffering/adaptive/hello`)
   - streaming/simple (`/streaming/simple/hello`)
   - streaming/adaptive (`/streaming/adaptive/hello`)
+  - buffering/adapter (`/buffering/adapter/hello`)
+  - streaming/adapter (`/streaming/adapter/hello`)
 - An App Runner service that runs the router container (ECR image)
 
 The router service definition is intentionally concise and is expanded by the `LprRouter`
@@ -63,3 +65,5 @@ Notes:
 - Buffering adaptive: `GET {RouterServiceUrl}/buffering/adaptive/hello?max-delay=250`
 - Streaming simple: `GET {RouterServiceUrl}/streaming/simple/hello?max-delay=250`
 - Streaming adaptive: `GET {RouterServiceUrl}/streaming/adaptive/hello?max-delay=250`
+- Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=250`
+- Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=250`

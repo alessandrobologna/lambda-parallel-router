@@ -88,6 +88,38 @@ Resources:
         Sourcemap: false
         Target: es2020
 
+  SampleBufferingAdapterHelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/buffering-adapter/
+      FunctionName: !Sub '${AWS::StackName}-buffering-adapter-hello'
+      Description: Demo batch handler (buffered, adapter).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
+
+  SampleStreamingAdapterHelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/streaming-adapter/
+      FunctionName: !Sub '${AWS::StackName}-streaming-adapter-hello'
+      Description: Demo batch handler (streaming, adapter).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
+
   # ------------------------------
   # Router service (expanded by the LprRouter macro)
   # ------------------------------
@@ -150,6 +182,22 @@ Resources:
                   steepness: 0.05
                   sampling_interval_ms: 100
                   smoothing_samples: 5
+          /buffering/adapter/hello:
+            get:
+              x-target-lambda: !GetAtt SampleBufferingAdapterHelloFunction.Arn
+              x-lpr:
+                max_wait_ms: 25
+                max_batch_size: 4
+                invoke_mode: buffered
+                timeout_ms: 8000
+          /streaming/adapter/hello:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingAdapterHelloFunction.Arn
+              x-lpr:
+                max_wait_ms: 25
+                max_batch_size: 4
+                invoke_mode: response_stream
+                timeout_ms: 8000
 
 Outputs:
   SampleBufferingSimpleHelloFunctionArn:
@@ -163,6 +211,12 @@ Outputs:
 
   SampleStreamingAdaptiveHelloFunctionArn:
     Value: !GetAtt SampleStreamingAdaptiveHelloFunction.Arn
+
+  SampleBufferingAdapterHelloFunctionArn:
+    Value: !GetAtt SampleBufferingAdapterHelloFunction.Arn
+
+  SampleStreamingAdapterHelloFunctionArn:
+    Value: !GetAtt SampleStreamingAdapterHelloFunction.Arn
 
   RouterImageIdentifier:
     Value: !Ref RouterImageIdentifier
