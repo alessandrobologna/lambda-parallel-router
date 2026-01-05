@@ -18,13 +18,19 @@ use axum::{
     routing::get,
     Router,
 };
+use futures::StreamExt;
+use std::convert::Infallible;
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::{
-    batching::{BatcherManager, BatchingConfig, EnqueueError, PendingRequest, RouterResponse},
+    batching::{
+        BatcherManager, BatchingConfig, EnqueueError, PendingRequest, ResponseSink, RouterResponse,
+        StreamInit, StreamSender,
+    },
     config::{ForwardHeadersConfig, RouterConfig},
     lambda::AwsLambdaInvoker,
-    spec::{CompiledSpec, RouteMatch},
+    spec::{CompiledSpec, InvokeMode, RouteMatch},
 };
 
 #[derive(Clone)]
@@ -131,14 +137,16 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
 ///
 /// This is intentionally minimal for now (no auth, no header allowlists, etc.). The goal is to
 /// exercise the core routing + batching + Lambda invocation loop.
-async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl IntoResponse {
+async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::response::Response {
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let method_str = method.as_str().to_string();
     let path = parts.uri.path().to_string();
 
     let (op, path_params) = match state.spec.match_request(&method, &path) {
-        RouteMatch::NotFound => return RouterResponse::text(StatusCode::NOT_FOUND, "not found"),
+        RouteMatch::NotFound => {
+            return RouterResponse::text(StatusCode::NOT_FOUND, "not found").into_response()
+        }
         RouteMatch::MethodNotAllowed { allowed } => {
             let mut resp =
                 RouterResponse::text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
@@ -151,14 +159,17 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
             if let Ok(value) = allow.parse() {
                 resp.headers.insert(http::header::ALLOW, value);
             }
-            return resp;
+            return resp.into_response();
         }
         RouteMatch::Matched { op, path_params } => (op.clone(), path_params),
     };
 
     let body = match to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
-        Err(_) => return RouterResponse::text(StatusCode::PAYLOAD_TOO_LARGE, "body too large"),
+        Err(_) => {
+            return RouterResponse::text(StatusCode::PAYLOAD_TOO_LARGE, "body too large")
+                .into_response()
+        }
     };
 
     let mut headers = HashMap::new();
@@ -180,68 +191,150 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> impl I
     }
 
     let id = format!("r-{}", Uuid::new_v4());
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let pending = PendingRequest {
-        id,
-        method,
-        path,
-        route: op.route_template.clone(),
-        path_params,
-        headers,
-        query,
-        raw_query_string,
-        body,
-        respond_to: tx,
-    };
-
-    match state.batchers.enqueue(&op, pending) {
-        Ok(()) => {}
-        Err(EnqueueError::QueueFull) => {
-            tracing::warn!(
-                event = "enqueue_rejected",
-                reason = "queue_full",
-                method = %method_str,
-                route = %op.route_template,
-                "request rejected"
-            );
-            return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "queue full");
-        }
-        Err(EnqueueError::BatcherClosed) => {
-            tracing::warn!(
-                event = "enqueue_rejected",
-                reason = "batcher_closed",
-                method = %method_str,
-                route = %op.route_template,
-                "request rejected"
-            );
-            return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "batcher closed");
-        }
-    }
-
     let wait_started = Instant::now();
     let timeout = Duration::from_millis(op.timeout_ms);
-    match tokio::time::timeout(timeout, rx).await {
-        Ok(Ok(resp)) => resp,
-        Ok(Err(_)) => {
-            tracing::warn!(
-                event = "response_dropped",
-                method = %method_str,
-                route = %op.route_template,
-                "response channel dropped"
-            );
-            RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response")
+
+    if op.invoke_mode == InvokeMode::ResponseStream {
+        let (init_tx, init_rx) = tokio::sync::oneshot::channel();
+        let (body_tx, body_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(32);
+
+        let pending = PendingRequest {
+            id,
+            method,
+            path,
+            route: op.route_template.clone(),
+            path_params,
+            headers,
+            query,
+            raw_query_string,
+            body,
+            respond_to: ResponseSink::Stream(StreamSender {
+                init: init_tx,
+                body: body_tx,
+            }),
+        };
+
+        match state.batchers.enqueue(&op, pending) {
+            Ok(()) => {}
+            Err(EnqueueError::QueueFull) => {
+                tracing::warn!(
+                    event = "enqueue_rejected",
+                    reason = "queue_full",
+                    method = %method_str,
+                    route = %op.route_template,
+                    "request rejected"
+                );
+                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "queue full")
+                    .into_response();
+            }
+            Err(EnqueueError::BatcherClosed) => {
+                tracing::warn!(
+                    event = "enqueue_rejected",
+                    reason = "batcher_closed",
+                    method = %method_str,
+                    route = %op.route_template,
+                    "request rejected"
+                );
+                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "batcher closed")
+                    .into_response();
+            }
         }
-        Err(_) => {
-            let elapsed_ms = wait_started.elapsed().as_millis();
-            tracing::warn!(
-                event = "request_timeout",
-                method = %method_str,
-                route = %op.route_template,
-                timeout_ms = op.timeout_ms,
-                elapsed_ms = elapsed_ms,
-                "request timed out waiting for batch response"
-            );
-            RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout")
+
+        match tokio::time::timeout(timeout, init_rx).await {
+            Ok(Ok(StreamInit::Response(resp))) => resp.into_response(),
+            Ok(Ok(StreamInit::Stream(head))) => {
+                let stream = ReceiverStream::new(body_rx).map(Ok::<_, Infallible>);
+                let mut res = axum::response::Response::new(Body::from_stream(stream));
+                *res.status_mut() = head.status;
+                *res.headers_mut() = head.headers;
+                res
+            }
+            Ok(Err(_)) => {
+                tracing::warn!(
+                    event = "response_dropped",
+                    method = %method_str,
+                    route = %op.route_template,
+                    "response channel dropped"
+                );
+                RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response").into_response()
+            }
+            Err(_) => {
+                let elapsed_ms = wait_started.elapsed().as_millis();
+                tracing::warn!(
+                    event = "request_timeout",
+                    method = %method_str,
+                    route = %op.route_template,
+                    timeout_ms = op.timeout_ms,
+                    elapsed_ms = elapsed_ms,
+                    "request timed out waiting for batch response"
+                );
+                RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout").into_response()
+            }
+        }
+    } else {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let pending = PendingRequest {
+            id,
+            method,
+            path,
+            route: op.route_template.clone(),
+            path_params,
+            headers,
+            query,
+            raw_query_string,
+            body,
+            respond_to: ResponseSink::Buffered(tx),
+        };
+
+        match state.batchers.enqueue(&op, pending) {
+            Ok(()) => {}
+            Err(EnqueueError::QueueFull) => {
+                tracing::warn!(
+                    event = "enqueue_rejected",
+                    reason = "queue_full",
+                    method = %method_str,
+                    route = %op.route_template,
+                    "request rejected"
+                );
+                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "queue full")
+                    .into_response();
+            }
+            Err(EnqueueError::BatcherClosed) => {
+                tracing::warn!(
+                    event = "enqueue_rejected",
+                    reason = "batcher_closed",
+                    method = %method_str,
+                    route = %op.route_template,
+                    "request rejected"
+                );
+                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "batcher closed")
+                    .into_response();
+            }
+        }
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(resp)) => resp.into_response(),
+            Ok(Err(_)) => {
+                tracing::warn!(
+                    event = "response_dropped",
+                    method = %method_str,
+                    route = %op.route_template,
+                    "response channel dropped"
+                );
+                RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response").into_response()
+            }
+            Err(_) => {
+                let elapsed_ms = wait_started.elapsed().as_millis();
+                tracing::warn!(
+                    event = "request_timeout",
+                    method = %method_str,
+                    route = %op.route_template,
+                    timeout_ms = op.timeout_ms,
+                    elapsed_ms = elapsed_ms,
+                    "request timed out waiting for batch response"
+                );
+                RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout").into_response()
+            }
         }
     }
 }

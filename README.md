@@ -18,8 +18,8 @@ dial: small, bounded delays trade for fewer invocations and better Lambda utiliz
 - **Streaming (NDJSON)**: Lambda is invoked with `InvokeWithResponseStream` and emits NDJSON records.
   The router dispatches each record as soon as it arrives (record-level streaming, not interleaved
   chunk streaming).
-- **Interleaved streaming (future)**: see `docs/INTERLEAVED_STREAMING_NDJSON.md` for a proposed
-  NDJSON framing that supports chunk-level interleaving while still letting Lambda choose the
+- **Interleaved streaming (NDJSON framing)**: see `docs/INTERLEAVED_STREAMING_NDJSON.md` for the
+  chunk-level framing used by the interleaved adapter option, which lets Lambda choose the
   client-facing protocol (e.g., SSE).
 
 ## Lambda integration modes

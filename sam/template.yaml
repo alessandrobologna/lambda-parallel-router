@@ -120,6 +120,22 @@ Resources:
         Sourcemap: false
         Target: es2020
 
+  SampleStreamingAdapterSseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/streaming-adapter-sse/
+      FunctionName: !Sub '${AWS::StackName}-streaming-adapter-sse'
+      Description: Demo batch handler (streaming, adapter, SSE).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
+
   # ------------------------------
   # Router service (expanded by the LprRouter macro)
   # ------------------------------
@@ -198,6 +214,14 @@ Resources:
                 max_batch_size: 4
                 invoke_mode: response_stream
                 timeout_ms: 8000
+          /streaming/adapter/sse:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingAdapterSseFunction.Arn
+              x-lpr:
+                max_wait_ms: 25
+                max_batch_size: 4
+                invoke_mode: response_stream
+                timeout_ms: 8000
 
 Outputs:
   SampleBufferingSimpleHelloFunctionArn:
@@ -217,6 +241,9 @@ Outputs:
 
   SampleStreamingAdapterHelloFunctionArn:
     Value: !GetAtt SampleStreamingAdapterHelloFunction.Arn
+
+  SampleStreamingAdapterSseFunctionArn:
+    Value: !GetAtt SampleStreamingAdapterSseFunction.Arn
 
   RouterImageIdentifier:
     Value: !Ref RouterImageIdentifier

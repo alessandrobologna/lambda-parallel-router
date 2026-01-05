@@ -2,13 +2,14 @@
 
 This folder contains an AWS SAM template that deploys:
 
-- Six sample Lambda functions that implement the router batch contract:
+- Seven sample Lambda functions that implement the router batch contract:
   - buffering/simple (`/buffering/simple/hello`)
   - buffering/adaptive (`/buffering/adaptive/hello`)
   - streaming/simple (`/streaming/simple/hello`)
   - streaming/adaptive (`/streaming/adaptive/hello`)
   - buffering/adapter (`/buffering/adapter/hello`)
   - streaming/adapter (`/streaming/adapter/hello`)
+  - streaming/adapter SSE (`/streaming/adapter/sse`)
 - An App Runner service that runs the router container (ECR image)
 
 The router service definition is intentionally concise and is expanded by the `LprRouter`
@@ -67,3 +68,4 @@ Notes:
 - Streaming adaptive: `GET {RouterServiceUrl}/streaming/adaptive/hello?max-delay=250`
 - Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=250`
 - Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=250`
+- Streaming adapter SSE: `GET {RouterServiceUrl}/streaming/adapter/sse?max-delay=250`

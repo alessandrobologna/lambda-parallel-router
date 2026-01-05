@@ -70,3 +70,13 @@ paths:
         max_batch_size: 4
         timeout_ms: 8000
         invoke_mode: response_stream
+
+  /streaming/adapter/sse:
+    get:
+      operationId: streamingAdapterSse
+      x-target-lambda: ${LPR_SAMPLE_STREAMING_ADAPTER_SSE_LAMBDA_ARN}
+      x-lpr:
+        max_wait_ms: 25
+        max_batch_size: 4
+        timeout_ms: 8000
+        invoke_mode: response_stream

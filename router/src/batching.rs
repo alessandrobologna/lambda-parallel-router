@@ -52,6 +52,30 @@ impl axum::response::IntoResponse for RouterResponse {
 }
 
 #[derive(Debug)]
+pub(crate) enum ResponseSink {
+    Buffered(oneshot::Sender<RouterResponse>),
+    Stream(StreamSender),
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamSender {
+    pub(crate) init: oneshot::Sender<StreamInit>,
+    pub(crate) body: mpsc::Sender<Bytes>,
+}
+
+#[derive(Debug)]
+pub(crate) enum StreamInit {
+    Response(RouterResponse),
+    Stream(StreamHead),
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamHead {
+    pub(crate) status: StatusCode,
+    pub(crate) headers: HeaderMap,
+}
+
+#[derive(Debug)]
 /// A single HTTP request waiting to be included in a batch.
 pub struct PendingRequest {
     /// Router-generated request identifier (unique within the batch).
@@ -67,7 +91,7 @@ pub struct PendingRequest {
     /// Raw query string as received (without the leading `?`).
     pub raw_query_string: String,
     pub body: Bytes,
-    pub respond_to: oneshot::Sender<RouterResponse>,
+    pub(crate) respond_to: ResponseSink,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +141,12 @@ struct BatcherConfig {
     max_wait_ms: u64,
     max_batch_size: usize,
     adaptive_wait: Option<AdaptiveWaitConfig>,
+}
+
+#[derive(Debug)]
+struct StreamPending {
+    init: Option<oneshot::Sender<StreamInit>>,
+    body: mpsc::Sender<Bytes>,
 }
 
 impl BatcherConfig {
@@ -297,7 +327,14 @@ struct BatchResponseItem {
 }
 
 #[derive(Debug, Deserialize)]
-struct StreamResponseRecord {
+#[serde(untagged)]
+enum StreamResponseRecord {
+    Legacy(StreamResponseRecordLegacy),
+    Interleaved(StreamResponseRecordInterleaved),
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamResponseRecordLegacy {
     v: u8,
     id: String,
     #[serde(rename = "statusCode")]
@@ -308,6 +345,33 @@ struct StreamResponseRecord {
     body: String,
     #[serde(rename = "isBase64Encoded", default)]
     is_base64_encoded: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StreamRecordType {
+    Head,
+    Chunk,
+    End,
+    Error,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamResponseRecordInterleaved {
+    v: u8,
+    id: String,
+    #[serde(rename = "type")]
+    record_type: StreamRecordType,
+    #[serde(rename = "statusCode", default)]
+    status_code: Option<u16>,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(rename = "isBase64Encoded", default)]
+    is_base64_encoded: bool,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 async fn batcher_task(
@@ -529,11 +593,25 @@ async fn flush_batch(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let mut pending: HashMap<String, oneshot::Sender<RouterResponse>> = HashMap::new();
+    let mut pending_buffered: HashMap<String, oneshot::Sender<RouterResponse>> = HashMap::new();
+    let mut pending_stream: HashMap<String, StreamPending> = HashMap::new();
     let mut batch_items = Vec::with_capacity(batch.len());
     for req in batch {
         let id = req.id;
-        pending.insert(id.clone(), req.respond_to);
+        match req.respond_to {
+            ResponseSink::Buffered(tx) => {
+                pending_buffered.insert(id.clone(), tx);
+            }
+            ResponseSink::Stream(stream) => {
+                pending_stream.insert(
+                    id.clone(),
+                    StreamPending {
+                        init: Some(stream.init),
+                        body: stream.body,
+                    },
+                );
+            }
+        }
 
         let route_key = format!("{} {}", req.method, req.route);
         let source_ip = extract_source_ip(&req.headers);
@@ -575,64 +653,160 @@ async fn flush_batch(
         });
     }
 
-    for plan in plan_invocations(
-        key,
-        received_at_ms,
-        runtime.max_invoke_payload_bytes,
-        pending,
-        batch_items,
-    ) {
-        match plan {
-            InvocationPlan::Fail {
-                pending,
-                status,
-                msg,
-            } => fail_all(pending, status, msg),
-            InvocationPlan::Invoke { pending, payload } => {
-                let runtime = runtime.clone();
-                let key = key.clone();
-                tokio::spawn(async move {
-                    let _permit = match runtime.inflight.acquire().await {
-                        Ok(p) => p,
-                        Err(_) => {
-                            fail_all(
-                                pending,
-                                StatusCode::BAD_GATEWAY,
-                                "router shutting down".to_string(),
-                            );
-                            return;
-                        }
-                    };
+    if key.invoke_mode == InvokeMode::Buffered {
+        if !pending_stream.is_empty() {
+            fail_all_stream(
+                pending_stream,
+                StatusCode::BAD_GATEWAY,
+                "unexpected streaming response sink".to_string(),
+            );
+        }
 
-                    tracing::info!(
-                        event = "lambda_invoke",
-                        target_lambda = %key.target_lambda,
-                        method = %key.method,
-                        route = %key.route,
-                        invoke_mode = ?key.invoke_mode,
-                        wait_ms,
-                        estimated_rps = estimated_rps,
-                        batch_size = pending.len(),
-                        payload_bytes = payload.len(),
-                        "invoking"
-                    );
+        for plan in plan_invocations(
+            key,
+            received_at_ms,
+            runtime.max_invoke_payload_bytes,
+            pending_buffered,
+            batch_items,
+        ) {
+            match plan {
+                InvocationPlan::Fail {
+                    pending,
+                    status,
+                    msg,
+                } => fail_all_buffered(pending, status, msg),
+                InvocationPlan::Invoke { pending, payload } => {
+                    let runtime = runtime.clone();
+                    let key = key.clone();
+                    tokio::spawn(async move {
+                        let _permit = match runtime.inflight.acquire().await {
+                            Ok(p) => p,
+                            Err(_) => {
+                                fail_all_buffered(
+                                    pending,
+                                    StatusCode::BAD_GATEWAY,
+                                    "router shutting down".to_string(),
+                                );
+                                return;
+                            }
+                        };
 
-                    match runtime
-                        .invoker
-                        .invoke(&key.target_lambda, payload, key.invoke_mode)
-                        .await
-                    {
-                        Ok(LambdaInvokeResult::Buffered(bytes)) => {
-                            dispatch_buffered(bytes, pending)
+                        tracing::info!(
+                            event = "lambda_invoke",
+                            target_lambda = %key.target_lambda,
+                            method = %key.method,
+                            route = %key.route,
+                            invoke_mode = ?key.invoke_mode,
+                            wait_ms,
+                            estimated_rps = estimated_rps,
+                            batch_size = pending.len(),
+                            payload_bytes = payload.len(),
+                            "invoking"
+                        );
+
+                        match runtime
+                            .invoker
+                            .invoke(&key.target_lambda, payload, key.invoke_mode)
+                            .await
+                        {
+                            Ok(LambdaInvokeResult::Buffered(bytes)) => {
+                                dispatch_buffered(bytes, pending)
+                            }
+                            Ok(LambdaInvokeResult::ResponseStream(_stream)) => {
+                                fail_all_buffered(
+                                    pending,
+                                    StatusCode::BAD_GATEWAY,
+                                    "unexpected response stream".to_string(),
+                                );
+                            }
+                            Err(err) => {
+                                fail_all_buffered(
+                                    pending,
+                                    StatusCode::BAD_GATEWAY,
+                                    format!("invoke: {err}"),
+                                );
+                            }
                         }
-                        Ok(LambdaInvokeResult::ResponseStream(stream)) => {
-                            dispatch_response_stream(stream, pending).await
+                    });
+                }
+            }
+        }
+    } else {
+        if !pending_buffered.is_empty() {
+            fail_all_buffered(
+                pending_buffered,
+                StatusCode::BAD_GATEWAY,
+                "unexpected buffered response sink".to_string(),
+            );
+        }
+
+        for plan in plan_invocations(
+            key,
+            received_at_ms,
+            runtime.max_invoke_payload_bytes,
+            pending_stream,
+            batch_items,
+        ) {
+            match plan {
+                InvocationPlan::Fail {
+                    pending,
+                    status,
+                    msg,
+                } => fail_all_stream(pending, status, msg),
+                InvocationPlan::Invoke { pending, payload } => {
+                    let runtime = runtime.clone();
+                    let key = key.clone();
+                    tokio::spawn(async move {
+                        let _permit = match runtime.inflight.acquire().await {
+                            Ok(p) => p,
+                            Err(_) => {
+                                fail_all_stream(
+                                    pending,
+                                    StatusCode::BAD_GATEWAY,
+                                    "router shutting down".to_string(),
+                                );
+                                return;
+                            }
+                        };
+
+                        tracing::info!(
+                            event = "lambda_invoke",
+                            target_lambda = %key.target_lambda,
+                            method = %key.method,
+                            route = %key.route,
+                            invoke_mode = ?key.invoke_mode,
+                            wait_ms,
+                            estimated_rps = estimated_rps,
+                            batch_size = pending.len(),
+                            payload_bytes = payload.len(),
+                            "invoking"
+                        );
+
+                        match runtime
+                            .invoker
+                            .invoke(&key.target_lambda, payload, key.invoke_mode)
+                            .await
+                        {
+                            Ok(LambdaInvokeResult::Buffered(_bytes)) => {
+                                fail_all_stream(
+                                    pending,
+                                    StatusCode::BAD_GATEWAY,
+                                    "unexpected buffered response".to_string(),
+                                );
+                            }
+                            Ok(LambdaInvokeResult::ResponseStream(stream)) => {
+                                dispatch_response_stream(stream, pending).await
+                            }
+                            Err(err) => {
+                                fail_all_stream(
+                                    pending,
+                                    StatusCode::BAD_GATEWAY,
+                                    format!("invoke: {err}"),
+                                );
+                            }
                         }
-                        Err(err) => {
-                            fail_all(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
-                        }
-                    }
-                });
+                    });
+                }
             }
         }
     }
@@ -679,32 +853,32 @@ fn extract_source_ip(headers: &HashMap<String, String>) -> Option<String> {
         .filter(|ip| !ip.is_empty())
 }
 
-enum InvocationPlan {
+enum InvocationPlan<T> {
     Invoke {
-        pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+        pending: HashMap<String, T>,
         payload: Bytes,
     },
     Fail {
-        pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+        pending: HashMap<String, T>,
         status: StatusCode,
         msg: String,
     },
 }
 
-fn plan_invocations(
+fn plan_invocations<T>(
     key: &BatchKey,
     received_at_ms: u64,
     max_invoke_payload_bytes: usize,
-    pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+    pending: HashMap<String, T>,
     batch_items: Vec<BatchItem>,
-) -> Vec<InvocationPlan> {
+) -> Vec<InvocationPlan<T>> {
     let payload = match build_payload_bytes(key, received_at_ms, &batch_items) {
         Ok(p) => p,
         Err(err) => {
-            return vec![InvocationPlan::Fail {
-                pending,
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                msg: format!("encode: {err}"),
+        return vec![InvocationPlan::Fail {
+            pending,
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            msg: format!("encode: {err}"),
             }];
         }
     };
@@ -779,13 +953,10 @@ fn build_payload_bytes(
     Ok(Bytes::from(serde_json::to_vec(&event)?))
 }
 
-fn split_pending(
-    mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+fn split_pending<T>(
+    mut pending: HashMap<String, T>,
     left_items: &[BatchItem],
-) -> (
-    HashMap<String, oneshot::Sender<RouterResponse>>,
-    HashMap<String, oneshot::Sender<RouterResponse>>,
-) {
+) -> (HashMap<String, T>, HashMap<String, T>) {
     let mut left = HashMap::with_capacity(left_items.len());
     for item in left_items {
         if let Some(tx) = pending.remove(&item.id) {
@@ -802,7 +973,7 @@ fn dispatch_buffered(
     let parsed: BatchResponse = match serde_json::from_slice(&resp_bytes) {
         Ok(r) => r,
         Err(err) => {
-            fail_all(
+            fail_all_buffered(
                 pending,
                 StatusCode::BAD_GATEWAY,
                 format!("decode response: {err}"),
@@ -812,7 +983,7 @@ fn dispatch_buffered(
     };
 
     if parsed.v != 1 {
-        fail_all(
+        fail_all_buffered(
             pending,
             StatusCode::BAD_GATEWAY,
             format!("unsupported response version: {}", parsed.v),
@@ -838,16 +1009,35 @@ fn dispatch_buffered(
         let _ = tx.send(resp);
     }
 
-    fail_all(
+    fail_all_buffered(
         pending,
         StatusCode::BAD_GATEWAY,
         "missing response record".to_string(),
     );
 }
 
+fn send_stream_head(
+    entry: &mut StreamPending,
+    status_code: u16,
+    headers: HashMap<String, String>,
+) -> Result<bool, String> {
+    if let Some(init) = entry.init.take() {
+        let status = StatusCode::from_u16(status_code)
+            .map_err(|err| format!("bad status code: {err}"))?;
+        let headers =
+            headers_from_map(headers).map_err(|err| format!("bad response headers: {err}"))?;
+        if init.send(StreamInit::Stream(StreamHead { status, headers }))
+            .is_err()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 async fn dispatch_response_stream(
     mut stream: tokio::sync::mpsc::Receiver<anyhow::Result<Bytes>>,
-    mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+    mut pending: HashMap<String, StreamPending>,
 ) {
     const MAX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
@@ -856,7 +1046,7 @@ async fn dispatch_response_stream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(err) => {
-                fail_all(
+                fail_all_stream(
                     pending,
                     StatusCode::BAD_GATEWAY,
                     format!("response stream error: {err}"),
@@ -867,7 +1057,7 @@ async fn dispatch_response_stream(
 
         buffer.extend_from_slice(&chunk);
         if buffer.len() > MAX_BUFFER_BYTES {
-            fail_all(
+            fail_all_stream(
                 pending,
                 StatusCode::BAD_GATEWAY,
                 "response stream too large".to_string(),
@@ -888,42 +1078,18 @@ async fn dispatch_response_stream(
                 continue;
             }
 
-            let record: StreamResponseRecord = match serde_json::from_slice(line) {
+            let record = match parse_stream_record(line) {
                 Ok(r) => r,
                 Err(err) => {
-                    fail_all(
-                        pending,
-                        StatusCode::BAD_GATEWAY,
-                        format!("bad ndjson record: {err}"),
-                    );
+                    fail_all_stream(pending, StatusCode::BAD_GATEWAY, err);
                     return;
                 }
             };
 
-            if record.v != 1 {
-                fail_all(
-                    pending,
-                    StatusCode::BAD_GATEWAY,
-                    format!("unsupported record version: {}", record.v),
-                );
+            if let Err(msg) = dispatch_stream_record(record, &mut pending).await {
+                fail_all_stream(pending, StatusCode::BAD_GATEWAY, msg);
                 return;
             }
-
-            let Some(tx) = pending.remove(&record.id) else {
-                continue;
-            };
-            let resp = match build_router_response_parts(
-                record.status_code,
-                record.headers,
-                record.body,
-                record.is_base64_encoded,
-            ) {
-                Ok(r) => r,
-                Err(err) => {
-                    RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
-                }
-            };
-            let _ = tx.send(resp);
         }
 
         if start > 0 {
@@ -938,48 +1104,124 @@ async fn dispatch_response_stream(
     }
     let tail = &buffer[..end];
     if !tail.is_empty() {
-        let record: StreamResponseRecord = match serde_json::from_slice(tail) {
+        let record = match parse_stream_record(tail) {
             Ok(r) => r,
             Err(err) => {
-                fail_all(
-                    pending,
-                    StatusCode::BAD_GATEWAY,
-                    format!("bad ndjson record: {err}"),
-                );
+                fail_all_stream(pending, StatusCode::BAD_GATEWAY, err);
                 return;
             }
         };
 
-        if record.v != 1 {
-            fail_all(
-                pending,
-                StatusCode::BAD_GATEWAY,
-                format!("unsupported record version: {}", record.v),
-            );
+        if let Err(msg) = dispatch_stream_record(record, &mut pending).await {
+            fail_all_stream(pending, StatusCode::BAD_GATEWAY, msg);
             return;
-        }
-
-        if let Some(tx) = pending.remove(&record.id) {
-            let resp = match build_router_response_parts(
-                record.status_code,
-                record.headers,
-                record.body,
-                record.is_base64_encoded,
-            ) {
-                Ok(r) => r,
-                Err(err) => {
-                    RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
-                }
-            };
-            let _ = tx.send(resp);
         }
     }
 
-    fail_all(
+    fail_all_stream(
         pending,
         StatusCode::BAD_GATEWAY,
         "missing response record".to_string(),
     );
+}
+
+fn parse_stream_record(line: &[u8]) -> Result<StreamResponseRecord, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(line).map_err(|err| format!("bad ndjson record: {err}"))?;
+    if value.get("type").is_some() {
+        let record: StreamResponseRecordInterleaved =
+            serde_json::from_value(value).map_err(|err| format!("bad ndjson record: {err}"))?;
+        Ok(StreamResponseRecord::Interleaved(record))
+    } else {
+        let record: StreamResponseRecordLegacy =
+            serde_json::from_value(value).map_err(|err| format!("bad ndjson record: {err}"))?;
+        Ok(StreamResponseRecord::Legacy(record))
+    }
+}
+
+async fn dispatch_stream_record(
+    record: StreamResponseRecord,
+    pending: &mut HashMap<String, StreamPending>,
+) -> Result<(), String> {
+    match record {
+        StreamResponseRecord::Legacy(record) => {
+            if record.v != 1 {
+                return Err(format!("unsupported record version: {}", record.v));
+            }
+
+            if let Some(mut entry) = pending.remove(&record.id) {
+                let resp = build_router_response_parts(
+                    record.status_code,
+                    record.headers,
+                    record.body,
+                    record.is_base64_encoded,
+                )
+                .map_err(|err| format!("bad response: {err}"))?;
+                if let Some(init) = entry.init.take() {
+                    let _ = init.send(StreamInit::Response(resp));
+                }
+                drop(entry.body);
+            }
+        }
+        StreamResponseRecord::Interleaved(record) => {
+            if record.v != 1 {
+                return Err(format!("unsupported record version: {}", record.v));
+            }
+
+            match record.record_type {
+                StreamRecordType::Head => {
+                    if let Some(mut entry) = pending.remove(&record.id) {
+                        let status_code = record.status_code.unwrap_or(200);
+                        let keep = send_stream_head(&mut entry, status_code, record.headers)?;
+                        if keep {
+                            pending.insert(record.id, entry);
+                        }
+                    }
+                }
+                StreamRecordType::Chunk => {
+                    if let Some(mut entry) = pending.remove(&record.id) {
+                        if entry.init.is_some() {
+                            let keep = send_stream_head(&mut entry, 200, HashMap::new())?;
+                            if !keep {
+                                return Ok(());
+                            }
+                        }
+                        let body = record.body.unwrap_or_default();
+                        let bytes = decode_body_bytes(&body, record.is_base64_encoded)
+                            .map_err(|err| format!("bad chunk body: {err}"))?;
+                        if entry.body.send(bytes).await.is_err() {
+                            return Ok(());
+                        }
+                        pending.insert(record.id, entry);
+                    }
+                }
+                StreamRecordType::End => {
+                    if let Some(mut entry) = pending.remove(&record.id) {
+                        if entry.init.is_some() {
+                            let _ = send_stream_head(&mut entry, 200, HashMap::new())?;
+                        }
+                        drop(entry.body);
+                    }
+                }
+                StreamRecordType::Error => {
+                    if let Some(mut entry) = pending.remove(&record.id) {
+                        if let Some(init) = entry.init.take() {
+                            let status = record.status_code.unwrap_or(502);
+                            let msg = record.message.unwrap_or_else(|| "error".to_string());
+                            let _ = init.send(StreamInit::Response(RouterResponse::text(
+                                StatusCode::from_u16(status)
+                                    .unwrap_or(StatusCode::BAD_GATEWAY),
+                                msg,
+                            )));
+                        }
+                        drop(entry.body);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn build_router_response_parts(
@@ -990,18 +1232,9 @@ fn build_router_response_parts(
 ) -> anyhow::Result<RouterResponse> {
     let status = StatusCode::from_u16(status_code)?;
 
-    let mut headers = HeaderMap::new();
-    for (k, v) in headers_in {
-        let name = HeaderName::from_bytes(k.as_bytes())?;
-        let value = HeaderValue::from_str(&v)?;
-        headers.insert(name, value);
-    }
+    let headers = headers_from_map(headers_in)?;
 
-    let body_bytes = if is_base64_encoded {
-        Bytes::from(STANDARD.decode(body.as_bytes())?)
-    } else {
-        Bytes::from(body)
-    };
+    let body_bytes = decode_body_bytes(&body, is_base64_encoded)?;
 
     Ok(RouterResponse {
         status,
@@ -1010,13 +1243,41 @@ fn build_router_response_parts(
     })
 }
 
-fn fail_all(
+fn headers_from_map(headers_in: HashMap<String, String>) -> anyhow::Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    for (k, v) in headers_in {
+        let name = HeaderName::from_bytes(k.as_bytes())?;
+        let value = HeaderValue::from_str(&v)?;
+        headers.insert(name, value);
+    }
+    Ok(headers)
+}
+
+fn decode_body_bytes(body: &str, is_base64_encoded: bool) -> anyhow::Result<Bytes> {
+    if is_base64_encoded {
+        Ok(Bytes::from(STANDARD.decode(body.as_bytes())?))
+    } else {
+        Ok(Bytes::from(body.to_string()))
+    }
+}
+
+fn fail_all_buffered(
     pending: HashMap<String, oneshot::Sender<RouterResponse>>,
     status: StatusCode,
     msg: String,
 ) {
     for (_id, tx) in pending {
         let _ = tx.send(RouterResponse::text(status, msg.clone()));
+    }
+}
+
+fn fail_all_stream(pending: HashMap<String, StreamPending>, status: StatusCode, msg: String) {
+    for (_id, mut entry) in pending {
+        if let Some(init) = entry.init.take() {
+            let _ = init.send(StreamInit::Response(RouterResponse::text(status, msg.clone())));
+        }
+        // Dropping the sender closes the response body stream.
+        drop(entry.body);
     }
 }
 
@@ -1049,9 +1310,39 @@ mod tests {
                 query: HashMap::new(),
                 raw_query_string: String::new(),
                 body,
-                respond_to: tx,
+                respond_to: ResponseSink::Buffered(tx),
             },
             rx,
+        )
+    }
+
+    fn stream_pending(
+        id: &str,
+    ) -> (
+        PendingRequest,
+        oneshot::Receiver<StreamInit>,
+        mpsc::Receiver<Bytes>,
+    ) {
+        let (init_tx, init_rx) = oneshot::channel();
+        let (body_tx, body_rx) = mpsc::channel(16);
+        (
+            PendingRequest {
+                id: id.to_string(),
+                method: Method::GET,
+                path: "/hello".to_string(),
+                route: "/hello".to_string(),
+                path_params: HashMap::new(),
+                headers: HashMap::new(),
+                query: HashMap::new(),
+                raw_query_string: String::new(),
+                body: Bytes::new(),
+                respond_to: ResponseSink::Stream(StreamSender {
+                    init: init_tx,
+                    body: body_tx,
+                }),
+            },
+            init_rx,
+            body_rx,
         )
     }
 
@@ -1236,7 +1527,7 @@ mod tests {
                 query: HashMap::new(),
                 raw_query_string: String::new(),
                 body: Bytes::new(),
-                respond_to: tx1,
+                respond_to: ResponseSink::Buffered(tx1),
             },
         )
         .unwrap();
@@ -1254,7 +1545,7 @@ mod tests {
                 query: HashMap::new(),
                 raw_query_string: String::new(),
                 body: Bytes::new(),
-                respond_to: tx2,
+                respond_to: ResponseSink::Buffered(tx2),
             },
         )
         .unwrap();
@@ -1295,7 +1586,7 @@ mod tests {
                 query: HashMap::new(),
                 raw_query_string: String::new(),
                 body: Bytes::new(),
-                respond_to: tx,
+                respond_to: ResponseSink::Buffered(tx),
             },
         )
         .unwrap();
@@ -1996,55 +2287,31 @@ mod tests {
 
         let op = op_cfg_stream(10_000, 2);
 
-        let (tx_a, mut rx_a) = oneshot::channel();
-        mgr.enqueue(
-            &op,
-            PendingRequest {
-                id: "a".to_string(),
-                method: Method::GET,
-                path: "/hello".to_string(),
-                route: "/hello".to_string(),
-                path_params: HashMap::new(),
-                headers: HashMap::new(),
-                query: HashMap::new(),
-                raw_query_string: String::new(),
-                body: Bytes::new(),
-                respond_to: tx_a,
-            },
-        )
-        .unwrap();
+        let (req_a, mut init_a, _body_a) = stream_pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
 
-        let (tx_b, rx_b) = oneshot::channel();
-        mgr.enqueue(
-            &op,
-            PendingRequest {
-                id: "b".to_string(),
-                method: Method::GET,
-                path: "/hello".to_string(),
-                route: "/hello".to_string(),
-                path_params: HashMap::new(),
-                headers: HashMap::new(),
-                query: HashMap::new(),
-                raw_query_string: String::new(),
-                body: Bytes::new(),
-                respond_to: tx_b,
-            },
-        )
-        .unwrap();
+        let (req_b, init_b, _body_b) = stream_pending("b");
+        mgr.enqueue(&op, req_b).unwrap();
 
-        let b = rx_b.await.expect("b response");
-        assert_eq!(b.status, StatusCode::OK);
+        let b = init_b.await.expect("b init");
+        match b {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::OK),
+            StreamInit::Stream(_) => panic!("expected buffered response"),
+        }
 
         // `a` should not be ready until we advance time.
-        assert!(tokio::time::timeout(Duration::from_millis(0), &mut rx_a)
+        assert!(tokio::time::timeout(Duration::from_millis(0), &mut init_a)
             .await
             .is_err());
 
         tokio::time::advance(Duration::from_millis(50)).await;
         tokio::task::yield_now().await;
 
-        let a = rx_a.await.expect("a response");
-        assert_eq!(a.status, StatusCode::OK);
+        let a = init_a.await.expect("a init");
+        match a {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::OK),
+            StreamInit::Stream(_) => panic!("expected buffered response"),
+        }
     }
 
     struct StreamOnceInvoker {
@@ -2089,10 +2356,13 @@ mod tests {
         );
 
         let op = op_cfg_stream(0, 1);
-        let (req_a, rx_a) = pending("a");
+        let (req_a, init_a, _body_a) = stream_pending("a");
         mgr.enqueue(&op, req_a).unwrap();
-        let a = rx_a.await.expect("a response");
-        assert_eq!(a.status, StatusCode::OK);
+        let a = init_a.await.expect("a init");
+        match a {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::OK),
+            StreamInit::Stream(_) => panic!("expected buffered response"),
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -2113,10 +2383,13 @@ mod tests {
         );
 
         let op = op_cfg_stream(0, 1);
-        let (req_a, rx_a) = pending("a");
+        let (req_a, init_a, _body_a) = stream_pending("a");
         mgr.enqueue(&op, req_a).unwrap();
-        let a = rx_a.await.expect("a response");
-        assert_eq!(a.status, StatusCode::OK);
+        let a = init_a.await.expect("a init");
+        match a {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::OK),
+            StreamInit::Stream(_) => panic!("expected buffered response"),
+        }
     }
 
     struct StreamErrorInvoker;
@@ -2152,15 +2425,21 @@ mod tests {
         );
 
         let op = op_cfg_stream(10_000, 2);
-        let (req_a, rx_a) = pending("a");
+        let (req_a, init_a, _body_a) = stream_pending("a");
         mgr.enqueue(&op, req_a).unwrap();
-        let (req_b, rx_b) = pending("b");
+        let (req_b, init_b, _body_b) = stream_pending("b");
         mgr.enqueue(&op, req_b).unwrap();
 
-        let a = rx_a.await.expect("a response");
-        let b = rx_b.await.expect("b response");
-        assert_eq!(a.status, StatusCode::BAD_GATEWAY);
-        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+        let a = init_a.await.expect("a init");
+        let b = init_b.await.expect("b init");
+        match a {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::BAD_GATEWAY),
+            _ => panic!("expected buffered error"),
+        }
+        match b {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::BAD_GATEWAY),
+            _ => panic!("expected buffered error"),
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -2182,15 +2461,21 @@ mod tests {
         );
 
         let op = op_cfg_stream(10_000, 2);
-        let (req_a, rx_a) = pending("a");
+        let (req_a, init_a, _body_a) = stream_pending("a");
         mgr.enqueue(&op, req_a).unwrap();
-        let (req_b, rx_b) = pending("b");
+        let (req_b, init_b, _body_b) = stream_pending("b");
         mgr.enqueue(&op, req_b).unwrap();
 
-        let a = rx_a.await.expect("a response");
-        let b = rx_b.await.expect("b response");
-        assert_eq!(a.status, StatusCode::OK);
-        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
+        let a = init_a.await.expect("a init");
+        let b = init_b.await.expect("b init");
+        match a {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::OK),
+            _ => panic!("expected buffered response"),
+        }
+        match b {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::BAD_GATEWAY),
+            _ => panic!("expected buffered error"),
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -2209,18 +2494,64 @@ mod tests {
         );
 
         let op = op_cfg_stream(10_000, 2);
-        let (req_a, rx_a) = pending("a");
+        let (req_a, init_a, _body_a) = stream_pending("a");
         mgr.enqueue(&op, req_a).unwrap();
-        let (req_b, rx_b) = pending("b");
+        let (req_b, init_b, _body_b) = stream_pending("b");
         mgr.enqueue(&op, req_b).unwrap();
 
-        let a = rx_a.await.expect("a response");
-        let b = rx_b.await.expect("b response");
-        assert_eq!(a.status, StatusCode::BAD_GATEWAY);
-        assert_eq!(b.status, StatusCode::BAD_GATEWAY);
-        assert!(std::str::from_utf8(&a.body)
-            .unwrap()
-            .contains("bad ndjson record"));
+        let a = init_a.await.expect("a init");
+        let b = init_b.await.expect("b init");
+        match a {
+            StreamInit::Response(resp) => {
+                assert_eq!(resp.status, StatusCode::BAD_GATEWAY);
+                assert!(std::str::from_utf8(&resp.body)
+                    .unwrap()
+                    .contains("bad ndjson record"));
+            }
+            _ => panic!("expected buffered error"),
+        }
+        match b {
+            StreamInit::Response(resp) => assert_eq!(resp.status, StatusCode::BAD_GATEWAY),
+            _ => panic!("expected buffered error"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_stream_interleaved_records_stream_body() {
+        let invoker = Arc::new(StreamOnceInvoker {
+            chunks: vec![Bytes::from_static(
+                br#"{"v":1,"id":"a","type":"head","statusCode":200,"headers":{"content-type":"text/plain"}}
+{"v":1,"id":"a","type":"chunk","body":"hello","isBase64Encoded":false}
+{"v":1,"id":"a","type":"end"}
+"#,
+            )],
+        });
+        let mgr = BatcherManager::new(
+            invoker,
+            BatchingConfig {
+                max_inflight_invocations: 10,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let op = op_cfg_stream(0, 1);
+        let (req_a, init_a, mut body_a) = stream_pending("a");
+        mgr.enqueue(&op, req_a).unwrap();
+
+        let init = init_a.await.expect("init");
+        match init {
+            StreamInit::Stream(head) => {
+                assert_eq!(head.status, StatusCode::OK);
+                assert_eq!(head.headers.get("content-type").unwrap(), "text/plain");
+            }
+            StreamInit::Response(_) => panic!("expected streaming init"),
+        }
+
+        let chunk = body_a.recv().await.expect("chunk");
+        assert_eq!(chunk, Bytes::from_static(b"hello"));
+        assert!(body_a.recv().await.is_none());
     }
 
     #[test]
