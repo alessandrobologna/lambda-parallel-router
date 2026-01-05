@@ -151,7 +151,7 @@ Resources:
         Cpu: "0.5 vCPU"
         Memory: "1 GB"
       AutoScalingConfiguration:
-        MaxConcurrency: 200
+        MaxConcurrency: 100
         MinSize: 4
         MaxSize: 8
       RouterConfig: {}
