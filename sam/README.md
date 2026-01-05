@@ -69,3 +69,25 @@ Notes:
 - Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=250`
 - Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=250`
 - Streaming adapter SSE: `GET {RouterServiceUrl}/streaming/adapter/sse?max-delay=250`
+
+## Load testing (k6)
+
+The repo includes a simple k6 + Python driver that reads the route URLs from the stack outputs and
+produces CSV + charts.
+
+Prereqs:
+- `k6`
+- `uv` (or install the Python deps in `benchmark/benchmark.py` manually)
+
+Run:
+
+```bash
+uv run benchmark/benchmark.py \
+  --stack lambda-parallel-router-demo \
+  --region us-east-1 \
+  --duration 2m \
+  --stage-targets 50,100,150 \
+  --max-delay-ms 250
+```
+
+Outputs are written to `benchmark-results/` (CSV + summary + charts).

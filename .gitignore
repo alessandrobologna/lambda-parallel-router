@@ -20,3 +20,6 @@ __pycache__/
 
 # AWS SAM
 .aws-sam/
+
+# Benchmark output
+benchmark-results/
