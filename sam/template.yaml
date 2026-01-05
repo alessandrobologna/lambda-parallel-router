@@ -149,8 +149,8 @@ Resources:
         RUST_LOG: info
       InstanceConfiguration:
         Cpu: "0.5 vCPU"
+        Memory: "1 GB"
       AutoScalingConfiguration:
-        AutoScalingConfigurationName: !Sub '${AWS::StackName}-autoscaling'
         MaxConcurrency: 200
         MinSize: 2
         MaxSize: 4
