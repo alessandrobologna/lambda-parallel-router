@@ -250,3 +250,27 @@ Outputs:
 
   RouterServiceUrl:
     Value: !GetAtt RouterService.ServiceUrl
+
+  RouterServiceBaseUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}"
+
+  BufferingSimpleHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/simple/hello"
+
+  BufferingDynamicHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/dynamic/hello"
+
+  StreamingSimpleHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/simple/hello"
+
+  StreamingDynamicHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/dynamic/hello"
+
+  BufferingAdapterHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/adapter/hello"
+
+  StreamingAdapterHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/hello"
+
+  StreamingAdapterSseUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/sse"

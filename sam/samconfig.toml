@@ -1,0 +1,22 @@
+# SAM configuration file
+
+version = 0.1
+
+[default.global.parameters]
+stack_name = "lambda-parallel-router-demo"
+region = "us-east-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+resolve_s3 = true
+s3_prefix = "lambda-parallel-router-demo"
+region = "us-east-1"
+beta_features = true
+
+[default.sync.parameters]
+watch = true
