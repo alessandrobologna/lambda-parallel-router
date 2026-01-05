@@ -14,6 +14,7 @@ ROUTER_IMAGE_IDENTIFIER ?= $(ECR_REGISTRY)/$(ROUTER_REPO_NAME):$(ROUTER_IMAGE_TA
 
 STACK_NAME ?= lambda-parallel-router-demo
 SAM_TEMPLATE ?= sam/template.yaml
+SAM_BUILD_TEMPLATE ?= .aws-sam/build/template.yaml
 SAM_DEPLOY_FLAGS ?= --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset
 
 BOOTSTRAP_STACK_NAME ?= lpr-bootstrap
@@ -112,7 +113,7 @@ sam-deploy: check sam-build
 	AWS_REGION="$(AWS_REGION)" AWS_DEFAULT_REGION="$(AWS_REGION)" \
 		sam deploy \
 			--stack-name "$(STACK_NAME)" \
-			--template-file "$(SAM_TEMPLATE)" \
+			--template-file "$(SAM_BUILD_TEMPLATE)" \
 			$(SAM_DEPLOY_FLAGS) \
 			--parameter-overrides RouterImageIdentifier="$(ROUTER_IMAGE_IDENTIFIER)"
 

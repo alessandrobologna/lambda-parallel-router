@@ -42,7 +42,7 @@ This runs:
 1) create/update an ECR repository creation template (CREATE_ON_PUSH)
 2) docker login to ECR
 3) build + push the router image (`Dockerfile.router`)
-4) `sam build` + `sam deploy` with `RouterImageIdentifier=...`
+4) `sam build` + `sam deploy` with `RouterImageIdentifier=...` (deploys the built template in `.aws-sam/build/`)
 
 Common overrides:
 
