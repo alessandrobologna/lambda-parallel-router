@@ -25,7 +25,7 @@ dial: small, bounded delays trade for fewer invocations and better Lambda utiliz
 ## Lambda integration modes
 
 - **Mode B (adapter, recommended)**: wrap an existing handler with a one-line adapter.
-  Node adapter lives in `lambda-kit/adapter-node/`.
+  Node adapter lives in `lambda-kit/adapter-node/` (package name: `lpr-lambda-adapter`).
 - **Mode C (native batch)**: handle an array of requests directly and return batch or NDJSON output.
 - **Mode A (layer/proxy)**: planned (best-effort compatibility without code changes).
 

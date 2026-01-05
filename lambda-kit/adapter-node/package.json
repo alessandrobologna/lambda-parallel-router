@@ -1,11 +1,29 @@
 {
-  "name": "@lpr/adapter-node",
-  "version": "0.0.0",
-  "private": true,
-  "main": "index.js",
+  "name": "lpr-lambda-adapter",
+  "version": "0.1.0",
+  "description": "Batch adapter for lambda-parallel-router",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "type": "commonjs",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "index.js"
+  ],
   "scripts": {
-    "test": "node --test"
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test",
+    "prepublishOnly": "npm run build"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
   }
 }
-

@@ -29,6 +29,7 @@ Each NDJSON line is a JSON object with:
 
 ```
 {
+  "v": 1,
   "id": "request-id",
   "type": "head" | "chunk" | "end" | "error",
   ...fields...
@@ -40,6 +41,7 @@ Establishes status + headers for a request stream.
 
 ```
 {
+  "v": 1,
   "id": "r1",
   "type": "head",
   "statusCode": 200,
@@ -56,6 +58,7 @@ Contains a chunk of body bytes.
 
 ```
 {
+  "v": 1,
   "id": "r1",
   "type": "chunk",
   "body": "data: hello\n\n",
@@ -71,7 +74,7 @@ Rules:
 Marks the end of the response stream for `id`.
 
 ```
-{ "id": "r1", "type": "end" }
+{ "v": 1, "id": "r1", "type": "end" }
 ```
 
 Rules:
@@ -83,6 +86,7 @@ Indicates a request-specific failure.
 
 ```
 {
+  "v": 1,
   "id": "r1",
   "type": "error",
   "statusCode": 502,
@@ -100,13 +104,13 @@ Rules:
 Two requests (`r1`, `r2`) interleaved in one Lambda response stream:
 
 ```
-{"id":"r1","type":"head","statusCode":200,"headers":{"content-type":"text/event-stream"}}
-{"id":"r1","type":"chunk","body":"data: hello\n\n","isBase64Encoded":false}
-{"id":"r2","type":"head","statusCode":200,"headers":{"content-type":"application/json"}}
-{"id":"r2","type":"chunk","body":"{\"partial\":1}\\n","isBase64Encoded":false}
-{"id":"r1","type":"chunk","body":"data: world\n\n","isBase64Encoded":false}
-{"id":"r2","type":"end"}
-{"id":"r1","type":"end"}
+{"v":1,"id":"r1","type":"head","statusCode":200,"headers":{"content-type":"text/event-stream"}}
+{"v":1,"id":"r1","type":"chunk","body":"data: hello\n\n","isBase64Encoded":false}
+{"v":1,"id":"r2","type":"head","statusCode":200,"headers":{"content-type":"application/json"}}
+{"v":1,"id":"r2","type":"chunk","body":"{\"partial\":1}\\n","isBase64Encoded":false}
+{"v":1,"id":"r1","type":"chunk","body":"data: world\n\n","isBase64Encoded":false}
+{"v":1,"id":"r2","type":"end"}
+{"v":1,"id":"r1","type":"end"}
 ```
 
 The router demuxes each record to the correct client stream.
@@ -119,10 +123,10 @@ The Lambda can generate SSE **payload bytes** itself and just stream them via
 `chunk` records:
 
 ```
-{"id":"r1","type":"head","statusCode":200,"headers":{"content-type":"text/event-stream"}}
-{"id":"r1","type":"chunk","body":"data: token1\\n\\n","isBase64Encoded":false}
-{"id":"r1","type":"chunk","body":"data: token2\\n\\n","isBase64Encoded":false}
-{"id":"r1","type":"end"}
+{"v":1,"id":"r1","type":"head","statusCode":200,"headers":{"content-type":"text/event-stream"}}
+{"v":1,"id":"r1","type":"chunk","body":"data: token1\\n\\n","isBase64Encoded":false}
+{"v":1,"id":"r1","type":"chunk","body":"data: token2\\n\\n","isBase64Encoded":false}
+{"v":1,"id":"r1","type":"end"}
 ```
 
 This keeps NDJSON internal while still providing **native SSE** to clients.
@@ -170,4 +174,3 @@ Interleaved streaming is **opt-in** via route config (e.g., `invoke_mode: Respon
 - Do we require `head` explicitly, or allow implicit defaults?
 - Should `error` close all requests or only the specific `id`?
 - Do we support trailers or `content-length` for streams? (likely no)
-

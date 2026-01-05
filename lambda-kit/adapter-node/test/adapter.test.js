@@ -152,3 +152,66 @@ test("batchAdapterStream writes NDJSON response records", async () => {
     assert.equal(r.isBase64Encoded, false);
   }
 });
+
+test("batchAdapterStream interleaved emits head/chunk/end records", async () => {
+  const writes = [];
+  let ended = false;
+  let contentType = null;
+
+  const responseStream = {
+    setContentType: (ct) => {
+      contentType = ct;
+    },
+    write: (s) => {
+      writes.push(String(s));
+      return true;
+    },
+    end: () => {
+      ended = true;
+    },
+  };
+
+  const streamifyResponse = (fn) => fn;
+  const handler = batchAdapterStream(
+    async (evt) => {
+      async function* body() {
+        yield `data: ${evt.requestContext.requestId}\n\n`;
+        yield Buffer.from("bin", "utf8");
+      }
+
+      return {
+        statusCode: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: body(),
+      };
+    },
+    { streamifyResponse, concurrency: 2, interleaved: true },
+  );
+
+  await handler(
+    { v: 1, batch: [{ requestContext: { requestId: "a" } }, { requestContext: { requestId: "b" } }] },
+    responseStream,
+  );
+
+  assert.equal(contentType, "application/x-ndjson");
+  assert.equal(ended, true);
+
+  const lines = writes.join("").trim().split("\n");
+  const records = lines.map((l) => JSON.parse(l));
+  const heads = records.filter((r) => r.type === "head");
+  const chunks = records.filter((r) => r.type === "chunk");
+  const ends = records.filter((r) => r.type === "end");
+
+  assert.equal(heads.length, 2);
+  assert.equal(ends.length, 2);
+  assert.equal(chunks.length, 4);
+
+  for (const id of ["a", "b"]) {
+    const firstIdx = records.findIndex((r) => r.id === id);
+    assert.equal(records[firstIdx].type, "head");
+    assert.ok(records.some((r) => r.id === id && r.type === "chunk"));
+    assert.ok(records.some((r) => r.id === id && r.type === "end"));
+  }
+
+  assert.ok(chunks.some((r) => r.isBase64Encoded === true));
+});
