@@ -131,7 +131,7 @@ pub struct LprOperationConfig {
 
     #[serde(default)]
     /// Optional dynamic batching configuration (sigmoid-based).
-    #[serde(rename = "dynamic_wait", alias = "adaptive_wait")]
+    #[serde(rename = "dynamic_wait")]
     pub dynamic_wait: Option<DynamicWaitConfig>,
 }
 
