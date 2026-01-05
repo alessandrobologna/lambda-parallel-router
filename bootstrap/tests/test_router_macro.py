@@ -109,6 +109,66 @@ class RouterMacroTests(unittest.TestCase):
             "arn:aws:iam::123:role/Existing",
         )
 
+    def test_supports_instance_and_autoscaling_config(self) -> None:
+        event = {
+            "requestId": "req-3",
+            "fragment": {
+                "Resources": {
+                    "Router": {
+                        "Type": "Lpr::Router::Service",
+                        "Properties": {
+                            "ImageIdentifier": "x",
+                            "RouterConfig": {},
+                            "InstanceConfiguration": {"Cpu": "0.5 vCPU", "Memory": "1 GB"},
+                            "AutoScalingConfiguration": {
+                                "AutoScalingConfigurationName": "lpr-demo-autoscaling",
+                                "MaxConcurrency": 200,
+                                "MinSize": 2,
+                                "MaxSize": 4,
+                            },
+                            "Spec": {
+                                "openapi": "3.0.0",
+                                "paths": {
+                                    "/hello": {
+                                        "get": {
+                                            "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
+                                            "x-lpr": {"max_wait_ms": 1, "max_batch_size": 1},
+                                        }
+                                    }
+                                },
+                            },
+                        },
+                    }
+                }
+            },
+        }
+
+        out = app.handler(event, context=None)
+        self.assertEqual(out["status"], "success")
+        resources = out["fragment"]["Resources"]
+
+        self.assertIn("RouterLprAutoScaling", resources)
+        self.assertEqual(
+            resources["RouterLprAutoScaling"]["Type"], "AWS::AppRunner::AutoScalingConfiguration"
+        )
+        self.assertEqual(
+            resources["RouterLprAutoScaling"]["Properties"]["MaxConcurrency"], 200
+        )
+
+        service_props = resources["Router"]["Properties"]
+        self.assertEqual(
+            service_props["AutoScalingConfigurationArn"],
+            {"Fn::GetAtt": ["RouterLprAutoScaling", "AutoScalingConfigurationArn"]},
+        )
+        self.assertEqual(
+            service_props["InstanceConfiguration"]["Cpu"],
+            "0.5 vCPU",
+        )
+        self.assertEqual(
+            service_props["InstanceConfiguration"]["Memory"],
+            "1 GB",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -147,6 +147,13 @@ Resources:
       Port: 8080
       Environment:
         RUST_LOG: info
+      InstanceConfiguration:
+        Cpu: "0.5 vCPU"
+      AutoScalingConfiguration:
+        AutoScalingConfigurationName: !Sub '${AWS::StackName}-autoscaling'
+        MaxConcurrency: 200
+        MinSize: 2
+        MaxSize: 4
       RouterConfig: {}
       Spec:
         openapi: 3.0.0

@@ -44,6 +44,15 @@ def _sub(template: str, variables: Optional[dict[str, Any]] = None) -> Any:
 def _get_att(logical_id: str, attr: str) -> dict[str, Any]:
     return {"Fn::GetAtt": [logical_id, attr]}
 
+def _intrinsic_equal(a: Any, b: Any) -> bool:
+    if a is b:
+        return True
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+    return a == b
+
 
 def _ensure_no_collision(resources: Mapping[str, Any], logical_id: str) -> None:
     if logical_id in resources:
@@ -116,7 +125,33 @@ def _expand_router_service(
     if not isinstance(env, dict):
         raise ValueError(f"{logical_id}.Properties.Environment must be an object.")
 
+    instance_cfg = props.get("InstanceConfiguration")
+    if instance_cfg is not None and not isinstance(instance_cfg, dict):
+        raise ValueError(f"{logical_id}.Properties.InstanceConfiguration must be an object.")
+
+    auto_scaling_cfg = props.get("AutoScalingConfiguration")
+    if auto_scaling_cfg is not None and not isinstance(auto_scaling_cfg, dict):
+        raise ValueError(f"{logical_id}.Properties.AutoScalingConfiguration must be an object.")
+
+    auto_scaling_arn = props.get("AutoScalingConfigurationArn")
+    if auto_scaling_arn is not None and not isinstance(auto_scaling_arn, (str, dict)):
+        raise ValueError(
+            f"{logical_id}.Properties.AutoScalingConfigurationArn must be a string or intrinsic function object."
+        )
+
+    if auto_scaling_cfg is not None and auto_scaling_arn is not None:
+        raise ValueError(
+            f"{logical_id}.Properties.AutoScalingConfiguration and AutoScalingConfigurationArn are mutually exclusive."
+        )
+
     instance_role_arn = props.get("InstanceRoleArn")
+    if instance_cfg and "InstanceRoleArn" in instance_cfg:
+        if instance_role_arn is None:
+            instance_role_arn = instance_cfg["InstanceRoleArn"]
+        elif not _intrinsic_equal(instance_role_arn, instance_cfg["InstanceRoleArn"]):
+            raise ValueError(
+                f"{logical_id}.Properties.InstanceRoleArn must match InstanceConfiguration.InstanceRoleArn when both are set."
+            )
     invoke_lambda_arns = _collect_target_lambda_arns(spec)
 
     service_name = props.get("ServiceName")
@@ -124,9 +159,17 @@ def _expand_router_service(
     lpr_ecr_role_id = f"{logical_id}LprEcrAccessRole"
     lpr_instance_role_id = f"{logical_id}LprInstanceRole"
     lpr_publisher_id = f"{logical_id}LprConfigPublisher"
+    lpr_autoscaling_id = f"{logical_id}LprAutoScaling"
 
     for rid in (lpr_ecr_role_id, lpr_instance_role_id, lpr_publisher_id):
         _ensure_no_collision(resources, rid)
+
+    if auto_scaling_cfg is not None:
+        _ensure_no_collision(resources, lpr_autoscaling_id)
+        resources[lpr_autoscaling_id] = {
+            "Type": "AWS::AppRunner::AutoScalingConfiguration",
+            "Properties": auto_scaling_cfg,
+        }
 
     resources[lpr_publisher_id] = {
         "Type": "Custom::LprConfigPublisher",
@@ -222,6 +265,13 @@ def _expand_router_service(
         "RuntimeEnvironmentVariables": _as_env_kv_list(runtime_env),
     }
 
+    instance_cfg_final: Dict[str, Any] = {"InstanceRoleArn": instance_role_arn}
+    if instance_cfg:
+        for k, v in instance_cfg.items():
+            if k == "InstanceRoleArn":
+                continue
+            instance_cfg_final[k] = v
+
     service_props: Dict[str, Any] = {
         "SourceConfiguration": {
             "AuthenticationConfiguration": {"AccessRoleArn": _get_att(lpr_ecr_role_id, "Arn")},
@@ -232,11 +282,18 @@ def _expand_router_service(
                 "ImageConfiguration": image_cfg,
             },
         },
-        "InstanceConfiguration": {"InstanceRoleArn": instance_role_arn},
+        "InstanceConfiguration": instance_cfg_final,
     }
 
     if service_name is not None:
         service_props["ServiceName"] = service_name
+
+    if auto_scaling_cfg is not None:
+        service_props["AutoScalingConfigurationArn"] = _get_att(
+            lpr_autoscaling_id, "AutoScalingConfigurationArn"
+        )
+    elif auto_scaling_arn is not None:
+        service_props["AutoScalingConfigurationArn"] = auto_scaling_arn
 
     # Replace the original resource in-place (same logical id) so `!GetAtt Router.ServiceUrl` keeps working.
     resources[logical_id] = {"Type": "AWS::AppRunner::Service", "Properties": service_props}

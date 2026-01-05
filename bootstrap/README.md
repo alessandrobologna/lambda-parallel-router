@@ -24,6 +24,14 @@ Resources:
       RouterConfig:
         # `spec_path` is injected automatically.
         listen_addr: "0.0.0.0:8080"
+      InstanceConfiguration:
+        Cpu: "0.5 vCPU"
+        # Memory defaults to 2 GB if omitted.
+      AutoScalingConfiguration:
+        AutoScalingConfigurationName: my-router-autoscaling
+        MinSize: 2
+        MaxSize: 4
+        MaxConcurrency: 200
       Spec:
         openapi: 3.0.0
         paths: {}
@@ -36,6 +44,13 @@ At deploy time, the macro expands this into:
 
 The macro derives the set of Lambda ARNs to allow from `Spec.paths.*.*.x-target-lambda` (which must
 resolve to Lambda function ARNs).
+
+Optional properties (passed through to App Runner):
+- `InstanceConfiguration` (e.g. `Cpu`, `Memory`)
+- `AutoScalingConfiguration` (creates an `AWS::AppRunner::AutoScalingConfiguration` and wires it to the service)
+- `AutoScalingConfigurationArn` (use an existing auto scaling configuration)
+
+`AutoScalingConfiguration` and `AutoScalingConfigurationArn` are mutually exclusive.
 
 ## Deploy
 
