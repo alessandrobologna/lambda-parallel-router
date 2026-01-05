@@ -2,7 +2,7 @@
 
 This folder contains an AWS SAM template that deploys:
 
-- Four sample Lambda functions that implement the router batch contract:
+- Six sample Lambda functions that implement the router batch contract:
   - buffering/simple (`/buffering/simple/hello`)
   - buffering/adaptive (`/buffering/adaptive/hello`)
   - streaming/simple (`/streaming/simple/hello`)
