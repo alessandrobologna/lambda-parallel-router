@@ -4,9 +4,9 @@ This folder contains an AWS SAM template that deploys:
 
 - Seven sample Lambda functions that implement the router batch contract:
   - buffering/simple (`/buffering/simple/hello`)
-  - buffering/adaptive (`/buffering/adaptive/hello`)
+  - buffering/dynamic (`/buffering/dynamic/hello`)
   - streaming/simple (`/streaming/simple/hello`)
-  - streaming/adaptive (`/streaming/adaptive/hello`)
+  - streaming/dynamic (`/streaming/dynamic/hello`)
   - buffering/adapter (`/buffering/adapter/hello`)
   - streaming/adapter (`/streaming/adapter/hello`)
   - streaming/adapter SSE (`/streaming/adapter/sse`)
@@ -63,9 +63,9 @@ Notes:
 ## Try it
 
 - Buffering simple: `GET {RouterServiceUrl}/buffering/simple/hello?max-delay=250`
-- Buffering adaptive: `GET {RouterServiceUrl}/buffering/adaptive/hello?max-delay=250`
+- Buffering dynamic: `GET {RouterServiceUrl}/buffering/dynamic/hello?max-delay=250`
 - Streaming simple: `GET {RouterServiceUrl}/streaming/simple/hello?max-delay=250`
-- Streaming adaptive: `GET {RouterServiceUrl}/streaming/adaptive/hello?max-delay=250`
+- Streaming dynamic: `GET {RouterServiceUrl}/streaming/dynamic/hello?max-delay=250`
 - Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=250`
 - Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=250`
 - Streaming adapter SSE: `GET {RouterServiceUrl}/streaming/adapter/sse?max-delay=250`

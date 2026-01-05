@@ -10,7 +10,7 @@ dial: small, bounded delays trade for fewer invocations and better Lambda utiliz
 - Buffers requests per route (and optional extra key dimensions) for a short window.
 - Invokes Lambda once per batch and correlates per-request responses by ID.
 - Supports **buffered** responses or **NDJSON streaming** with early return.
-- Optional **adaptive batching**: wait window shifts smoothly based on request rate.
+- Optional **dynamic batching**: wait window shifts smoothly based on request rate.
 
 ## Response modes
 
@@ -68,7 +68,7 @@ paths:
 Notes:
 - Each **batch item** is serialized as an API Gateway **HTTP API (v2.0)**-shaped event, so existing
   Lambda code can deserialize known fields.
-- `x-lpr.adaptive_wait` enables sigmoid-based adaptive batching (see spec for parameters).
+- `x-lpr.dynamic_wait` enables sigmoid-based dynamic batching (see spec for parameters).
 
 ## Repository layout
 

@@ -151,8 +151,8 @@ For each key, run a Tokio task:
 5) Dispatch responses back to waiting clients as each invocation completes.
 6) If no activity for `idle_ttl`, evict batcher task to prevent unbounded map growth.
 
-#### Adaptive batching (optional)
-In addition to a fixed `max_wait_ms`, the router can **adaptively** choose `wait_ms` based on the
+#### Dynamic batching (optional)
+In addition to a fixed `max_wait_ms`, the router can **dynamically** choose `wait_ms` based on the
 observed request rate for the current `BatchKey`.
 
 **Goal**
@@ -168,11 +168,11 @@ observed request rate for the current `BatchKey`.
 
 **Parameters (per operation)**
 - `x-lpr.max_wait_ms` (`u64`): the upper bound for `wait_ms`.
-- `x-lpr.adaptive_wait.min_wait_ms` (`u64`): the lower bound for `wait_ms`.
-- `x-lpr.adaptive_wait.target_rps` (`f64`): request rate where the sigmoid is centered.
-- `x-lpr.adaptive_wait.steepness` (`f64`): transition sharpness around `target_rps`.
-- `x-lpr.adaptive_wait.sampling_interval_ms` (`u64`): sampling period for request counts.
-- `x-lpr.adaptive_wait.smoothing_samples` (`usize`): moving average window size.
+- `x-lpr.dynamic_wait.min_wait_ms` (`u64`): the lower bound for `wait_ms`.
+- `x-lpr.dynamic_wait.target_rps` (`f64`): request rate where the sigmoid is centered.
+- `x-lpr.dynamic_wait.steepness` (`f64`): transition sharpness around `target_rps`.
+- `x-lpr.dynamic_wait.sampling_interval_ms` (`u64`): sampling period for request counts.
+- `x-lpr.dynamic_wait.smoothing_samples` (`usize`): moving average window size.
 
 **Sampling + smoothing**
 Every `sampling_interval_ms`, the batcher:
@@ -196,7 +196,7 @@ wait_ms  = min + sigmoid * (max - min)
 ```
 Then round and clamp to `[min, max]`.
 
-The batcher still flushes as soon as `max_batch_size` is reached; the adaptive window only affects
+The batcher still flushes as soon as `max_batch_size` is reached; the dynamic window only affects
 the time-based flush condition.
 
 #### Cancellation handling
@@ -344,7 +344,7 @@ Per operation:
   - `max_batch_size`
   - optional `key` dimensions
   - optional `timeouts` and `retries`
-  - optional `adaptive_wait` (adaptive batching window)
+  - optional `dynamic_wait` (dynamic batching window)
 
 Example:
 
@@ -357,7 +357,7 @@ paths:
       x-lpr:
         max_wait_ms: 10
         max_batch_size: 16
-        adaptive_wait:
+        dynamic_wait:
           min_wait_ms: 1
           target_rps: 50
           steepness: 0.01

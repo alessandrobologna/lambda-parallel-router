@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 
 use crate::{
     lambda::{LambdaInvokeResult, LambdaInvoker},
-    spec::{AdaptiveWaitConfig, BatchKeyDimension, InvokeMode, OperationConfig},
+    spec::{BatchKeyDimension, DynamicWaitConfig, InvokeMode, OperationConfig},
 };
 
 #[derive(Debug, Clone)]
@@ -140,7 +140,7 @@ impl BatchKey {
 struct BatcherConfig {
     max_wait_ms: u64,
     max_batch_size: usize,
-    adaptive_wait: Option<AdaptiveWaitConfig>,
+    dynamic_wait: Option<DynamicWaitConfig>,
 }
 
 #[derive(Debug)]
@@ -154,7 +154,7 @@ impl BatcherConfig {
         Self {
             max_wait_ms: op.max_wait_ms,
             max_batch_size: op.max_batch_size,
-            adaptive_wait: op.adaptive_wait.clone(),
+            dynamic_wait: op.dynamic_wait.clone(),
         }
     }
 }
@@ -381,12 +381,12 @@ async fn batcher_task(
     runtime: BatcherRuntime,
     batchers: Arc<DashMap<BatchKey, mpsc::Sender<PendingRequest>>>,
 ) {
-    if let Some(adaptive_wait) = cfg.adaptive_wait {
-        batcher_task_adaptive(
+    if let Some(dynamic_wait) = cfg.dynamic_wait {
+        batcher_task_dynamic(
             &key,
             cfg.max_wait_ms,
             cfg.max_batch_size,
-            adaptive_wait,
+            dynamic_wait,
             rx,
             &runtime,
         )
@@ -420,14 +420,14 @@ fn sigmoid_wait_ms(
 }
 
 #[derive(Debug)]
-struct AdaptiveRateEstimator {
+struct DynamicRateEstimator {
     interval: Duration,
     window_size: usize,
     count: u64,
     samples_rps: VecDeque<f64>,
 }
 
-impl AdaptiveRateEstimator {
+impl DynamicRateEstimator {
     fn new(interval: Duration, window_size: usize) -> Self {
         Self {
             interval,
@@ -502,21 +502,21 @@ async fn batcher_task_fixed(
     }
 }
 
-async fn batcher_task_adaptive(
+async fn batcher_task_dynamic(
     key: &BatchKey,
     max_wait_ms: u64,
     max_batch_size: usize,
-    adaptive_wait: AdaptiveWaitConfig,
+    dynamic_wait: DynamicWaitConfig,
     mut rx: mpsc::Receiver<PendingRequest>,
     runtime: &BatcherRuntime,
 ) {
-    let interval = Duration::from_millis(adaptive_wait.sampling_interval_ms);
+    let interval = Duration::from_millis(dynamic_wait.sampling_interval_ms);
     let mut sampler = tokio::time::interval(interval);
     sampler.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Tokio intervals tick immediately; advance to the first full interval.
     sampler.tick().await;
 
-    let mut est = AdaptiveRateEstimator::new(interval, adaptive_wait.smoothing_samples);
+    let mut est = DynamicRateEstimator::new(interval, dynamic_wait.smoothing_samples);
 
     loop {
         let idle_sleep = tokio::time::sleep(runtime.idle_ttl);
@@ -538,10 +538,10 @@ async fn batcher_task_adaptive(
         est.record_request();
         let wait_ms = sigmoid_wait_ms(
             est.smoothed_rps(),
-            adaptive_wait.min_wait_ms,
+            dynamic_wait.min_wait_ms,
             max_wait_ms,
-            adaptive_wait.target_rps,
-            adaptive_wait.steepness,
+            dynamic_wait.target_rps,
+            dynamic_wait.steepness,
         );
         let mut batch = vec![first];
 
@@ -1478,7 +1478,7 @@ mod tests {
             key: vec![],
             timeout_ms: 1000,
             invoke_mode: InvokeMode::Buffered,
-            adaptive_wait: None,
+            dynamic_wait: None,
         }
     }
 
@@ -1493,7 +1493,7 @@ mod tests {
             key: vec![],
             timeout_ms: 1000,
             invoke_mode: InvokeMode::ResponseStream,
-            adaptive_wait: None,
+            dynamic_wait: None,
         }
     }
 
@@ -2561,8 +2561,8 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_rate_estimator_smooths_samples() {
-        let mut est = AdaptiveRateEstimator::new(Duration::from_millis(100), 3);
+    fn dynamic_rate_estimator_smooths_samples() {
+        let mut est = DynamicRateEstimator::new(Duration::from_millis(100), 3);
         est.record_request();
         est.record_request();
         est.tick();

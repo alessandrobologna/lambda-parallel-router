@@ -9,16 +9,16 @@ paths:
         timeout_ms: 8000
         invoke_mode: buffered
 
-  /buffering/adaptive/hello:
+  /buffering/dynamic/hello:
     get:
-      operationId: bufferingAdaptiveHello
-      x-target-lambda: ${LPR_SAMPLE_BUFFERING_ADAPTIVE_LAMBDA_ARN}
+      operationId: bufferingDynamicHello
+      x-target-lambda: ${LPR_SAMPLE_BUFFERING_DYNAMIC_LAMBDA_ARN}
       x-lpr:
         max_wait_ms: 100
         max_batch_size: 16
         timeout_ms: 8000
         invoke_mode: buffered
-        adaptive_wait:
+        dynamic_wait:
           min_wait_ms: 1
           target_rps: 50
           steepness: 0.05
@@ -35,16 +35,16 @@ paths:
         timeout_ms: 8000
         invoke_mode: response_stream
 
-  /streaming/adaptive/hello:
+  /streaming/dynamic/hello:
     get:
-      operationId: streamingAdaptiveHello
-      x-target-lambda: ${LPR_SAMPLE_STREAMING_ADAPTIVE_LAMBDA_ARN}
+      operationId: streamingDynamicHello
+      x-target-lambda: ${LPR_SAMPLE_STREAMING_DYNAMIC_LAMBDA_ARN}
       x-lpr:
         max_wait_ms: 100
         max_batch_size: 16
         timeout_ms: 8000
         invoke_mode: response_stream
-        adaptive_wait:
+        dynamic_wait:
           min_wait_ms: 1
           target_rps: 50
           steepness: 0.05

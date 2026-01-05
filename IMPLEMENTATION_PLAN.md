@@ -40,8 +40,8 @@ This document is the implementation roadmap for the project spec in `http_microb
    - Parse spec YAML `paths.*.<method>` operations with required vendor extensions:
      - `x-target-lambda`
      - `x-lpr: { max_wait_ms, max_batch_size, timeout_ms?, invoke_mode? }`
-     - optional adaptive batching window:
-       - `x-lpr.adaptive_wait: { min_wait_ms, target_rps?, steepness?, sampling_interval_ms?, smoothing_samples? }`
+     - optional dynamic batching window:
+       - `x-lpr.dynamic_wait: { min_wait_ms, target_rps?, steepness?, sampling_interval_ms?, smoothing_samples? }`
 2. **Request lifecycle**
    - Accept HTTP (axum)
    - Match route template + method via compiled matcher
@@ -54,7 +54,7 @@ This document is the implementation roadmap for the project spec in `http_microb
      - `max_batch_size` reached (immediate)
      - `wait_ms` elapsed since first item, where:
        - fixed mode: `wait_ms = max_wait_ms`
-       - adaptive mode: `wait_ms` is computed from the request rate via a sigmoid in
+       - dynamic mode: `wait_ms` is computed from the request rate via a sigmoid in
          `[min_wait_ms, max_wait_ms]`
    - **Do not serialize per-key invocations**:
      - Each flush schedules a Lambda invoke asynchronously.
@@ -90,7 +90,7 @@ This document is the implementation roadmap for the project spec in `http_microb
    - structured logs + request ids
    - Prometheus metrics (batch sizes, waits, invoke durations, queue depth)
    - optional tracing (OpenTelemetry)
-6. **Adaptive batching**
+6. **Dynamic batching**
    - per-key request rate estimation using periodic sampling + smoothing
    - map request rate → `wait_ms` via a sigmoid so the batching window approaches:
      - `min_wait_ms` under low load

@@ -29,19 +29,19 @@ fn is_lambda_function_arn(value: &str) -> bool {
     !parts[6].is_empty()
 }
 
-fn default_adaptive_target_rps() -> f64 {
+fn default_dynamic_target_rps() -> f64 {
     50.0
 }
 
-fn default_adaptive_steepness() -> f64 {
+fn default_dynamic_steepness() -> f64 {
     0.01
 }
 
-fn default_adaptive_sampling_interval_ms() -> u64 {
+fn default_dynamic_sampling_interval_ms() -> u64 {
     100
 }
 
-fn default_adaptive_smoothing_samples() -> usize {
+fn default_dynamic_smoothing_samples() -> usize {
     10
 }
 
@@ -62,39 +62,39 @@ impl Default for InvokeMode {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-/// Adaptive batching window configuration.
+/// Dynamic batching window configuration.
 ///
 /// When set, the router computes a per-batch flush window in `[min_wait_ms, max_wait_ms]` based on
 /// the request rate for the current batch key.
-pub struct AdaptiveWaitConfig {
+pub struct DynamicWaitConfig {
     /// Minimum time (in milliseconds) to wait before flushing a batch.
     #[serde(deserialize_with = "crate::serde_ext::de_u64_or_string")]
     pub min_wait_ms: u64,
 
     /// Request rate (requests/sec) where the sigmoid is centered.
     #[serde(
-        default = "default_adaptive_target_rps",
+        default = "default_dynamic_target_rps",
         deserialize_with = "crate::serde_ext::de_f64_or_string"
     )]
     pub target_rps: f64,
 
     /// Sigmoid steepness around `target_rps`.
     #[serde(
-        default = "default_adaptive_steepness",
+        default = "default_dynamic_steepness",
         deserialize_with = "crate::serde_ext::de_f64_or_string"
     )]
     pub steepness: f64,
 
     /// Sampling period for request counts (milliseconds).
     #[serde(
-        default = "default_adaptive_sampling_interval_ms",
+        default = "default_dynamic_sampling_interval_ms",
         deserialize_with = "crate::serde_ext::de_u64_or_string"
     )]
     pub sampling_interval_ms: u64,
 
     /// Moving average window size (number of samples).
     #[serde(
-        default = "default_adaptive_smoothing_samples",
+        default = "default_dynamic_smoothing_samples",
         deserialize_with = "crate::serde_ext::de_usize_or_string"
     )]
     pub smoothing_samples: usize,
@@ -130,8 +130,9 @@ pub struct LprOperationConfig {
     pub invoke_mode: InvokeMode,
 
     #[serde(default)]
-    /// Optional adaptive batching configuration (sigmoid-based).
-    pub adaptive_wait: Option<AdaptiveWaitConfig>,
+    /// Optional dynamic batching configuration (sigmoid-based).
+    #[serde(rename = "dynamic_wait", alias = "adaptive_wait")]
+    pub dynamic_wait: Option<DynamicWaitConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -195,7 +196,7 @@ pub struct OperationConfig {
     pub key: Vec<BatchKeyDimension>,
     pub timeout_ms: u64,
     pub invoke_mode: InvokeMode,
-    pub adaptive_wait: Option<AdaptiveWaitConfig>,
+    pub dynamic_wait: Option<DynamicWaitConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -349,34 +350,34 @@ fn add_op(
 
     let timeout_ms = op.lpr.timeout_ms.unwrap_or(default_timeout_ms);
 
-    if let Some(adaptive) = &op.lpr.adaptive_wait {
-        if adaptive.min_wait_ms > op.lpr.max_wait_ms {
+    if let Some(dynamic) = &op.lpr.dynamic_wait {
+        if dynamic.min_wait_ms > op.lpr.max_wait_ms {
             anyhow::bail!(
-                "x-lpr.adaptive_wait.min_wait_ms must be <= x-lpr.max_wait_ms for {method} {route_template}"
+                "x-lpr.dynamic_wait.min_wait_ms must be <= x-lpr.max_wait_ms for {method} {route_template}"
             );
         }
 
-        if adaptive.sampling_interval_ms == 0 {
+        if dynamic.sampling_interval_ms == 0 {
             anyhow::bail!(
-                "x-lpr.adaptive_wait.sampling_interval_ms must be > 0 for {method} {route_template}"
+                "x-lpr.dynamic_wait.sampling_interval_ms must be > 0 for {method} {route_template}"
             );
         }
 
-        if adaptive.smoothing_samples == 0 {
+        if dynamic.smoothing_samples == 0 {
             anyhow::bail!(
-                "x-lpr.adaptive_wait.smoothing_samples must be > 0 for {method} {route_template}"
+                "x-lpr.dynamic_wait.smoothing_samples must be > 0 for {method} {route_template}"
             );
         }
 
-        if !adaptive.target_rps.is_finite() || adaptive.target_rps < 0.0 {
+        if !dynamic.target_rps.is_finite() || dynamic.target_rps < 0.0 {
             anyhow::bail!(
-                "x-lpr.adaptive_wait.target_rps must be a finite non-negative number for {method} {route_template}"
+                "x-lpr.dynamic_wait.target_rps must be a finite non-negative number for {method} {route_template}"
             );
         }
 
-        if !adaptive.steepness.is_finite() || adaptive.steepness <= 0.0 {
+        if !dynamic.steepness.is_finite() || dynamic.steepness <= 0.0 {
             anyhow::bail!(
-                "x-lpr.adaptive_wait.steepness must be a finite number > 0 for {method} {route_template}"
+                "x-lpr.dynamic_wait.steepness must be a finite number > 0 for {method} {route_template}"
             );
         }
     }
@@ -393,7 +394,7 @@ fn add_op(
             key,
             timeout_ms,
             invoke_mode: op.lpr.invoke_mode,
-            adaptive_wait: op.lpr.adaptive_wait,
+            dynamic_wait: op.lpr.dynamic_wait,
         },
     );
     Ok(())
@@ -734,7 +735,7 @@ paths:
     }
 
     #[test]
-    fn parses_adaptive_wait_config() {
+    fn parses_dynamic_wait_config() {
         let yaml = br#"
 paths:
   /x:
@@ -743,7 +744,7 @@ paths:
       x-lpr:
         max_wait_ms: 100
         max_batch_size: 2
-        adaptive_wait:
+        dynamic_wait:
           min_wait_ms: 1
           target_rps: 50
           steepness: 0.01
@@ -755,7 +756,7 @@ paths:
             panic!("expected match");
         };
 
-        let cfg = op.adaptive_wait.as_ref().expect("adaptive wait");
+        let cfg = op.dynamic_wait.as_ref().expect("dynamic wait");
         assert_eq!(cfg.min_wait_ms, 1);
         assert_eq!(cfg.target_rps, 50.0);
         assert_eq!(cfg.steepness, 0.01);
@@ -764,7 +765,7 @@ paths:
     }
 
     #[test]
-    fn adaptive_wait_min_must_be_lte_max() {
+    fn dynamic_wait_min_must_be_lte_max() {
         let yaml = br#"
 paths:
   /x:
@@ -773,7 +774,7 @@ paths:
       x-lpr:
         max_wait_ms: 10
         max_batch_size: 2
-        adaptive_wait:
+        dynamic_wait:
           min_wait_ms: 11
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());

@@ -40,12 +40,12 @@ Resources:
         Sourcemap: false
         Target: es2020
 
-  SampleBufferingAdaptiveHelloFunction:
+  SampleBufferingDynamicHelloFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: lambda/buffering-adaptive/
-      FunctionName: !Sub '${AWS::StackName}-buffering-adaptive-hello'
-      Description: Demo batch handler (buffered, adaptive).
+      CodeUri: lambda/buffering-dynamic/
+      FunctionName: !Sub '${AWS::StackName}-buffering-dynamic-hello'
+      Description: Demo batch handler (buffered, dynamic).
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -72,12 +72,12 @@ Resources:
         Sourcemap: false
         Target: es2020
 
-  SampleStreamingAdaptiveHelloFunction:
+  SampleStreamingDynamicHelloFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: lambda/streaming-adaptive/
-      FunctionName: !Sub '${AWS::StackName}-streaming-adaptive-hello'
-      Description: Demo batch handler (streaming, adaptive).
+      CodeUri: lambda/streaming-dynamic/
+      FunctionName: !Sub '${AWS::StackName}-streaming-dynamic-hello'
+      Description: Demo batch handler (streaming, dynamic).
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -162,15 +162,15 @@ Resources:
                 max_batch_size: 4
                 invoke_mode: buffered
                 timeout_ms: 8000
-          /buffering/adaptive/hello:
+          /buffering/dynamic/hello:
             get:
-              x-target-lambda: !GetAtt SampleBufferingAdaptiveHelloFunction.Arn
+              x-target-lambda: !GetAtt SampleBufferingDynamicHelloFunction.Arn
               x-lpr:
                 max_wait_ms: 100
                 max_batch_size: 16
                 invoke_mode: buffered
                 timeout_ms: 8000
-                adaptive_wait:
+                dynamic_wait:
                   min_wait_ms: 1
                   target_rps: 50
                   steepness: 0.05
@@ -184,15 +184,15 @@ Resources:
                 max_batch_size: 4
                 invoke_mode: response_stream
                 timeout_ms: 8000
-          /streaming/adaptive/hello:
+          /streaming/dynamic/hello:
             get:
-              x-target-lambda: !GetAtt SampleStreamingAdaptiveHelloFunction.Arn
+              x-target-lambda: !GetAtt SampleStreamingDynamicHelloFunction.Arn
               x-lpr:
                 max_wait_ms: 100
                 max_batch_size: 16
                 invoke_mode: response_stream
                 timeout_ms: 8000
-                adaptive_wait:
+                dynamic_wait:
                   min_wait_ms: 1
                   target_rps: 50
                   steepness: 0.05
@@ -227,14 +227,14 @@ Outputs:
   SampleBufferingSimpleHelloFunctionArn:
     Value: !GetAtt SampleBufferingSimpleHelloFunction.Arn
 
-  SampleBufferingAdaptiveHelloFunctionArn:
-    Value: !GetAtt SampleBufferingAdaptiveHelloFunction.Arn
+  SampleBufferingDynamicHelloFunctionArn:
+    Value: !GetAtt SampleBufferingDynamicHelloFunction.Arn
 
   SampleStreamingSimpleHelloFunctionArn:
     Value: !GetAtt SampleStreamingSimpleHelloFunction.Arn
 
-  SampleStreamingAdaptiveHelloFunctionArn:
-    Value: !GetAtt SampleStreamingAdaptiveHelloFunction.Arn
+  SampleStreamingDynamicHelloFunctionArn:
+    Value: !GetAtt SampleStreamingDynamicHelloFunction.Arn
 
   SampleBufferingAdapterHelloFunctionArn:
     Value: !GetAtt SampleBufferingAdapterHelloFunction.Arn
