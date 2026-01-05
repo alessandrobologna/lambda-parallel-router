@@ -589,44 +589,50 @@ async fn flush_batch(
                 msg,
             } => fail_all(pending, status, msg),
             InvocationPlan::Invoke { pending, payload } => {
-                let _permit = match runtime.inflight.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => {
-                        fail_all(
-                            pending,
-                            StatusCode::BAD_GATEWAY,
-                            "router shutting down".to_string(),
-                        );
-                        continue;
-                    }
-                };
+                let runtime = runtime.clone();
+                let key = key.clone();
+                tokio::spawn(async move {
+                    let _permit = match runtime.inflight.acquire().await {
+                        Ok(p) => p,
+                        Err(_) => {
+                            fail_all(
+                                pending,
+                                StatusCode::BAD_GATEWAY,
+                                "router shutting down".to_string(),
+                            );
+                            return;
+                        }
+                    };
 
-                tracing::info!(
-                    event = "lambda_invoke",
-                    target_lambda = %key.target_lambda,
-                    method = %key.method,
-                    route = %key.route,
-                    invoke_mode = ?key.invoke_mode,
-                    wait_ms,
-                    estimated_rps = estimated_rps,
-                    batch_size = pending.len(),
-                    payload_bytes = payload.len(),
-                    "invoking"
-                );
+                    tracing::info!(
+                        event = "lambda_invoke",
+                        target_lambda = %key.target_lambda,
+                        method = %key.method,
+                        route = %key.route,
+                        invoke_mode = ?key.invoke_mode,
+                        wait_ms,
+                        estimated_rps = estimated_rps,
+                        batch_size = pending.len(),
+                        payload_bytes = payload.len(),
+                        "invoking"
+                    );
 
-                match runtime
-                    .invoker
-                    .invoke(&key.target_lambda, payload, key.invoke_mode)
-                    .await
-                {
-                    Ok(LambdaInvokeResult::Buffered(bytes)) => dispatch_buffered(bytes, pending),
-                    Ok(LambdaInvokeResult::ResponseStream(stream)) => {
-                        dispatch_response_stream(stream, pending).await
+                    match runtime
+                        .invoker
+                        .invoke(&key.target_lambda, payload, key.invoke_mode)
+                        .await
+                    {
+                        Ok(LambdaInvokeResult::Buffered(bytes)) => {
+                            dispatch_buffered(bytes, pending)
+                        }
+                        Ok(LambdaInvokeResult::ResponseStream(stream)) => {
+                            dispatch_response_stream(stream, pending).await
+                        }
+                        Err(err) => {
+                            fail_all(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
+                        }
                     }
-                    Err(err) => {
-                        fail_all(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
-                    }
-                }
+                });
             }
         }
     }
