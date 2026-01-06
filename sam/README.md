@@ -69,6 +69,7 @@ Notes:
 - Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=250`
 - Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=250`
 - Streaming adapter SSE: `GET {RouterServiceUrl}/streaming/adapter/sse?max-delay=250`
+- Direct (Lambda Function URL): `GET {DirectHelloUrl}?max-delay=250`
 
 ## Load testing (k6)
 

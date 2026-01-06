@@ -89,19 +89,35 @@ def get_stack_outputs(stack_name: str, region: str | None) -> dict[str, str]:
 
 def build_targets(outputs: dict[str, str]) -> list[dict[str, str]]:
     required = {
+        # Router endpoints
         "buffering-simple": "BufferingSimpleHelloUrl",
         "buffering-dynamic": "BufferingDynamicHelloUrl",
         "streaming-simple": "StreamingSimpleHelloUrl",
         "streaming-dynamic": "StreamingDynamicHelloUrl",
+        # Adapter examples
+        "buffering-adapter": "BufferingAdapterHelloUrl",
+        "streaming-adapter": "StreamingAdapterHelloUrl",
+        "streaming-adapter-sse": "StreamingAdapterSseUrl",
+        # Direct (Function URL) endpoint for baseline comparison
+        "direct-hello": "DirectHelloUrl",
     }
     missing = [key for key in required.values() if key not in outputs]
     if missing:
         raise RuntimeError(f"Missing stack outputs: {', '.join(missing)}")
 
-    return [
+    targets = [
         {"name": name, "url": outputs[output_key]}
         for name, output_key in required.items()
     ]
+    return targets
+
+
+DEFAULT_ENDPOINTS = (
+    "buffering-simple",
+    "buffering-dynamic",
+    "streaming-simple",
+    "streaming-dynamic",
+)
 
 
 def filter_targets(targets: list[dict[str, str]], selected: tuple[str, ...]) -> list[dict[str, str]]:
@@ -806,7 +822,11 @@ def main(
         raise SystemExit("--max-delay-ms must be >= 0")
 
     outputs = get_stack_outputs(stack_name, region)
-    targets = filter_targets(build_targets(outputs), selected_endpoints)
+    all_targets = build_targets(outputs)
+    if selected_endpoints:
+        targets = filter_targets(all_targets, selected_endpoints)
+    else:
+        targets = [t for t in all_targets if t["name"] in DEFAULT_ENDPOINTS]
     endpoint_order = [t["name"] for t in targets]
     report_mode = "route" if len(endpoint_order) == 1 else "compare"
 

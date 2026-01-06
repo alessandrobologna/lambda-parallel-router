@@ -13,12 +13,19 @@ This folder contains a small load-test + reporting toolchain for the demo App Ru
 
 ## Endpoints
 
-By default the benchmark compares these 4 demo routes (resolved from CloudFormation outputs):
+By default the benchmark compares these 4 router demo routes (resolved from CloudFormation outputs):
 
 - `buffering-simple`
 - `buffering-dynamic`
 - `streaming-simple`
 - `streaming-dynamic`
+
+Additional endpoints are also available via `--endpoint`:
+
+- `buffering-adapter`
+- `streaming-adapter`
+- `streaming-adapter-sse`
+- `direct-hello` (Lambda Function URL baseline)
 
 ## Run a benchmark (compare mode)
 
@@ -98,4 +105,3 @@ uv run benchmark/benchmark.py \
 - `--executor`: `ramping-arrival-rate` (default) or `ramping-vus`
 - `--hold-duration`: add a hold stage between ramps (e.g. `30s`)
 - `--stages-json`: fully override stages (advanced)
-

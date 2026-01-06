@@ -136,6 +136,36 @@ Resources:
         Sourcemap: false
         Target: es2020
 
+  DirectHelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/direct-hello/
+      FunctionName: !Sub '${AWS::StackName}-direct-hello'
+      Description: Demo handler exposed via a Lambda Function URL (direct invoke).
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
+
+  DirectHelloFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !GetAtt DirectHelloFunction.Arn
+
+  DirectHelloFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref DirectHelloFunction
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
   # ------------------------------
   # Router service (expanded by the LprRouter macro)
   # ------------------------------
@@ -252,6 +282,9 @@ Outputs:
   SampleStreamingAdapterSseFunctionArn:
     Value: !GetAtt SampleStreamingAdapterSseFunction.Arn
 
+  DirectHelloFunctionArn:
+    Value: !GetAtt DirectHelloFunction.Arn
+
   RouterImageIdentifier:
     Value: !Ref RouterImageIdentifier
 
@@ -260,6 +293,9 @@ Outputs:
 
   RouterServiceBaseUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}"
+
+  DirectHelloUrl:
+    Value: !GetAtt DirectHelloFunctionUrl.FunctionUrl
 
   BufferingSimpleHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/buffering/simple/hello"
