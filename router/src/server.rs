@@ -119,6 +119,25 @@ fn read_rss_kb() -> Option<u64> {
     None
 }
 
+fn count_open_fds() -> Option<usize> {
+    fs::read_dir("/proc/self/fd").ok().map(|entries| entries.count())
+}
+
+fn read_max_open_files() -> Option<(u64, u64)> {
+    let limits = fs::read_to_string("/proc/self/limits").ok()?;
+    for line in limits.lines() {
+        if line.starts_with("Max open files") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 5 {
+                let soft = parts[3].parse().ok()?;
+                let hard = parts[4].parse().ok()?;
+                return Some((soft, hard));
+            }
+        }
+    }
+    None
+}
+
 pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
     let invoker = Arc::new(AwsLambdaInvoker::new(cfg.aws_region.clone()).await?);
     let batchers = BatcherManager::new(
@@ -142,6 +161,15 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
 
     let app = build_app(state);
 
+    if let Some((soft, hard)) = read_max_open_files() {
+        tracing::info!(
+            event = "process_limits",
+            max_open_files_soft = soft,
+            max_open_files_hard = hard,
+            "process limits"
+        );
+    }
+
     let mem_start = Instant::now();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -149,10 +177,13 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
             interval.tick().await;
             if let Some(rss_kb) = read_rss_kb() {
                 let rss_mb = (rss_kb as f64) / 1024.0;
+                let open_fds = count_open_fds();
                 tracing::info!(
                     event = "process_memory",
                     rss_kb,
                     rss_mb = rss_mb,
+                    open_fds = open_fds.unwrap_or_default(),
+                    open_fds_known = open_fds.is_some(),
                     uptime_s = mem_start.elapsed().as_secs(),
                     "rss sample"
                 );
