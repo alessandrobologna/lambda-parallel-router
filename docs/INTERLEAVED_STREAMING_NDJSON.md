@@ -165,7 +165,7 @@ Buffered responses remain unchanged:
 { "id": "r1", "statusCode": 200, "headers": {...}, "body": "...", "isBase64Encoded": false }
 ```
 
-Interleaved streaming is **opt-in** via route config (e.g., `invoke_mode: ResponseStream`).
+Interleaved streaming is **opt-in** via route config (e.g., `invokeMode: response_stream`).
 
 ---
 

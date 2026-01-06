@@ -195,70 +195,70 @@ Resources:
             get:
               x-target-lambda: !GetAtt SampleBufferingSimpleHelloFunction.Arn
               x-lpr:
-                max_wait_ms: 25
-                max_batch_size: 4
-                invoke_mode: buffered
-                timeout_ms: 8000
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: buffered
+                timeoutMs: 8000
           /buffering/dynamic/hello:
             get:
               x-target-lambda: !GetAtt SampleBufferingDynamicHelloFunction.Arn
               x-lpr:
-                max_wait_ms: 100
-                max_batch_size: 16
-                invoke_mode: buffered
-                timeout_ms: 8000
-                dynamic_wait:
-                  min_wait_ms: 1
-                  target_rps: 50
+                maxWaitMs: 100
+                maxBatchSize: 16
+                invokeMode: buffered
+                timeoutMs: 8000
+                dynamicWait:
+                  minWaitMs: 1
+                  targetRps: 50
                   steepness: 0.05
-                  sampling_interval_ms: 100
-                  smoothing_samples: 5
+                  samplingIntervalMs: 100
+                  smoothingSamples: 5
           /streaming/simple/hello:
             get:
               x-target-lambda: !GetAtt SampleStreamingSimpleHelloFunction.Arn
               x-lpr:
-                max_wait_ms: 25
-                max_batch_size: 4
-                invoke_mode: response_stream
-                timeout_ms: 8000
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
           /streaming/dynamic/hello:
             get:
               x-target-lambda: !GetAtt SampleStreamingDynamicHelloFunction.Arn
               x-lpr:
-                max_wait_ms: 100
-                max_batch_size: 16
-                invoke_mode: response_stream
-                timeout_ms: 8000
-                dynamic_wait:
-                  min_wait_ms: 1
-                  target_rps: 50
+                maxWaitMs: 100
+                maxBatchSize: 16
+                invokeMode: response_stream
+                timeoutMs: 8000
+                dynamicWait:
+                  minWaitMs: 1
+                  targetRps: 50
                   steepness: 0.05
-                  sampling_interval_ms: 100
-                  smoothing_samples: 5
+                  samplingIntervalMs: 100
+                  smoothingSamples: 5
           /buffering/adapter/hello:
             get:
               x-target-lambda: !GetAtt SampleBufferingAdapterHelloFunction.Arn
               x-lpr:
-                max_wait_ms: 25
-                max_batch_size: 4
-                invoke_mode: buffered
-                timeout_ms: 8000
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: buffered
+                timeoutMs: 8000
           /streaming/adapter/hello:
             get:
               x-target-lambda: !GetAtt SampleStreamingAdapterHelloFunction.Arn
               x-lpr:
-                max_wait_ms: 25
-                max_batch_size: 4
-                invoke_mode: response_stream
-                timeout_ms: 8000
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
           /streaming/adapter/sse:
             get:
               x-target-lambda: !GetAtt SampleStreamingAdapterSseFunction.Arn
               x-lpr:
-                max_wait_ms: 25
-                max_batch_size: 4
-                invoke_mode: response_stream
-                timeout_ms: 8000
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
 
 Outputs:
   SampleBufferingSimpleHelloFunctionArn:

@@ -54,7 +54,7 @@ Resources:
       Runtime: python3.13
       Handler: app.handler
       CodeUri: config_publisher/
-      Description: CloudFormation custom resource that uploads LPR config/spec documents to S3.
+      Description: CloudFormation custom resource that uploads LPR router config manifests to S3.
       MemorySize: 256
       Timeout: 30
       Policies:
@@ -96,7 +96,7 @@ Resources:
 
 Outputs:
   ConfigBucketName:
-    Description: S3 bucket name where router config/spec objects are stored.
+    Description: S3 bucket name where router config manifests are stored.
     Value: !If [CreateConfigBucket, !Ref ConfigBucket, !Ref UseExistingBucket]
     Export:
       Name: LprConfigBucketName

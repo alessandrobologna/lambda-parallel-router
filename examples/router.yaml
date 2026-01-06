@@ -1,12 +1,28 @@
-listen_addr: "127.0.0.1:3000"
-# Create a spec file and point `spec_path` to it.
-# A ready-to-use example spec is embedded in `sam/template.yaml` under:
-#   `RouterService.Properties.Spec.paths`.
-spec_path: "spec.yaml"
-aws_region: "us-east-1"
+ListenAddr: "127.0.0.1:3000"
+AwsRegion: "us-east-1"
 
-max_inflight_invocations: 64
-max_queue_depth_per_key: 1000
-idle_ttl_ms: 30000
-default_timeout_ms: 2000
-max_body_bytes: 1048576
+MaxInflightInvocations: 64
+MaxInflightRequests: 1000
+MaxPendingInvocations: 1000
+MaxQueueDepthPerKey: 1000
+IdleTtlMs: 30000
+DefaultTimeoutMs: 2000
+MaxBodyBytes: 1048576
+MaxInvokePayloadBytes: 6291456
+
+Spec:
+  openapi: 3.0.0
+  info:
+    title: lambda-parallel-router example
+    version: "1"
+  paths:
+    /hello:
+      get:
+        x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
+        x-lpr:
+          maxWaitMs: 25
+          maxBatchSize: 4
+          invokeMode: buffered # buffered | response_stream
+          timeoutMs: 2000 # optional per-request timeout
+          key: # optional extra batch key dimensions
+            - header:x-tenant-id

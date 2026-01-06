@@ -31,44 +31,40 @@ dial: small, bounded delays trade for fewer invocations and better Lambda utiliz
 
 ## Configuration
 
-### Router config (YAML)
+### Router config manifest (YAML/JSON)
+
+The router reads a **single config manifest** that embeds both router settings and the OpenAPI-ish
+spec. Keys follow these conventions:
+
+- `RouterConfig` keys: **PascalCase** (CloudFormation-friendly)
+- `x-lpr` keys: **camelCase**
 
 Example (`examples/router.yaml`):
 
 ```yaml
-listen_addr: "127.0.0.1:3000"
-spec_path: "spec.yaml"
-aws_region: "us-east-1"
+ListenAddr: "127.0.0.1:3000"
+AwsRegion: "us-east-1"
+DefaultTimeoutMs: 2000
 
-max_inflight_invocations: 64
-max_queue_depth_per_key: 1000
-idle_ttl_ms: 30000
-default_timeout_ms: 2000
-max_body_bytes: 1048576
-```
-
-### Spec (OpenAPI-ish)
-
-The spec defines `paths` and HTTP methods, plus vendor extensions:
-
-```yaml
-paths:
-  /hello:
-    get:
-      x-target-lambda: arn:aws:lambda:us-east-1:123:function:my-fn
-      x-lpr:
-        max_wait_ms: 25
-        max_batch_size: 4
-        invoke_mode: buffered          # buffered | response_stream
-        timeout_ms: 2000               # optional per-request timeout
-        key:                           # optional extra batch key dimensions
-          - header:x-tenant-id
+Spec:
+  openapi: 3.0.0
+  paths:
+    /hello:
+      get:
+        x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
+        x-lpr:
+          maxWaitMs: 25
+          maxBatchSize: 4
+          invokeMode: buffered # buffered | response_stream
+          timeoutMs: 2000 # optional per-request timeout
+          key: # optional extra batch key dimensions
+            - header:x-tenant-id
 ```
 
 Notes:
 - Each **batch item** is serialized as an API Gateway **HTTP API (v2.0)**-shaped event, so existing
   Lambda code can deserialize known fields.
-- `x-lpr.dynamic_wait` enables sigmoid-based dynamic batching (see spec for parameters).
+- `x-lpr.dynamicWait` enables sigmoid-based dynamic batching (see spec for parameters).
 
 ## Repository layout
 
@@ -79,10 +75,8 @@ Notes:
 
 ## Local dev (router)
 
-1) Create a router config and spec.
+1) Create a router config manifest.
    - `examples/router.yaml` is a starting point.
-   - A working example spec is embedded in `sam/template.yaml` under
-     `RouterService.Properties.Spec.paths`.
 2) Run:
 
 ```bash

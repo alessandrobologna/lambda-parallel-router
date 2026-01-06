@@ -18,7 +18,7 @@ exports.handler = batchAdapter(handler);
 
 ## Response streaming (NDJSON)
 
-If your router operation uses `invoke_mode: response_stream`, export a streaming handler:
+If your router operation uses `invokeMode: response_stream`, export a streaming handler:
 
 ```js
 const { batchAdapterStream } = require("lpr-lambda-adapter");

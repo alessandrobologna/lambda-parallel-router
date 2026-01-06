@@ -22,8 +22,7 @@ Resources:
       Environment:
         RUST_LOG: info
       RouterConfig:
-        # `spec_path` is injected automatically.
-        listen_addr: "0.0.0.0:8080"
+        ListenAddr: "0.0.0.0:8080"
       InstanceConfiguration:
         Cpu: "0.5 vCPU"
         # Memory defaults to 2 GB if omitted.
@@ -40,7 +39,7 @@ Resources:
 At deploy time, the macro expands this into:
 - an `AWS::AppRunner::Service` (same logical id as your `Lpr::Router::Service` resource)
 - IAM roles for ECR access and instance permissions
-- a `Custom::LprConfigPublisher` resource that uploads the resolved `RouterConfig` + `Spec` into S3
+- a `Custom::LprConfigPublisher` resource that uploads the resolved config manifest (`RouterConfig` + `Spec`) into S3
 
 The macro derives the set of Lambda ARNs to allow from `Spec.paths.*.*.x-target-lambda` (which must
 resolve to Lambda function ARNs).
@@ -75,5 +74,5 @@ sam deploy \
 
 ## Outputs
 
-- `ConfigBucketName`: bucket where router config/spec objects are stored.
+- `ConfigBucketName`: bucket where router config manifests are stored.
 - `ConfigPublisherServiceToken`: Lambda ARN to use as the `ServiceToken` for a `Custom::LprConfigPublisher` resource.

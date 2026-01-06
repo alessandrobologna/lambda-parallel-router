@@ -18,8 +18,8 @@ AWS Lambda is optimized around per-request invocation patterns, but many workloa
 ### 2.1 Goals
 - Route HTTP requests via an **OpenAPI-like spec**.
 - Micro-buffer requests per route (and optional additional key dimensions) using:
-  - `max_wait_ms`
-  - `max_batch_size`
+  - `maxWaitMs`
+  - `maxBatchSize`
 - Invoke Lambda with a **batch event** and correlate per-request responses.
 - Support **early-return of completed responses** using a **streaming record protocol** (NDJSON in v1).
 - Offer three Lambda-side integration modes:
@@ -141,7 +141,7 @@ For each key, run a Tokio task:
 1) Wait for first item.
 2) Compute a batching window (`wait_ms`) and start a timer `flush_at = now + wait_ms`.
 3) Accumulate items until either:
-   - `len == max_batch_size`, flush immediately, OR
+   - `len == maxBatchSize`, flush immediately, OR
    - `now >= flush_at`, flush.
 4) On flush, build a `BatchInvocation` and **schedule** a Lambda invoke.
    - Invokes are **not serialized** per key: the batcher should be able to dispatch multiple
@@ -152,12 +152,12 @@ For each key, run a Tokio task:
 6) If no activity for `idle_ttl`, evict batcher task to prevent unbounded map growth.
 
 #### Dynamic batching (optional)
-In addition to a fixed `max_wait_ms`, the router can **dynamically** choose `wait_ms` based on the
+In addition to a fixed `maxWaitMs`, the router can **dynamically** choose `wait_ms` based on the
 observed request rate for the current `BatchKey`.
 
 **Goal**
 - Low load: keep `wait_ms` near `min_wait_ms` (almost no batching).
-- High load: increase `wait_ms` smoothly toward `max_wait_ms` (bigger batches, fewer invocations).
+- High load: increase `wait_ms` smoothly toward `maxWaitMs` (bigger batches, fewer invocations).
 - Avoid hard thresholds (continuous mapping from load → delay).
 
 **Core idea**
@@ -167,12 +167,12 @@ observed request rate for the current `BatchKey`.
    bounds.
 
 **Parameters (per operation)**
-- `x-lpr.max_wait_ms` (`u64`): the upper bound for `wait_ms`.
-- `x-lpr.dynamic_wait.min_wait_ms` (`u64`): the lower bound for `wait_ms`.
-- `x-lpr.dynamic_wait.target_rps` (`f64`): request rate where the sigmoid is centered.
-- `x-lpr.dynamic_wait.steepness` (`f64`): transition sharpness around `target_rps`.
-- `x-lpr.dynamic_wait.sampling_interval_ms` (`u64`): sampling period for request counts.
-- `x-lpr.dynamic_wait.smoothing_samples` (`usize`): moving average window size.
+- `x-lpr.maxWaitMs` (`u64`): the upper bound for `wait_ms`.
+- `x-lpr.dynamicWait.minWaitMs` (`u64`): the lower bound for `wait_ms`.
+- `x-lpr.dynamicWait.targetRps` (`f64`): request rate where the sigmoid is centered.
+- `x-lpr.dynamicWait.steepness` (`f64`): transition sharpness around `targetRps`.
+- `x-lpr.dynamicWait.samplingIntervalMs` (`u64`): sampling period for request counts.
+- `x-lpr.dynamicWait.smoothingSamples` (`usize`): moving average window size.
 
 **Sampling + smoothing**
 Every `sampling_interval_ms`, the batcher:
@@ -186,7 +186,7 @@ The smoothed rate is the average of the deque (or 0 if empty).
 Let:
 - `rps` = smoothed requests/sec
 - `min` = `min_wait_ms`
-- `max` = `max_wait_ms`
+- `max` = `maxWaitMs`
 
 Compute:
 ```
@@ -196,7 +196,7 @@ wait_ms  = min + sigmoid * (max - min)
 ```
 Then round and clamp to `[min, max]`.
 
-The batcher still flushes as soon as `max_batch_size` is reached; the dynamic window only affects
+The batcher still flushes as soon as `maxBatchSize` is reached; the dynamic window only affects
 the time-based flush condition.
 
 #### Cancellation handling
@@ -340,11 +340,11 @@ Accept YAML or JSON.
 Per operation:
 - `x-target-lambda`: function identifier
 - `x-lpr` (lambda-parallel-router) config:
-  - `max_wait_ms`
-  - `max_batch_size`
+  - `maxWaitMs`
+  - `maxBatchSize`
   - optional `key` dimensions
   - optional `timeouts` and `retries`
-  - optional `dynamic_wait` (dynamic batching window)
+  - optional `dynamicWait` (dynamic batching window)
 
 Example:
 
@@ -355,30 +355,35 @@ paths:
       operationId: getItem
       x-target-lambda: arn:aws:lambda:REGION:ACCT:function:myfn:live
       x-lpr:
-        max_wait_ms: 10
-        max_batch_size: 16
-        dynamic_wait:
-          min_wait_ms: 1
-          target_rps: 50
+        maxWaitMs: 10
+        maxBatchSize: 16
+        dynamicWait:
+          minWaitMs: 1
+          targetRps: 50
           steepness: 0.01
-          sampling_interval_ms: 100
-          smoothing_samples: 10
+          samplingIntervalMs: 100
+          smoothingSamples: 10
         key:
           - method
           - route
           - header:x-tenant-id
-        timeout_ms: 2000
+        timeoutMs: 2000
 ```
 
-### 7.3 Router config
-- `listen_addr`
-- `spec_path`
-- `aws_region`
-- `max_inflight_invocations`
-- `max_queue_depth_per_key`
-- `max_body_bytes`
-- `idle_ttl_ms`
-- `default_timeout_ms`
+### 7.3 Router config manifest
+The router consumes a single YAML/JSON manifest with:
+
+- `ListenAddr`
+- `AwsRegion`
+- `MaxInflightInvocations`
+- `MaxPendingInvocations`
+- `MaxInflightRequests`
+- `MaxQueueDepthPerKey`
+- `MaxBodyBytes`
+- `MaxInvokePayloadBytes`
+- `IdleTtlMs`
+- `DefaultTimeoutMs`
+- `Spec` (OpenAPI-like object with `paths`)
 
 ---
 
@@ -537,7 +542,7 @@ Per route (labels: route_template, method, target_lambda):
 
 ### 13.3 Load tests
 - Use a load generator to validate:
-  - p50/p95 added latency vs `max_wait_ms`
+  - p50/p95 added latency vs `maxWaitMs`
   - batch size distribution under various QPS
   - cost proxy metrics (invocations reduced)
 
