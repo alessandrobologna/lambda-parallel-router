@@ -148,8 +148,8 @@ Resources:
       Environment:
         RUST_LOG: info
       InstanceConfiguration:
-        Cpu: "0.5 vCPU"
-        Memory: "1 GB"
+        Cpu: "1 vCPU"
+        Memory: "2 GB"
       AutoScalingConfiguration:
         MaxConcurrency: 100
         MinSize: 4
