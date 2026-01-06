@@ -17,16 +17,25 @@ pub enum DocumentLocation {
 impl DocumentLocation {
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         if let Ok(url) = url::Url::parse(s) {
-            if url.scheme() == "s3" {
-                let bucket = url
-                    .host_str()
-                    .context("s3 uri must include a bucket name")?
-                    .to_string();
-                let key = url.path().trim_start_matches('/').to_string();
-                if key.is_empty() {
-                    anyhow::bail!("s3 uri must include a key (path)");
+            match url.scheme() {
+                "s3" => {
+                    let bucket = url
+                        .host_str()
+                        .context("s3 uri must include a bucket name")?
+                        .to_string();
+                    let key = url.path().trim_start_matches('/').to_string();
+                    if key.is_empty() {
+                        anyhow::bail!("s3 uri must include a key (path)");
+                    }
+                    return Ok(Self::S3 { bucket, key });
                 }
-                return Ok(Self::S3 { bucket, key });
+                "file" => {
+                    let path = url
+                        .to_file_path()
+                        .map_err(|_| anyhow::anyhow!("invalid file:// uri"))?;
+                    return Ok(Self::File(path));
+                }
+                _ => {}
             }
         }
         Ok(Self::File(PathBuf::from_str(s)?))
@@ -76,6 +85,14 @@ mod tests {
         assert_eq!(
             DocumentLocation::parse("examples/router.yaml").unwrap(),
             DocumentLocation::File(PathBuf::from("examples/router.yaml"))
+        );
+    }
+
+    #[test]
+    fn parse_file_uri() {
+        assert_eq!(
+            DocumentLocation::parse("file:///tmp/config.json").unwrap(),
+            DocumentLocation::File(PathBuf::from("/tmp/config.json"))
         );
     }
 

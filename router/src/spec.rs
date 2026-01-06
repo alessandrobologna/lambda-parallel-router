@@ -66,6 +66,7 @@ impl Default for InvokeMode {
 ///
 /// When set, the router computes a per-batch flush window in `[min_wait_ms, max_wait_ms]` based on
 /// the request rate for the current batch key.
+#[serde(rename_all = "camelCase")]
 pub struct DynamicWaitConfig {
     /// Minimum time (in milliseconds) to wait before flushing a batch.
     #[serde(deserialize_with = "crate::serde_ext::de_u64_or_string")]
@@ -102,6 +103,7 @@ pub struct DynamicWaitConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 /// `x-lpr` vendor extension (per operation).
+#[serde(rename_all = "camelCase")]
 pub struct LprOperationConfig {
     /// Maximum time (in milliseconds) to wait before flushing a batch.
     #[serde(deserialize_with = "crate::serde_ext::de_u64_or_string")]
@@ -131,7 +133,6 @@ pub struct LprOperationConfig {
 
     #[serde(default)]
     /// Optional dynamic batching configuration (sigmoid-based).
-    #[serde(rename = "dynamic_wait")]
     pub dynamic_wait: Option<DynamicWaitConfig>,
 }
 
@@ -228,6 +229,11 @@ impl CompiledSpec {
     /// Parse and compile a YAML spec into a matcher.
     pub fn from_yaml_bytes(bytes: &[u8], default_timeout_ms: u64) -> anyhow::Result<Self> {
         let spec: OpenApiLikeSpec = serde_yaml::from_slice(bytes)?;
+        Self::compile(spec, default_timeout_ms)
+    }
+
+    /// Compile a parsed OpenAPI-ish spec into a matcher.
+    pub fn from_spec(spec: OpenApiLikeSpec, default_timeout_ms: u64) -> anyhow::Result<Self> {
         Self::compile(spec, default_timeout_ms)
     }
 
@@ -342,7 +348,7 @@ fn add_op(
     }
 
     if op.lpr.max_batch_size == 0 {
-        anyhow::bail!("x-lpr.max_batch_size must be > 0 for {method} {route_template}");
+        anyhow::bail!("x-lpr.maxBatchSize must be > 0 for {method} {route_template}");
     }
 
     let key = parse_batch_key_dimensions(&op.lpr.key)
@@ -353,31 +359,31 @@ fn add_op(
     if let Some(dynamic) = &op.lpr.dynamic_wait {
         if dynamic.min_wait_ms > op.lpr.max_wait_ms {
             anyhow::bail!(
-                "x-lpr.dynamic_wait.min_wait_ms must be <= x-lpr.max_wait_ms for {method} {route_template}"
+                "x-lpr.dynamicWait.minWaitMs must be <= x-lpr.maxWaitMs for {method} {route_template}"
             );
         }
 
         if dynamic.sampling_interval_ms == 0 {
             anyhow::bail!(
-                "x-lpr.dynamic_wait.sampling_interval_ms must be > 0 for {method} {route_template}"
+                "x-lpr.dynamicWait.samplingIntervalMs must be > 0 for {method} {route_template}"
             );
         }
 
         if dynamic.smoothing_samples == 0 {
             anyhow::bail!(
-                "x-lpr.dynamic_wait.smoothing_samples must be > 0 for {method} {route_template}"
+                "x-lpr.dynamicWait.smoothingSamples must be > 0 for {method} {route_template}"
             );
         }
 
         if !dynamic.target_rps.is_finite() || dynamic.target_rps < 0.0 {
             anyhow::bail!(
-                "x-lpr.dynamic_wait.target_rps must be a finite non-negative number for {method} {route_template}"
+                "x-lpr.dynamicWait.targetRps must be a finite non-negative number for {method} {route_template}"
             );
         }
 
         if !dynamic.steepness.is_finite() || dynamic.steepness <= 0.0 {
             anyhow::bail!(
-                "x-lpr.dynamic_wait.steepness must be a finite number > 0 for {method} {route_template}"
+                "x-lpr.dynamicWait.steepness must be a finite number > 0 for {method} {route_template}"
             );
         }
     }
@@ -519,9 +525,9 @@ paths:
       operationId: getItem
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
       x-lpr:
-        max_wait_ms: 10
-        max_batch_size: 16
-        timeout_ms: 2000
+        maxWaitMs: 10
+        maxBatchSize: 16
+        timeoutMs: 2000
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 2500).unwrap();
         let RouteMatch::Matched { op, path_params } =
@@ -554,10 +560,10 @@ paths:
   /x:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
+      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
+      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
         let RouteMatch::MethodNotAllowed { allowed } = spec.match_request(&Method::PUT, "/x")
@@ -596,7 +602,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 1, max_batch_size: 0 }
+      x-lpr: { maxWaitMs: 1, maxBatchSize: 0 }
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
     }
@@ -609,8 +615,8 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 1
-        max_batch_size: 1
+        maxWaitMs: 1
+        maxBatchSize: 1
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
         let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
@@ -627,8 +633,8 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 1
-        max_batch_size: 1
+        maxWaitMs: 1
+        maxBatchSize: 1
         key:
           - header:X-Tenant-Id
 "#;
@@ -653,8 +659,8 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 1
-        max_batch_size: 1
+        maxWaitMs: 1
+        maxBatchSize: 1
         key: ["not-supported"]
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
@@ -668,8 +674,8 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 1
-        max_batch_size: 1
+        maxWaitMs: 1
+        maxBatchSize: 1
         key: ["header:x-tenant-id", "header:X-Tenant-Id"]
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
@@ -683,8 +689,8 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 1
-        max_batch_size: 1
+        maxWaitMs: 1
+        maxBatchSize: 1
         key:
           - query:version
 "#;
@@ -706,8 +712,8 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 1
-        max_batch_size: 1
+        maxWaitMs: 1
+        maxBatchSize: 1
         key: ["query:version", "query:version"]
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
@@ -721,9 +727,9 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: "25"
-        max_batch_size: "4"
-        timeout_ms: "123"
+        maxWaitMs: "25"
+        maxBatchSize: "4"
+        timeoutMs: "123"
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
         let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
@@ -742,14 +748,14 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 100
-        max_batch_size: 2
-        dynamic_wait:
-          min_wait_ms: 1
-          target_rps: 50
+        maxWaitMs: 100
+        maxBatchSize: 2
+        dynamicWait:
+          minWaitMs: 1
+          targetRps: 50
           steepness: 0.01
-          sampling_interval_ms: 100
-          smoothing_samples: 10
+          samplingIntervalMs: 100
+          smoothingSamples: 10
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
         let RouteMatch::Matched { op, .. } = spec.match_request(&Method::GET, "/x") else {
@@ -772,10 +778,10 @@ paths:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr:
-        max_wait_ms: 10
-        max_batch_size: 2
-        dynamic_wait:
-          min_wait_ms: 11
+        maxWaitMs: 10
+        maxBatchSize: 2
+        dynamicWait:
+          minWaitMs: 11
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
     }

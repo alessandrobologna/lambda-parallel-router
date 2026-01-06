@@ -1,9 +1,7 @@
+use anyhow::Context;
 use clap::Parser;
 
-use lpr_router::{
-    config::RouterConfig, location::DocumentLocation, server, spec::CompiledSpec,
-    template::render_env_template_with,
-};
+use lpr_router::{config::RouterConfig, location::DocumentLocation, server, spec::CompiledSpec};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -18,17 +16,13 @@ fn resolve_config_location(args: &Args) -> anyhow::Result<String> {
         }
     }
 
-    for key in ["LPR_CONFIG_S3_URI", "LPR_CONFIG_URI"] {
-        if let Ok(v) = std::env::var(key) {
-            if !v.trim().is_empty() {
-                return Ok(v);
-            }
+    if let Ok(v) = std::env::var("LPR_CONFIG_URI") {
+        if !v.trim().is_empty() {
+            return Ok(v);
         }
     }
 
-    anyhow::bail!(
-        "missing config location: provide --config or set LPR_CONFIG_S3_URI/LPR_CONFIG_URI"
-    )
+    anyhow::bail!("missing config location: provide --config or set LPR_CONFIG_URI")
 }
 
 #[tokio::main]
@@ -53,24 +47,10 @@ async fn main() -> anyhow::Result<()> {
     let s3 = aws_cfg.as_ref().map(aws_sdk_s3::Client::new);
 
     let cfg_bytes = cfg_loc.read_bytes(s3.as_ref()).await?;
-    let cfg = RouterConfig::from_yaml_bytes(&cfg_bytes)?;
+    let mut cfg = RouterConfig::from_yaml_bytes(&cfg_bytes)?;
 
-    let spec_loc = DocumentLocation::parse(&cfg.spec_path.to_string_lossy())?;
-    let aws_cfg = if aws_cfg.is_none() && matches!(spec_loc, DocumentLocation::S3 { .. }) {
-        Some(aws_config::from_env().load().await)
-    } else {
-        aws_cfg
-    };
-    let s3 = aws_cfg.as_ref().map(aws_sdk_s3::Client::new);
-
-    let spec_bytes = spec_loc.read_bytes(s3.as_ref()).await?;
-    let spec = match std::str::from_utf8(&spec_bytes) {
-        Ok(s) => {
-            let rendered = render_env_template_with(s, |k| std::env::var(k).ok())?;
-            CompiledSpec::from_yaml_bytes(rendered.as_bytes(), cfg.default_timeout_ms)?
-        }
-        Err(_) => CompiledSpec::from_yaml_bytes(&spec_bytes, cfg.default_timeout_ms)?,
-    };
+    let spec_doc = cfg.spec.take().context("router config is missing `Spec`")?;
+    let spec = CompiledSpec::from_spec(spec_doc, cfg.default_timeout_ms)?;
 
     tracing::info!(listen_addr = %cfg.listen_addr, "loaded config + spec");
     server::run(cfg, spec).await

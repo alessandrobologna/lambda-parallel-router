@@ -588,7 +588,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
+      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
             1024,
         ));
@@ -608,7 +608,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
+      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
             1024,
         ));
@@ -635,7 +635,7 @@ paths:
   /hello:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 1, max_batch_size: 1 }
+      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
             1,
         ));
@@ -661,7 +661,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
+      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
             1024,
         ));
@@ -741,7 +741,7 @@ paths:
   /hello:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
+      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
             1024,
         );
@@ -774,7 +774,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 10000 }
+      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 10000 }
 "#;
 
         let spec = CompiledSpec::from_yaml_bytes(spec_yaml, 1000).unwrap();
@@ -869,7 +869,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 1000 }
+      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
             1024,
             ForwardHeadersConfig {

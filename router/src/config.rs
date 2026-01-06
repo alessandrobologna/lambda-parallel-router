@@ -2,9 +2,11 @@
 //!
 //! This config is intentionally small and focused on batching behavior and safe defaults.
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::net::SocketAddr;
 
 use serde::Deserialize;
+
+use crate::spec::OpenApiLikeSpec;
 
 fn default_max_inflight_invocations() -> usize {
     64
@@ -43,6 +45,7 @@ fn default_max_pending_invocations() -> usize {
 ///
 /// By default (empty `allow` + empty `deny`) the router forwards all headers that can be decoded as
 /// UTF-8, except hop-by-hop headers.
+#[serde(rename_all = "PascalCase")]
 pub struct ForwardHeadersConfig {
     /// If non-empty, only forward these headers (case-insensitive).
     #[serde(default)]
@@ -54,11 +57,13 @@ pub struct ForwardHeadersConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 /// Top-level router configuration.
+#[serde(rename_all = "PascalCase")]
 pub struct RouterConfig {
     /// Address the router listens on (e.g. `127.0.0.1:3000`).
     pub listen_addr: SocketAddr,
-    /// Path to the OpenAPI-ish spec YAML file.
-    pub spec_path: PathBuf,
+    /// OpenAPI-ish spec document (only `paths` are used).
+    #[serde(default)]
+    pub spec: Option<OpenApiLikeSpec>,
 
     #[serde(default)]
     /// Optional AWS region override for the Lambda client.
@@ -107,7 +112,7 @@ pub struct RouterConfig {
         default = "default_default_timeout_ms",
         deserialize_with = "crate::serde_ext::de_u64_or_string"
     )]
-    /// Default per-request timeout (used when an operation doesn't specify `x-lpr.timeout_ms`).
+    /// Default per-request timeout (used when an operation doesn't specify `x-lpr.timeoutMs`).
     pub default_timeout_ms: u64,
 
     #[serde(
@@ -146,8 +151,9 @@ mod tests {
     #[test]
     fn defaults_apply_for_optional_fields() {
         let yaml = br#"
-listen_addr: "127.0.0.1:3000"
-spec_path: "spec.yaml"
+ListenAddr: "127.0.0.1:3000"
+Spec:
+  paths: {}
 "#;
         let cfg = RouterConfig::from_yaml_bytes(yaml).unwrap();
         assert_eq!(cfg.max_inflight_invocations, 64);
@@ -161,21 +167,23 @@ spec_path: "spec.yaml"
         assert!(cfg.forward_headers.allow.is_empty());
         assert!(cfg.forward_headers.deny.is_empty());
         assert!(cfg.aws_region.is_none());
+        assert!(cfg.spec.is_some());
     }
 
     #[test]
     fn accepts_numeric_fields_as_strings() {
         let yaml = br#"
-listen_addr: "127.0.0.1:3000"
-spec_path: "spec.yaml"
-max_inflight_invocations: "12"
-max_inflight_requests: "56"
-max_pending_invocations: "78"
-max_queue_depth_per_key: "34"
-idle_ttl_ms: "56000"
-default_timeout_ms: "789"
-max_body_bytes: "1024"
-max_invoke_payload_bytes: "2048"
+ListenAddr: "127.0.0.1:3000"
+Spec:
+  paths: {}
+MaxInflightInvocations: "12"
+MaxInflightRequests: "56"
+MaxPendingInvocations: "78"
+MaxQueueDepthPerKey: "34"
+IdleTtlMs: "56000"
+DefaultTimeoutMs: "789"
+MaxBodyBytes: "1024"
+MaxInvokePayloadBytes: "2048"
 "#;
         let cfg = RouterConfig::from_yaml_bytes(yaml).unwrap();
         assert_eq!(cfg.max_inflight_invocations, 12);
