@@ -557,13 +557,20 @@ def plot_route_report(
 
     # Plot 1: Scatter latency over time, colored by status group.
     ax = axes[0, 0]
-    max_points = 80_000
-    scatter_df = latency_all[["elapsed_seconds", "latency_ms", "status_group"]]
-    if len(scatter_df) > max_points:
-        scatter_df = scatter_df.sample(n=max_points, random_state=42)
-    scatter_df = scatter_df.sample(frac=1, random_state=42)
+    max_points_by_group = {
+        "200": 50_000,
+        "429": 20_000,
+        "4xx": 20_000,
+        "5xx": 20_000,
+        "other": 20_000,
+    }
     for group in groups:
-        data = scatter_df[scatter_df["status_group"] == group]
+        data = latency_all[latency_all["status_group"] == group][
+            ["elapsed_seconds", "latency_ms"]
+        ]
+        max_points = max_points_by_group.get(group, 20_000)
+        if len(data) > max_points:
+            data = data.sample(n=max_points, random_state=42)
         if data.empty:
             continue
         ax.scatter(
