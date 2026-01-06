@@ -258,7 +258,7 @@ def _expand_router_service(
     runtime_env.setdefault("AWS_REGION", {"Ref": "AWS::Region"})
     runtime_env.setdefault("AWS_DEFAULT_REGION", {"Ref": "AWS::Region"})
     runtime_env.setdefault("RUST_LOG", "info")
-    runtime_env["LPR_CONFIG_S3_URI"] = _get_att(lpr_publisher_id, "ConfigS3Uri")
+    runtime_env["LPR_CONFIG_URI"] = _get_att(lpr_publisher_id, "ConfigS3Uri")
 
     image_cfg: Dict[str, Any] = {
         "Port": port,

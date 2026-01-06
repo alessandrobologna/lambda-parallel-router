@@ -99,32 +99,16 @@ def _publish(
     prefix = _normalize_prefix(prefix)
     s3 = boto3.client("s3")
 
-    spec_json = _canonical_json(spec)
-    spec_sha256 = _sha256_hex(spec_json)
-    spec_key = f"{prefix}spec/{spec_sha256}.json"
-    spec_body = spec_json.encode("utf-8")
-    spec_s3_uri = f"s3://{bucket}/{spec_key}"
-
     config_obj = dict(router_config)
-    config_obj.setdefault("listen_addr", f"0.0.0.0:{port}")
-    config_obj["spec_path"] = spec_s3_uri
+    config_obj.setdefault("ListenAddr", f"0.0.0.0:{port}")
+    # The router expects the OpenAPI-ish spec to be embedded directly in the config manifest.
+    config_obj["Spec"] = spec
 
     config_json = _canonical_json(config_obj)
     config_sha256 = _sha256_hex(config_json)
     config_key = f"{prefix}config/{config_sha256}.json"
     config_body = config_json.encode("utf-8")
     config_s3_uri = f"s3://{bucket}/{config_key}"
-
-    logger.info(
-        "Publishing spec to s3://%s/%s (%d bytes)", bucket, spec_key, len(spec_body)
-    )
-    s3.put_object(
-        Bucket=bucket,
-        Key=spec_key,
-        Body=spec_body,
-        ContentType="application/json",
-        Metadata={"lpr-sha256": spec_sha256, "lpr-name": "spec"},
-    )
 
     logger.info(
         "Publishing config to s3://%s/%s (%d bytes)", bucket, config_key, len(config_body)
@@ -140,9 +124,6 @@ def _publish(
     data: Dict[str, Any] = {
         "BucketName": bucket,
         "Prefix": prefix,
-        "SpecKey": spec_key,
-        "SpecS3Uri": spec_s3_uri,
-        "SpecSha256": spec_sha256,
         "ConfigKey": config_key,
         "ConfigS3Uri": config_s3_uri,
         "ConfigSha256": config_sha256,
@@ -159,7 +140,7 @@ def handler(event: Mapping[str, Any], context: Any) -> None:
     Properties:
       - BucketName (optional): target S3 bucket (defaults to env LPR_DEFAULT_BUCKET)
       - Prefix (optional): object key prefix (default: "lpr/")
-      - Port (optional): port number used to default `listen_addr` when omitted in `RouterConfig`
+      - Port (optional): port number used to default `ListenAddr` when omitted in `RouterConfig`
       - RouterConfig: object (YAML/JSON object)
       - Spec: object (YAML/JSON object)
     """

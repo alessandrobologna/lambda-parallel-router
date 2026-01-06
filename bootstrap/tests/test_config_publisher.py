@@ -51,7 +51,7 @@ class ConfigPublisherTests(unittest.TestCase):
         fake_s3 = _FakeS3()
         fake_boto3 = _FakeBoto3(fake_s3)
 
-        router_config = {"max_inflight_invocations": 1}
+        router_config = {"MaxInflightInvocations": 1}
         spec = {"openapi": "3.0.0", "paths": {}}
 
         with mock.patch.object(app, "boto3", fake_boto3):
@@ -65,38 +65,26 @@ class ConfigPublisherTests(unittest.TestCase):
 
         self.assertEqual(physical_id, "lpr-config-publisher:my-bucket:lpr/")
         self.assertEqual(data["BucketName"], "my-bucket")
-        self.assertTrue(data["SpecKey"].startswith("lpr/spec/"))
-        self.assertTrue(data["SpecKey"].endswith(".json"))
-        self.assertEqual(data["SpecS3Uri"], f"s3://my-bucket/{data['SpecKey']}")
         self.assertTrue(data["ConfigKey"].startswith("lpr/config/"))
         self.assertTrue(data["ConfigKey"].endswith(".json"))
         self.assertEqual(data["ConfigS3Uri"], f"s3://my-bucket/{data['ConfigKey']}")
 
-        self.assertEqual(len(fake_s3.put_calls), 2)
+        self.assertEqual(len(fake_s3.put_calls), 1)
         calls_by_key = {c["Key"]: c for c in fake_s3.put_calls}
-        self.assertIn(data["SpecKey"], calls_by_key)
         self.assertIn(data["ConfigKey"], calls_by_key)
-
-        spec_call = calls_by_key[data["SpecKey"]]
-        self.assertEqual(spec_call["Bucket"], "my-bucket")
-        self.assertEqual(spec_call["ContentType"], "application/json")
-        self.assertEqual(spec_call["Metadata"]["lpr-name"], "spec")
 
         config_call = calls_by_key[data["ConfigKey"]]
         self.assertEqual(config_call["Bucket"], "my-bucket")
         self.assertEqual(config_call["ContentType"], "application/json")
         self.assertEqual(config_call["Metadata"]["lpr-name"], "config")
 
-        self.assertIn("spec_path", app.json.loads(config_call["Body"].decode("utf-8")))
-        self.assertIn("listen_addr", app.json.loads(config_call["Body"].decode("utf-8")))
-        self.assertEqual(
-            app.json.loads(config_call["Body"].decode("utf-8"))["spec_path"],
-            data["SpecS3Uri"],
-        )
-        self.assertEqual(
-            app.json.loads(config_call["Body"].decode("utf-8"))["listen_addr"],
-            "0.0.0.0:8080",
-        )
+        config_doc = app.json.loads(config_call["Body"].decode("utf-8"))
+        self.assertIn("Spec", config_doc)
+        self.assertIn("ListenAddr", config_doc)
+        self.assertNotIn("spec_path", config_doc)
+        self.assertNotIn("listen_addr", config_doc)
+        self.assertEqual(config_doc["ListenAddr"], "0.0.0.0:8080")
+        self.assertEqual(config_doc["Spec"], spec)
 
     def test_handler_delete_success(self) -> None:
         event = {

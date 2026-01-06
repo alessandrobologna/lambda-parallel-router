@@ -23,14 +23,14 @@ class RouterMacroTests(unittest.TestCase):
                             "ImageIdentifier": {"Ref": "RouterImageIdentifier"},
                             "Port": 8080,
                             "Environment": {"RUST_LOG": "debug"},
-                            "RouterConfig": {"max_inflight_invocations": 1},
+                            "RouterConfig": {"MaxInflightInvocations": 1},
                             "Spec": {
                                 "openapi": "3.0.0",
                                 "paths": {
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": {"Fn::GetAtt": ["Fn", "Arn"]},
-                                            "x-lpr": {"max_wait_ms": 1, "max_batch_size": 1},
+                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -70,7 +70,7 @@ class RouterMacroTests(unittest.TestCase):
         )
         env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
         self.assertEqual(env_map["RUST_LOG"], "debug")
-        self.assertIn("LPR_CONFIG_S3_URI", env_map)
+        self.assertIn("LPR_CONFIG_URI", env_map)
 
     def test_allows_instance_role_override(self) -> None:
         event = {
@@ -89,7 +89,7 @@ class RouterMacroTests(unittest.TestCase):
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"max_wait_ms": 1, "max_batch_size": 1},
+                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -132,7 +132,7 @@ class RouterMacroTests(unittest.TestCase):
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"max_wait_ms": 1, "max_batch_size": 1},
+                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
