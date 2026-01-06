@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -26,12 +27,43 @@ import click
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from matplotlib.cbook import boxplot_stats
+from matplotlib.patches import Patch
 
 
 DEFAULT_STAGE_TARGETS = "50,100,150"
 DEFAULT_RAMP_DURATION = "3m"
 DEFAULT_HOLD_DURATION = "0s"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "benchmark-results"
+
+_DURATION_PART_RE = re.compile(r"(\d+)(ms|s|m|h)")
+
+
+def parse_duration_to_seconds(value: str) -> float:
+    """Parse a k6 duration string like '30s', '5m', or '1h30m' to seconds."""
+    if not value:
+        raise ValueError("duration is empty")
+
+    normalized = value.strip().lower()
+    matches = list(_DURATION_PART_RE.finditer(normalized))
+    if not matches or "".join(m.group(0) for m in matches) != normalized:
+        raise ValueError(f"unsupported duration format: {value!r}")
+
+    total = 0.0
+    for match in matches:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if unit == "ms":
+            total += amount / 1000.0
+        elif unit == "s":
+            total += amount
+        elif unit == "m":
+            total += amount * 60
+        elif unit == "h":
+            total += amount * 3600
+        else:
+            raise ValueError(f"unsupported duration unit: {unit}")
+    return total
 
 
 def extract_endpoint(extra_tags: str) -> str:
@@ -70,6 +102,25 @@ def build_targets(outputs: dict[str, str]) -> list[dict[str, str]]:
         {"name": name, "url": outputs[output_key]}
         for name, output_key in required.items()
     ]
+
+
+def filter_targets(targets: list[dict[str, str]], selected: tuple[str, ...]) -> list[dict[str, str]]:
+    if not selected:
+        return targets
+
+    selected_set = set(selected)
+    known = [t["name"] for t in targets]
+    unknown = sorted(selected_set.difference(known))
+    if unknown:
+        raise SystemExit(
+            f"Unknown --endpoint value(s): {', '.join(unknown)}. Known endpoints: {', '.join(known)}"
+        )
+
+    filtered = [t for t in targets if t["name"] in selected_set]
+    if not filtered:
+        raise SystemExit("No endpoints selected")
+    return filtered
+
 
 def parse_stage_targets(value: str) -> list[int]:
     targets = [int(x.strip()) for x in value.split(",") if x.strip()]
@@ -178,12 +229,14 @@ def calculate_error_stats(df: pd.DataFrame) -> pd.DataFrame:
     reqs["is_error"] = reqs["status"] >= 400
     reqs["is_4xx"] = (reqs["status"] >= 400) & (reqs["status"] < 500)
     reqs["is_5xx"] = (reqs["status"] >= 500) & (reqs["status"] < 600)
+    reqs["is_429"] = reqs["status"] == 429
 
     errors = reqs.groupby("endpoint").agg(
         requests=("status", "count"),
         errors=("is_error", "sum"),
         errors_4xx=("is_4xx", "sum"),
         errors_5xx=("is_5xx", "sum"),
+        errors_429=("is_429", "sum"),
     )
     errors["error_rate"] = (errors["errors"] / errors["requests"]).fillna(0.0)
     return errors
@@ -196,14 +249,7 @@ def find_latest_csv(directory: Path) -> Path:
     return candidates[0]
 
 
-def plot_results(
-    latency_df: pd.DataFrame,
-    stats: pd.DataFrame,
-    error_stats: pd.DataFrame,
-    *,
-    output_path: Path,
-    endpoint_order: list[str],
-) -> None:
+def _apply_plot_theme() -> None:
     sns.set_theme(
         style="darkgrid",
         context="notebook",
@@ -225,159 +271,365 @@ def plot_results(
         },
     )
 
-    latency_df = latency_df.copy()
-    latency_df["endpoint"] = pd.Categorical(latency_df["endpoint"], endpoint_order, ordered=True)
-    latency_df = latency_df.dropna(subset=["endpoint"])
+def _compute_stage_ends_seconds(stages: list[dict[str, object]]) -> list[float]:
+    ends: list[float] = []
+    total = 0.0
+    for stage in stages:
+        duration = stage.get("duration")
+        if not isinstance(duration, str):
+            continue
+        total += parse_duration_to_seconds(duration)
+        ends.append(total)
+    return ends
 
-    base_ts = latency_df["timestamp"].min() if not latency_df.empty else None
 
-    per_second_all = (
-        latency_df.set_index("timestamp")
-        .groupby("endpoint")["latency_ms"]
-        .resample("1s")
-        .median()
-        .reset_index()
+def _should_show_stage_markers(stage_ends: list[float], data_max_elapsed: float) -> bool:
+    if not stage_ends:
+        return False
+    stage_total = stage_ends[-1]
+    return abs(stage_total - data_max_elapsed) <= max(30.0, data_max_elapsed * 0.10)
+
+
+def _build_palette(keys: list[str]) -> dict[str, str]:
+    colors = sns.color_palette("tab10", n_colors=max(len(keys), 3)).as_hex()
+    return {k: colors[i % len(colors)] for i, k in enumerate(keys)}
+
+
+def plot_compare_report(
+    latency_all: pd.DataFrame,
+    latency_ok: pd.DataFrame,
+    stats_ok: pd.DataFrame,
+    *,
+    output_path: Path,
+    stages: list[dict[str, object]],
+    endpoints: list[str],
+    executor: str,
+    title: str,
+) -> None:
+    _apply_plot_theme()
+    palette = _build_palette(endpoints)
+
+    latency_all = latency_all.copy()
+    if latency_all.empty:
+        raise RuntimeError("No latency samples available")
+    min_ts = latency_all["timestamp"].min()
+    latency_all["elapsed_seconds"] = (latency_all["timestamp"] - min_ts).dt.total_seconds()
+    data_max_elapsed = float(latency_all["elapsed_seconds"].max())
+
+    latency_ok = latency_ok.copy()
+    if not latency_ok.empty:
+        latency_ok["elapsed_seconds"] = (latency_ok["timestamp"] - min_ts).dt.total_seconds()
+
+    stage_ends = _compute_stage_ends_seconds(stages)
+    show_stage_markers = _should_show_stage_markers(stage_ends, data_max_elapsed)
+    target_unit = "rps" if executor == "ramping-arrival-rate" else "vus"
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Plot 1: Latency scatter over time (200 only, overlay errors)
+    ax = axes[0, 0]
+    max_scatter_points_per_endpoint = 50_000
+    scatter_parts: list[pd.DataFrame] = []
+    for endpoint in endpoints:
+        data = latency_ok[latency_ok["endpoint"] == endpoint][
+            ["elapsed_seconds", "latency_ms", "endpoint"]
+        ]
+        if len(data) > max_scatter_points_per_endpoint:
+            data = data.sample(n=max_scatter_points_per_endpoint, random_state=42)
+        scatter_parts.append(data)
+    if scatter_parts:
+        scatter_df = pd.concat(scatter_parts, ignore_index=True)
+        if not scatter_df.empty:
+            scatter_df = scatter_df.sample(frac=1, random_state=42)
+            ax.scatter(
+                scatter_df["elapsed_seconds"],
+                scatter_df["latency_ms"],
+                alpha=0.25,
+                s=8,
+                c=scatter_df["endpoint"].map(palette),
+                edgecolors="none",
+            )
+
+    errors = latency_all[latency_all["status"] != 200][["elapsed_seconds", "latency_ms"]]
+    if not errors.empty:
+        if len(errors) > 20_000:
+            errors = errors.sample(n=20_000, random_state=42)
+        ax.scatter(
+            errors["elapsed_seconds"],
+            errors["latency_ms"],
+            alpha=0.5,
+            s=14,
+            c="crimson",
+            marker="x",
+        )
+
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+        ymax = ax.get_ylim()[1]
+        starts = [0.0] + stage_ends[:-1]
+        prev_target = 0
+        for start, end, stage in zip(starts, stage_ends, stages, strict=False):
+            end_target = int(stage.get("target", prev_target)) if stage.get("target") is not None else prev_target
+            ax.text(
+                (start + end) / 2,
+                ymax * 0.95,
+                f"{prev_target}→{end_target} {target_unit}",
+                ha="center",
+                fontsize=9,
+                color=".5",
+            )
+            prev_target = end_target
+
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Latency (ms)")
+    ax.set_title("Latency over time (scatter, 200 only)")
+
+    # Plot 2: Average latency (1s buckets, 200 only)
+    ax = axes[0, 1]
+    for endpoint in endpoints:
+        data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
+        if data.empty:
+            continue
+        resampled = data.set_index("timestamp").resample("1s")["latency_ms"].mean().reset_index()
+        resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["latency_ms"],
+            label=endpoint,
+            color=palette[endpoint],
+            linewidth=2,
+        )
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Avg latency (ms)")
+    ax.set_title("Average latency (1s buckets, 200 only)")
+
+    # Plot 3: Box plot distribution (200 only)
+    ax = axes[1, 0]
+    if latency_ok.empty:
+        ax.set_title("Latency distribution (200 only)")
+        ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
+    else:
+        sns.boxplot(
+            data=latency_ok,
+            x="endpoint",
+            y="latency_ms",
+            hue="endpoint",
+            order=list(endpoints),
+            hue_order=list(endpoints),
+            palette=palette,
+            dodge=False,
+            ax=ax,
+        )
+        legend = ax.get_legend()
+        if legend:
+            legend.remove()
+        ax.set_xlabel("Endpoint")
+        ax.set_ylabel("Latency (ms)")
+        ax.set_title("Latency distribution (200 only)")
+        stats_by_endpoint = []
+        for endpoint in endpoints:
+            vals = latency_ok[latency_ok["endpoint"] == endpoint]["latency_ms"].to_numpy()
+            if len(vals) > 0:
+                stats_by_endpoint.append(boxplot_stats(vals, whis=1.5)[0])
+        if stats_by_endpoint:
+            y_min = min(s["whislo"] for s in stats_by_endpoint)
+            y_max = max(s["whishi"] for s in stats_by_endpoint)
+            if y_max > y_min:
+                ax.set_ylim(y_min * 0.98, y_max * 1.02)
+        ax.tick_params(axis="x", rotation=20)
+
+    # Plot 4: Stats comparison (avg/p50/p95/p99, 200 only)
+    ax = axes[1, 1]
+    if stats_ok.empty:
+        ax.set_title("Latency statistics (200 only)")
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+    else:
+        stats_plot = stats_ok.reset_index().melt(
+            id_vars=["endpoint"],
+            value_vars=["avg", "p50", "p95", "p99"],
+            var_name="statistic",
+            value_name="latency_ms",
+        )
+        sns.barplot(
+            data=stats_plot,
+            x="statistic",
+            y="latency_ms",
+            hue="endpoint",
+            hue_order=list(endpoints),
+            palette=palette,
+            ax=ax,
+        )
+        legend = ax.get_legend()
+        if legend:
+            legend.remove()
+        ax.set_xlabel("Statistic")
+        ax.set_ylabel("Latency (ms)")
+        ax.set_title("Latency statistics (200 only)")
+
+    fig.suptitle(title, fontsize=14, y=1.02, color=".5")
+    fig.legend(
+        handles=[Patch(facecolor=palette[e], edgecolor=palette[e], label=e) for e in endpoints],
+        title="Endpoint",
+        loc="lower center",
+        ncol=len(endpoints),
+        bbox_to_anchor=(0.5, 0.01),
+        frameon=False,
     )
-    if base_ts is not None and not per_second_all.empty:
-        per_second_all["elapsed_s"] = (per_second_all["timestamp"] - base_ts).dt.total_seconds()
+    fig.tight_layout(rect=[0, 0.07, 1, 0.98])
+    fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
-    ok_only = latency_df[latency_df["status"] == 200].copy()
-    per_second_ok = (
-        ok_only.set_index("timestamp")
-        .groupby("endpoint")["latency_ms"]
-        .resample("1s")
-        .median()
-        .reset_index()
-    )
-    if base_ts is not None and not per_second_ok.empty:
-        per_second_ok["elapsed_s"] = (per_second_ok["timestamp"] - base_ts).dt.total_seconds()
 
-    error_over_time = latency_df.copy()
-    error_over_time["is_error"] = error_over_time["status"].fillna(0) >= 400
-    error_over_time = (
-        error_over_time.set_index("timestamp")
-        .groupby("endpoint")
+def plot_route_report(
+    endpoint: str,
+    latency_all: pd.DataFrame,
+    latency_ok: pd.DataFrame,
+    *,
+    output_path: Path,
+    stages: list[dict[str, object]],
+    executor: str,
+    title: str,
+) -> None:
+    _apply_plot_theme()
+
+    latency_all = latency_all.copy()
+    if latency_all.empty:
+        raise RuntimeError("No latency samples available")
+
+    min_ts = latency_all["timestamp"].min()
+    latency_all["elapsed_seconds"] = (latency_all["timestamp"] - min_ts).dt.total_seconds()
+    data_max_elapsed = float(latency_all["elapsed_seconds"].max())
+
+    latency_ok = latency_ok.copy()
+    if not latency_ok.empty:
+        latency_ok["elapsed_seconds"] = (latency_ok["timestamp"] - min_ts).dt.total_seconds()
+
+    stage_ends = _compute_stage_ends_seconds(stages)
+    show_stage_markers = _should_show_stage_markers(stage_ends, data_max_elapsed)
+    target_unit = "rps" if executor == "ramping-arrival-rate" else "vus"
+
+    def status_group(status: float | int | None) -> str:
+        try:
+            code = int(status) if status is not None else 0
+        except Exception:
+            code = 0
+        if code == 200:
+            return "200"
+        if code == 429:
+            return "429"
+        if 500 <= code < 600:
+            return "5xx"
+        if 400 <= code < 500:
+            return "4xx"
+        return "other"
+
+    latency_all["status_group"] = latency_all["status"].apply(status_group)
+    groups = ["200", "429", "4xx", "5xx", "other"]
+    palette = {
+        "200": "#2ca02c",
+        "429": "#ff7f0e",
+        "4xx": "#9467bd",
+        "5xx": "#d62728",
+        "other": "#7f7f7f",
+    }
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Plot 1: Scatter latency over time, colored by status group.
+    ax = axes[0, 0]
+    max_points = 80_000
+    scatter_df = latency_all[["elapsed_seconds", "latency_ms", "status_group"]]
+    if len(scatter_df) > max_points:
+        scatter_df = scatter_df.sample(n=max_points, random_state=42)
+    scatter_df = scatter_df.sample(frac=1, random_state=42)
+    for group in groups:
+        data = scatter_df[scatter_df["status_group"] == group]
+        if data.empty:
+            continue
+        ax.scatter(
+            data["elapsed_seconds"],
+            data["latency_ms"],
+            alpha=0.35 if group == "200" else 0.6,
+            s=10 if group == "200" else 14,
+            c=palette.get(group, "#7f7f7f"),
+            edgecolors="none",
+            label=group,
+        )
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+        ymax = ax.get_ylim()[1]
+        starts = [0.0] + stage_ends[:-1]
+        prev_target = 0
+        for start, end, stage in zip(starts, stage_ends, stages, strict=False):
+            end_target = int(stage.get("target", prev_target)) if stage.get("target") is not None else prev_target
+            ax.text(
+                (start + end) / 2,
+                ymax * 0.95,
+                f"{prev_target}→{end_target} {target_unit}",
+                ha="center",
+                fontsize=9,
+                color=".5",
+            )
+            prev_target = end_target
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Latency (ms)")
+    ax.set_title("Latency over time (scatter)")
+    ax.legend(title="HTTP status", frameon=False, loc="upper right")
+
+    # Plot 2: Mean latency (1s buckets) for 200-only vs all.
+    ax = axes[0, 1]
+    if not latency_ok.empty:
+        ok_resampled = latency_ok.set_index("timestamp").resample("1s")["latency_ms"].mean().reset_index()
+        ok_resampled["elapsed_seconds"] = (ok_resampled["timestamp"] - min_ts).dt.total_seconds()
+        ax.plot(ok_resampled["elapsed_seconds"], ok_resampled["latency_ms"], label="200 only", linewidth=2)
+    all_resampled = latency_all.set_index("timestamp").resample("1s")["latency_ms"].mean().reset_index()
+    all_resampled["elapsed_seconds"] = (all_resampled["timestamp"] - min_ts).dt.total_seconds()
+    ax.plot(all_resampled["elapsed_seconds"], all_resampled["latency_ms"], label="all", linewidth=1.5, alpha=0.7)
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Avg latency (ms)")
+    ax.set_title("Average latency (1s buckets)")
+    ax.legend(frameon=False)
+
+    # Plot 3: Error rate over time (1s buckets).
+    ax = axes[1, 0]
+    rate = latency_all.copy()
+    rate["is_error"] = rate["status"].fillna(0) >= 400
+    rate = (
+        rate.set_index("timestamp")
         .resample("1s")
         .agg(requests=("latency_ms", "count"), errors=("is_error", "sum"))
         .reset_index()
     )
-    if not error_over_time.empty:
-        error_over_time["error_rate_pct"] = (
-            error_over_time["errors"] / error_over_time["requests"].replace(0, pd.NA)
-        ) * 100
-        error_over_time["error_rate_pct"] = error_over_time["error_rate_pct"].fillna(0)
-        if base_ts is not None:
-            error_over_time["elapsed_s"] = (error_over_time["timestamp"] - base_ts).dt.total_seconds()
+    if not rate.empty:
+        rate["elapsed_seconds"] = (rate["timestamp"] - min_ts).dt.total_seconds()
+        rate["error_rate_pct"] = (rate["errors"] / rate["requests"].replace(0, pd.NA)) * 100
+        rate["error_rate_pct"] = rate["error_rate_pct"].fillna(0)
+        ax.plot(rate["elapsed_seconds"], rate["error_rate_pct"], linewidth=2)
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Error rate (%)")
+    ax.set_title("Error rate over time (1s buckets)")
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-
-    ax = axes[0, 0]
-    if per_second_all.empty:
-        ax.set_title("Median latency (all responses)")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center")
-    else:
-        sns.lineplot(
-            data=per_second_all,
-            x="elapsed_s",
-            y="latency_ms",
-            hue="endpoint",
-            ax=ax,
-        )
-        ax.set_title("Median latency (all responses)")
-        ax.set_xlabel("Elapsed time (s)")
-        ax.set_ylabel("Latency (ms)")
-
-    ax = axes[0, 1]
-    if per_second_ok.empty:
-        ax.set_title("Median latency (200 only)")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center")
-    else:
-        sns.lineplot(
-            data=per_second_ok,
-            x="elapsed_s",
-            y="latency_ms",
-            hue="endpoint",
-            ax=ax,
-        )
-        ax.set_title("Median latency (200 only)")
-        ax.set_xlabel("Elapsed time (s)")
-        ax.set_ylabel("Latency (ms)")
-
-    ax = axes[0, 2]
-    if error_over_time.empty:
-        ax.set_title("Error rate over time")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center")
-    else:
-        sns.lineplot(
-            data=error_over_time,
-            x="elapsed_s",
-            y="error_rate_pct",
-            hue="endpoint",
-            ax=ax,
-        )
-        ax.set_title("Error rate over time")
-        ax.set_xlabel("Elapsed time (s)")
-        ax.set_ylabel("Error rate (%)")
-
-    ax = axes[1, 0]
-    if latency_df.empty:
-        ax.set_title("Latency distribution")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center")
-    else:
-        sns.boxplot(
-            data=latency_df,
-            x="endpoint",
-            y="latency_ms",
-            ax=ax,
-        )
-        ax.set_title("Latency distribution")
-        ax.set_xlabel("")
-        ax.set_ylabel("Latency (ms)")
-        ax.tick_params(axis="x", rotation=20)
-
+    # Plot 4: Status group counts.
     ax = axes[1, 1]
-    if stats.empty:
-        ax.set_title("Latency percentiles")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center")
-    else:
-        stats_plot = stats.reset_index()[["endpoint", "p50", "p95", "p99"]].melt(
-            id_vars="endpoint",
-            var_name="percentile",
-            value_name="latency_ms",
-        )
-        stats_plot["endpoint"] = pd.Categorical(stats_plot["endpoint"], endpoint_order, ordered=True)
-        sns.barplot(
-            data=stats_plot,
-            x="endpoint",
-            y="latency_ms",
-            hue="percentile",
-            ax=ax,
-        )
-        ax.set_title("Latency percentiles")
-        ax.set_xlabel("")
-        ax.set_ylabel("Latency (ms)")
-        ax.tick_params(axis="x", rotation=20)
+    counts = latency_all["status_group"].value_counts().reindex(groups).fillna(0).astype(int)
+    ax.bar(counts.index.tolist(), counts.values.tolist(), color=[palette[g] for g in counts.index])
+    ax.set_xlabel("Status group")
+    ax.set_ylabel("Responses")
+    ax.set_title("HTTP status distribution")
 
-    ax = axes[1, 2]
-    if error_stats.empty:
-        ax.set_title("Error rate")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center")
-    else:
-        plot_errors = error_stats.reset_index().copy()
-        plot_errors["error_rate_pct"] = plot_errors["error_rate"] * 100
-        plot_errors["endpoint"] = pd.Categorical(plot_errors["endpoint"], endpoint_order, ordered=True)
-        sns.barplot(
-            data=plot_errors,
-            x="endpoint",
-            y="error_rate_pct",
-            ax=ax,
-        )
-        ax.set_title("HTTP error rate")
-        ax.set_xlabel("")
-        ax.set_ylabel("Error rate (%)")
-        ax.tick_params(axis="x", rotation=20)
-
-    fig.tight_layout()
+    fig.suptitle(title, fontsize=14, y=1.02, color=".5")
+    fig.tight_layout(rect=[0, 0.03, 1, 0.98])
     fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -443,6 +695,12 @@ def plot_results(
 @click.option("--arrival-max-vus-multiplier", type=float, default=2.0, show_default=True)
 @click.option("--skip-test", is_flag=True, default=False)
 @click.option("--label", default=None, help="Optional label for output filenames")
+@click.option(
+    "--endpoint",
+    "selected_endpoints",
+    multiple=True,
+    help="Limit to one or more endpoints by name (repeatable).",
+)
 def main(
     stack_name: str,
     region: str | None,
@@ -464,6 +722,7 @@ def main(
     arrival_max_vus_multiplier: float,
     skip_test: bool,
     label: str | None,
+    selected_endpoints: tuple[str, ...],
 ) -> None:
     if csv_path:
         skip_test = True
@@ -498,8 +757,9 @@ def main(
         raise SystemExit("--max-delay-ms must be >= 0")
 
     outputs = get_stack_outputs(stack_name, region)
-    targets = build_targets(outputs)
+    targets = filter_targets(build_targets(outputs), selected_endpoints)
     endpoint_order = [t["name"] for t in targets]
+    report_mode = "route" if len(endpoint_order) == 1 else "compare"
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     label_suffix = f"-{label}" if label else ""
@@ -536,30 +796,46 @@ def main(
         raise SystemExit(f"CSV not found: {csv_path}")
 
     raw_df = load_k6_csv(csv_path)
-    latency_df = parse_k6_latencies(raw_df)
-    if latency_df.empty:
+    raw_df = raw_df[raw_df["endpoint"].isin(endpoint_order)]
+    latency_all = parse_k6_latencies(raw_df)
+    if latency_all.empty:
         raise SystemExit("No latency data found in CSV")
 
-    stats = calculate_stats(latency_df)
     error_stats = calculate_error_stats(raw_df)
-    if not error_stats.empty:
-        stats = stats.join(error_stats[["requests", "errors", "errors_4xx", "errors_5xx", "error_rate"]])
+    latency_ok = latency_all[latency_all["status"] == 200].copy()
+    stats_ok = calculate_stats(latency_ok).rename(columns={"count": "ok_count"})
 
-    stats = stats.reindex(endpoint_order)
-    stats.to_csv(stats_path)
+    summary = error_stats.join(stats_ok, how="left")
+    summary = summary.reindex(endpoint_order)
+    summary.to_csv(stats_path)
 
     print("\nLatency summary (ms):")
-    print(stats.to_string())
+    print(summary.to_string())
     print(f"\nWrote CSV: {csv_path}")
     print(f"Wrote summary: {stats_path}")
 
-    plot_results(
-        latency_df,
-        stats,
-        error_stats,
-        output_path=chart_path,
-        endpoint_order=endpoint_order,
-    )
+    title = f"{stack_name} ({report_mode})"
+    if report_mode == "route":
+        plot_route_report(
+            endpoint_order[0],
+            latency_all,
+            latency_ok,
+            output_path=chart_path,
+            stages=stages,
+            executor=executor,
+            title=title + f" - {endpoint_order[0]}",
+        )
+    else:
+        plot_compare_report(
+            latency_all,
+            latency_ok,
+            stats_ok,
+            output_path=chart_path,
+            stages=stages,
+            endpoints=endpoint_order,
+            executor=executor,
+            title=title,
+        )
     print(f"Wrote chart: {chart_path}")
 
 
