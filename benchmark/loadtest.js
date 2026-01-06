@@ -27,8 +27,8 @@ function parseTargets() {
     throw new Error(`Invalid TARGETS JSON: ${e.message}`);
   }
 
-  if (!Array.isArray(parsed) || parsed.length < 2) {
-    throw new Error('Invalid TARGETS. Must be a JSON array with at least 2 items.');
+  if (!Array.isArray(parsed) || parsed.length < 1) {
+    throw new Error('Invalid TARGETS. Must be a JSON array with at least 1 item.');
   }
 
   for (const [i, t] of parsed.entries()) {

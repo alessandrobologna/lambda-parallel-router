@@ -457,6 +457,12 @@ def plot_results(
 @click.option("--arrival-vus-multiplier", type=float, default=1.0, show_default=True)
 @click.option("--arrival-max-vus-multiplier", type=float, default=2.0, show_default=True)
 @click.option("--healthz-only", is_flag=True, default=False, help="Send all targets to /healthz.")
+@click.option(
+    "--target",
+    "single_target",
+    default=None,
+    help="Run a single endpoint by name (e.g. buffering-simple).",
+)
 @click.option("--skip-test", is_flag=True, default=False)
 @click.option("--label", default=None, help="Optional label for output filenames")
 def main(
@@ -479,6 +485,7 @@ def main(
     arrival_vus_multiplier: float,
     arrival_max_vus_multiplier: float,
     healthz_only: bool,
+    single_target: str | None,
     skip_test: bool,
     label: str | None,
 ) -> None:
@@ -518,6 +525,12 @@ def main(
     targets = build_healthz_targets(outputs) if healthz_only else build_targets(outputs)
     if healthz_only:
         print("Using /healthz targets only.")
+    if single_target:
+        matched = [target for target in targets if target["name"] == single_target]
+        if not matched:
+            known = ", ".join(t["name"] for t in targets)
+            raise SystemExit(f"Unknown --target '{single_target}'. Known targets: {known}")
+        targets = matched
     endpoint_order = [t["name"] for t in targets]
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
