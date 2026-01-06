@@ -11,7 +11,59 @@ It deploys:
 
 The bootstrap stack registers a CloudFormation macro named `LprRouter`.
 
-With the macro enabled, templates can declare a simplified router resource:
+With the macro enabled, templates can declare a simplified router resource.
+
+## Resource type: `Lpr::Router::Service`
+
+### Syntax
+
+```yaml
+Router:
+  Type: Lpr::Router::Service
+  Properties:
+    # Required
+    ImageIdentifier: <ECR image identifier>
+    RouterConfig: {}
+    Spec: { paths: {} }
+
+    # Optional
+    ServiceName: <string>
+    Port: 8080
+    Environment: {}
+    AutoDeploymentsEnabled: true
+    ConfigPrefix: <string>
+    InstanceRoleArn: <string>
+    InstanceConfiguration: {}
+    AutoScalingConfiguration: {}
+    AutoScalingConfigurationArn: <string>
+```
+
+### Properties
+
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `ImageIdentifier` | String | Yes | - | ECR image identifier for the router (for example `123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:latest`). |
+| `RouterConfig` | Object | Yes | - | Router settings object. Keys are PascalCase. See [RouterConfig (manifest fields)](#routerconfig-manifest-fields). |
+| `Spec` | Object | Yes | - | OpenAPI-like `paths` map. See [Spec object](#spec-object). |
+| `ServiceName` | String | No | - | Sets the App Runner service name (`AWS::AppRunner::Service.Properties.ServiceName`). |
+| `Port` | Integer | No | `8080` | Container port App Runner routes traffic to. Also used as the default for `RouterConfig.ListenAddr` when omitted. |
+| `Environment` | Object | No | `{}` | Map of environment variables for the router container. Values must resolve to strings (intrinsic functions are allowed). The macro always injects `LPR_CONFIG_URI`, and defaults `AWS_REGION`, `AWS_DEFAULT_REGION`, and `RUST_LOG` if not provided. |
+| `AutoDeploymentsEnabled` | Boolean | No | `true` | Enables App Runner auto deployments for this service. See [Automatic deployments (important)](#automatic-deployments-important). |
+| `ConfigPrefix` | String | No | `lpr/${AWS::StackName}/<LogicalId>/` | S3 prefix used for published manifests (must resolve to a string). The publisher writes `config/<sha256>.json` under this prefix. |
+| `InstanceRoleArn` | String | No | - | Use an existing App Runner instance role (you own permissions). If omitted, the macro creates an instance role with S3 read + Lambda invoke permissions derived from the spec. |
+| `InstanceConfiguration` | Object | No | - | Passed through to the service’s `InstanceConfiguration` (e.g. `Cpu`, `Memory`). Some CPU/memory combinations are not supported (see App Runner docs). If it includes `InstanceRoleArn`, it must match `InstanceRoleArn` when both are set. |
+| `AutoScalingConfiguration` | Object | No | - | Creates an `AWS::AppRunner::AutoScalingConfiguration` resource and wires it to the service. Mutually exclusive with `AutoScalingConfigurationArn`. |
+| `AutoScalingConfigurationArn` | String | No | - | Uses an existing auto scaling configuration. Mutually exclusive with `AutoScalingConfiguration`. |
+
+### Return values
+
+The macro replaces your `Lpr::Router::Service` resource with an `AWS::AppRunner::Service` **using the same logical id**.
+
+That means you can use the normal App Runner attributes/refs (for example `!GetAtt Router.ServiceUrl`).
+
+### Example
+
+Minimal example:
 
 ```yaml
 Transform:
@@ -31,8 +83,8 @@ Resources:
         # ListenAddr defaults to 0.0.0.0:<Port> if omitted.
         DefaultTimeoutMs: 2000
       InstanceConfiguration:
-        Cpu: "0.5 vCPU"
-        # Memory defaults to 2 GB if omitted.
+        Cpu: "1 vCPU"
+        Memory: "2 GB"
       AutoScalingConfiguration:
         AutoScalingConfigurationName: my-router-autoscaling
         MinSize: 2
@@ -67,10 +119,141 @@ The router consumes a single YAML/JSON document that embeds both router settings
 
 - `LPR_CONFIG_URI` (set automatically by the macro)
 
+`Spec` is required at runtime; the router exits on startup if it is missing.
+
 Updates are content-addressed:
 - the publisher canonicalizes the manifest as JSON and computes `sha256`
 - the object key includes the hash (so it changes whenever you change `RouterConfig` or `Spec`)
 - the App Runner service updates its env var to the new URI, which forces a new deployment
+
+## RouterConfig (manifest fields)
+
+`RouterConfig` is the settings object embedded into the published manifest. Keys are **PascalCase**.
+
+In the published manifest, `RouterConfig` fields are **flattened at the top level** alongside the
+top-level `Spec` key.
+
+The macro publishes a manifest that looks like:
+
+```json
+{
+  "ListenAddr": "0.0.0.0:8080",
+  "DefaultTimeoutMs": 2000,
+  "Spec": { "paths": { } }
+}
+```
+
+Notes:
+- For the macro flow, `ListenAddr` is optional because the publisher defaults it from `Port`.
+- Numeric fields accept either numbers or numeric strings (e.g. `"2000"`).
+
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `ListenAddr` | String | Yes\* | - | Address to bind the HTTP server to (for example `0.0.0.0:8080`). \*Required if you run the router from a local manifest file; defaulted by the publisher when using the macro. |
+| `AwsRegion` | String | No | - | Optional AWS region override for the Lambda client. If omitted, the AWS SDK resolves region from the environment. |
+| `MaxInflightInvocations` | Integer | No | `64` | Maximum number of concurrent in-flight Lambda invocations across all routes. |
+| `MaxInflightRequests` | Integer | No | `4096` | Maximum number of in-flight HTTP requests across all routes. When exceeded, the router rejects requests with HTTP 429. |
+| `MaxPendingInvocations` | Integer | No | `256` | Maximum number of queued invocations waiting for execution. When full, the router rejects new batches with HTTP 429. |
+| `MaxQueueDepthPerKey` | Integer | No | `1000` | Maximum queued requests per batch key. When full, new requests are rejected with HTTP 429. |
+| `IdleTtlMs` | Integer | No | `30000` | Idle eviction TTL for per-key batching tasks. If a batch key sees no traffic for this long, its batching task is evicted. |
+| `DefaultTimeoutMs` | Integer | No | `2000` | Default per-request timeout, used when an operation does not specify `x-lpr.timeoutMs`. |
+| `MaxBodyBytes` | Integer | No | `1048576` | Maximum accepted HTTP request body size. |
+| `MaxInvokePayloadBytes` | Integer | No | `6291456` | Maximum JSON payload size sent to Lambda per invocation. If a batch exceeds this limit, the router splits it into multiple invocations when possible; otherwise affected requests fail. |
+| `ForwardHeaders` | Object | No | `{}` | Header forwarding policy. See [ForwardHeaders object](#forwardheaders-object). |
+
+### ForwardHeaders object
+
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `Allow` | List<String> | No | `[]` | If non-empty, only forward these headers (case-insensitive). |
+| `Deny` | List<String> | No | `[]` | Always drop these headers (case-insensitive). |
+
+Notes:
+- Hop-by-hop headers are always dropped.
+- Only headers that can be decoded as UTF-8 are forwarded.
+
+## Spec object
+
+The router accepts an OpenAPI-like document and uses only:
+
+- `paths` (required): map of route templates to path items
+
+Other OpenAPI fields (such as `openapi`, `info`, etc.) are allowed but ignored by the router.
+
+### Spec shape
+
+```yaml
+Spec:
+  openapi: 3.0.0 # ignored by router (allowed)
+  info: {} # ignored by router (allowed)
+  paths:
+    /hello:
+      get:
+        operationId: hello # optional
+        x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
+        x-lpr:
+          maxWaitMs: 25
+          maxBatchSize: 4
+```
+
+### Route templates
+
+Path keys must:
+- start with `/`
+- use OpenAPI-style `{param}` templates (for example `/v1/items/{id}`)
+- have balanced braces (nested or unmatched braces are rejected)
+
+Supported HTTP methods under a path item:
+- `get`, `post`, `put`, `delete`, `patch`, `head`, `options`
+
+### Operation fields
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `operationId` | String | No | Optional identifier for the operation (used for observability/debugging). |
+| `x-target-lambda` | String | Yes | Target Lambda **function ARN** (may include a qualifier). Must resolve to a function ARN string at runtime. |
+| `x-lpr` | Object | Yes | Router-specific per-operation configuration. See [x-lpr object](#x-lpr-object). |
+
+## x-lpr object
+
+Keys are **camelCase**.
+
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `maxWaitMs` | Integer | Yes | - | Maximum time to wait before flushing a batch (milliseconds). |
+| `maxBatchSize` | Integer | Yes | - | Maximum number of requests per batch. Must be `> 0`. |
+| `timeoutMs` | Integer | No | `RouterConfig.DefaultTimeoutMs` | Per-request timeout override (milliseconds). |
+| `invokeMode` | String | No | `buffered` | Lambda invoke mode. Allowed values: `buffered`, `response_stream`. |
+| `key` | List<String> | No | `[]` | Optional additional batch key dimensions (see [Batch key dimensions](#batch-key-dimensions)). |
+| `dynamicWait` | Object | No | - | Optional dynamic batching configuration (sigmoid-based). See [dynamicWait object](#dynamicwait-object). |
+
+### Batch key dimensions
+
+The router always partitions batches by `(x-target-lambda, method, route_template, invokeMode)`.
+
+`key` lets you add extra dimensions to avoid mixing requests whose semantics differ (for example
+multi-tenant traffic). Supported entries:
+
+- `header:<name>` (case-insensitive; header name must be a valid HTTP header name)
+- `query:<name>` (exact query parameter key)
+
+Duplicates are rejected.
+
+The following entries are accepted but ignored (because the router always keys by them anyway):
+- `method`, `route`, `lambda`, `target_lambda`, `target-lambda`
+
+### dynamicWait object
+
+When `dynamicWait` is set, the router computes a per-batch flush window in `[minWaitMs, maxWaitMs]`
+based on the request rate for the current batch key.
+
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `minWaitMs` | Integer | Yes | - | Lower bound for the computed wait window (milliseconds). Must be `<= maxWaitMs`. |
+| `targetRps` | Number | No | `50` | Request rate (requests/sec) where the sigmoid is centered. Must be finite and `>= 0`. |
+| `steepness` | Number | No | `0.01` | Sigmoid steepness around `targetRps`. Must be finite and `> 0`. |
+| `samplingIntervalMs` | Integer | No | `100` | Sampling period (milliseconds). Must be `> 0`. |
+| `smoothingSamples` | Integer | No | `10` | Moving average window size (number of samples). Must be `> 0`. |
 
 ## Automatic deployments (important)
 
@@ -105,16 +288,47 @@ For a resource with logical id `Router`, the macro may create additional resourc
 
 Do not declare resources with those logical IDs in the same template.
 
-Optional properties (passed through to App Runner):
-- `ServiceName` (sets the App Runner service name)
-- `ConfigPrefix` (S3 prefix for published manifests; default `lpr/${AWS::StackName}/${LogicalId}/`)
-- `AutoDeploymentsEnabled` (default `true`)
-- `InstanceConfiguration` (e.g. `Cpu`, `Memory`)
-- `AutoScalingConfiguration` (creates an `AWS::AppRunner::AutoScalingConfiguration` and wires it to the service)
-- `AutoScalingConfigurationArn` (use an existing auto scaling configuration)
-- `InstanceRoleArn` (use an existing App Runner instance role; you own permissions)
+## Resource type: `Custom::LprConfigPublisher` (optional)
 
-`AutoScalingConfiguration` and `AutoScalingConfigurationArn` are mutually exclusive.
+The macro uses this custom resource to publish the config manifest to S3. You can also use it
+directly if you don’t want to use the macro.
+
+### Syntax
+
+```yaml
+PublishConfig:
+  Type: Custom::LprConfigPublisher
+  Properties:
+    ServiceToken: <Lambda ARN from bootstrap output>
+    BucketName: <string> # optional
+    Prefix: <string> # optional
+    Port: 8080 # optional
+    RouterConfig: {}
+    Spec: { paths: {} }
+```
+
+### Properties
+
+| Name | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `ServiceToken` | String | Yes | - | The `ConfigPublisherServiceToken` output from the bootstrap stack. |
+| `BucketName` | String | No | `LPR_DEFAULT_BUCKET` | S3 bucket where the manifest is uploaded. If omitted, the Lambda env var `LPR_DEFAULT_BUCKET` must be set. |
+| `Prefix` | String | No | `lpr/` | S3 key prefix (normalized to end with `/`). |
+| `Port` | Integer | No | `8080` | Used to default `ListenAddr` when omitted from `RouterConfig`. |
+| `RouterConfig` | Object | Yes | - | RouterConfig object (PascalCase keys). |
+| `Spec` | Object | Yes | - | Spec object (OpenAPI-like `paths` map). |
+
+### Return values
+
+The custom resource returns these attributes (accessible via `!GetAtt PublishConfig.<Name>`):
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `BucketName` | String | Bucket used for the upload. |
+| `Prefix` | String | Normalized prefix used for the upload. |
+| `ConfigKey` | String | Object key for the uploaded manifest (includes `sha256`). |
+| `ConfigS3Uri` | String | `s3://bucket/key` URI for the uploaded manifest. |
+| `ConfigSha256` | String | SHA-256 of the canonical JSON manifest. |
 
 ## Deploy
 
