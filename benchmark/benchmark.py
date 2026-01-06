@@ -36,6 +36,27 @@ DEFAULT_RAMP_DURATION = "3m"
 DEFAULT_HOLD_DURATION = "0s"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "benchmark-results"
 
+OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
+    # Router endpoints
+    "buffering-simple": "BufferingSimpleHelloUrl",
+    "buffering-dynamic": "BufferingDynamicHelloUrl",
+    "streaming-simple": "StreamingSimpleHelloUrl",
+    "streaming-dynamic": "StreamingDynamicHelloUrl",
+    # Adapter examples
+    "buffering-adapter": "BufferingAdapterHelloUrl",
+    "streaming-adapter": "StreamingAdapterHelloUrl",
+    "streaming-adapter-sse": "StreamingAdapterSseUrl",
+    # Direct (Function URL) endpoint for baseline comparison
+    "direct-hello": "DirectHelloUrl",
+}
+
+DEFAULT_ENDPOINTS = (
+    "buffering-simple",
+    "buffering-dynamic",
+    "streaming-simple",
+    "streaming-dynamic",
+)
+
 _DURATION_PART_RE = re.compile(r"(\d+)(ms|s|m|h)")
 
 
@@ -87,55 +108,36 @@ def get_stack_outputs(stack_name: str, region: str | None) -> dict[str, str]:
     return outputs
 
 
-def build_targets(outputs: dict[str, str]) -> list[dict[str, str]]:
-    required = {
-        # Router endpoints
-        "buffering-simple": "BufferingSimpleHelloUrl",
-        "buffering-dynamic": "BufferingDynamicHelloUrl",
-        "streaming-simple": "StreamingSimpleHelloUrl",
-        "streaming-dynamic": "StreamingDynamicHelloUrl",
-        # Adapter examples
-        "buffering-adapter": "BufferingAdapterHelloUrl",
-        "streaming-adapter": "StreamingAdapterHelloUrl",
-        "streaming-adapter-sse": "StreamingAdapterSseUrl",
-        # Direct (Function URL) endpoint for baseline comparison
-        "direct-hello": "DirectHelloUrl",
-    }
-    missing = [key for key in required.values() if key not in outputs]
-    if missing:
-        raise RuntimeError(f"Missing stack outputs: {', '.join(missing)}")
-
-    targets = [
-        {"name": name, "url": outputs[output_key]}
-        for name, output_key in required.items()
-    ]
-    return targets
-
-
-DEFAULT_ENDPOINTS = (
-    "buffering-simple",
-    "buffering-dynamic",
-    "streaming-simple",
-    "streaming-dynamic",
-)
-
-
-def filter_targets(targets: list[dict[str, str]], selected: tuple[str, ...]) -> list[dict[str, str]]:
-    if not selected:
-        return targets
-
-    selected_set = set(selected)
-    known = [t["name"] for t in targets]
-    unknown = sorted(selected_set.difference(known))
+def build_targets_from_outputs(outputs: dict[str, str], endpoints: list[str]) -> list[dict[str, str]]:
+    unknown = sorted({e for e in endpoints if e not in OUTPUT_KEY_BY_ENDPOINT})
     if unknown:
-        raise SystemExit(
-            f"Unknown --endpoint value(s): {', '.join(unknown)}. Known endpoints: {', '.join(known)}"
+        known = ", ".join(sorted(OUTPUT_KEY_BY_ENDPOINT.keys()))
+        raise SystemExit(f"Unknown endpoint(s): {', '.join(unknown)}. Known endpoints: {known}")
+
+    missing = [e for e in endpoints if OUTPUT_KEY_BY_ENDPOINT[e] not in outputs]
+    if missing:
+        missing_keys = [OUTPUT_KEY_BY_ENDPOINT[e] for e in missing]
+        raise RuntimeError(
+            "Missing stack outputs for requested endpoint(s): "
+            + ", ".join(f"{e} ({k})" for e, k in zip(missing, missing_keys, strict=False))
         )
 
-    filtered = [t for t in targets if t["name"] in selected_set]
-    if not filtered:
-        raise SystemExit("No endpoints selected")
-    return filtered
+    return [{"name": e, "url": outputs[OUTPUT_KEY_BY_ENDPOINT[e]]} for e in endpoints]
+
+
+def infer_endpoints_from_csv(df: pd.DataFrame) -> list[str]:
+    if df.empty or "endpoint" not in df.columns:
+        return []
+    endpoints = sorted({str(e) for e in df["endpoint"].dropna().unique().tolist()})
+    return [e for e in endpoints if e and e != "unknown"]
+
+
+def try_extract_run_id_from_csv_path(csv_path: Path) -> str | None:
+    name = csv_path.name
+    if name.startswith("k6-") and name.endswith(".csv"):
+        run_id = name[len("k6-") : -len(".csv")]
+        return run_id or None
+    return None
 
 
 def parse_stage_targets(value: str) -> list[int]:
@@ -830,15 +832,6 @@ def main(
     if max_delay_ms < 0:
         raise SystemExit("--max-delay-ms must be >= 0")
 
-    outputs = get_stack_outputs(stack_name, region)
-    all_targets = build_targets(outputs)
-    if selected_endpoints:
-        targets = filter_targets(all_targets, selected_endpoints)
-    else:
-        targets = [t for t in all_targets if t["name"] in DEFAULT_ENDPOINTS]
-    endpoint_order = [t["name"] for t in targets]
-    report_mode = "route" if len(endpoint_order) == 1 else "compare"
-
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     label_suffix = f"-{label}" if label else ""
     derived_csv_path = output_dir / f"k6{label_suffix}-{timestamp}.csv"
@@ -846,6 +839,12 @@ def main(
     stats_path = output_dir / f"summary{label_suffix}-{timestamp}.csv"
 
     if not skip_test:
+        endpoints_to_test = list(selected_endpoints) if selected_endpoints else list(DEFAULT_ENDPOINTS)
+        outputs = get_stack_outputs(stack_name, region)
+        targets = build_targets_from_outputs(outputs, endpoints_to_test)
+        endpoint_order = [t["name"] for t in targets]
+        report_mode = "route" if len(endpoint_order) == 1 else "compare"
+
         run_k6_test(
             targets,
             derived_csv_path,
@@ -869,11 +868,32 @@ def main(
 
     if skip_test:
         print(f"Using existing CSV: {csv_path}")
+        run_id = try_extract_run_id_from_csv_path(csv_path)
+        if run_id and not label:
+            chart_path = output_dir / f"benchmark-{run_id}.png"
+            stats_path = output_dir / f"summary-{run_id}.csv"
 
     if not csv_path.exists():
         raise SystemExit(f"CSV not found: {csv_path}")
 
     raw_df = load_k6_csv(csv_path)
+    endpoints_in_csv = infer_endpoints_from_csv(raw_df)
+
+    if skip_test:
+        if selected_endpoints:
+            unknown = [e for e in selected_endpoints if e not in endpoints_in_csv]
+            if unknown:
+                raise SystemExit(
+                    f"CSV does not contain endpoint(s): {', '.join(unknown)}. "
+                    f"Endpoints in CSV: {', '.join(endpoints_in_csv) if endpoints_in_csv else '(none)'}"
+                )
+            endpoint_order = list(selected_endpoints)
+        else:
+            endpoint_order = endpoints_in_csv
+        if not endpoint_order:
+            raise SystemExit("No endpoints found in CSV (missing endpoint tags?)")
+        report_mode = "route" if len(endpoint_order) == 1 else "compare"
+
     raw_df = raw_df[raw_df["endpoint"].isin(endpoint_order)]
     latency_all = parse_k6_latencies(raw_df)
     if latency_all.empty:
