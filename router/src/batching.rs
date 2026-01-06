@@ -878,7 +878,7 @@ async fn flush_batch(
                     match runtime.invocation_tx.try_send(job) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(job)) => {
-                            tracing::warn!(
+                            tracing::debug!(
                                 event = "invoke_rejected",
                                 reason = "invocation_queue_full",
                                 target_lambda = %key.target_lambda,
@@ -951,7 +951,7 @@ async fn flush_batch(
                     match runtime.invocation_tx.try_send(job) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(job)) => {
-                            tracing::warn!(
+                            tracing::debug!(
                                 event = "invoke_rejected",
                                 reason = "invocation_queue_full",
                                 target_lambda = %key.target_lambda,

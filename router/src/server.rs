@@ -6,14 +6,13 @@
 
 use std::{
     collections::HashMap,
-    fs,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use axum::{
     body::{to_bytes, Body},
-    extract::{Query, State},
+    extract::State,
     http::{Request, StatusCode},
     response::IntoResponse,
     routing::get,
@@ -102,7 +101,7 @@ fn is_hop_by_hop_header(name: &http::HeaderName) -> bool {
 
 fn build_app(state: AppState) -> Router {
     Router::new()
-        .route("/healthz", get(healthz))
+        .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(|| async { "ok" }))
         .fallback(handle_any)
         .with_state(state)
@@ -123,70 +122,6 @@ impl<S: futures::Stream> futures::Stream for PermitStream<S> {
         // Safety: we never move `inner` after the wrapper is pinned.
         unsafe { self.map_unchecked_mut(|s| &mut s.inner) }.poll_next(cx)
     }
-}
-
-const HEALTH_MAX_DELAY_MS: u64 = 10_000;
-
-async fn healthz(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
-    let max_delay_ms = parse_max_delay_ms(&params);
-    if max_delay_ms > 0 {
-        let delay_ms = random_delay_ms(max_delay_ms);
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-    }
-    "ok"
-}
-
-fn parse_max_delay_ms(params: &HashMap<String, String>) -> u64 {
-    let Some(raw) = params.get("max-delay") else {
-        return 0;
-    };
-    let parsed: u64 = match raw.parse() {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    parsed.min(HEALTH_MAX_DELAY_MS)
-}
-
-fn random_delay_ms(max_delay_ms: u64) -> u64 {
-    if max_delay_ms == 0 {
-        return 0;
-    }
-    let entropy = Uuid::new_v4().as_u128() as u64;
-    entropy % (max_delay_ms + 1)
-}
-
-fn read_rss_kb() -> Option<u64> {
-    let status = fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        if line.starts_with("VmRSS:") {
-            let mut parts = line.split_whitespace();
-            parts.next()?;
-            let value = parts.next()?;
-            return value.parse().ok();
-        }
-    }
-    None
-}
-
-fn count_open_fds() -> Option<usize> {
-    fs::read_dir("/proc/self/fd")
-        .ok()
-        .map(|entries| entries.count())
-}
-
-fn read_max_open_files() -> Option<(u64, u64)> {
-    let limits = fs::read_to_string("/proc/self/limits").ok()?;
-    for line in limits.lines() {
-        if line.starts_with("Max open files") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 5 {
-                let soft = parts[3].parse().ok()?;
-                let hard = parts[4].parse().ok()?;
-                return Some((soft, hard));
-            }
-        }
-    }
-    None
 }
 
 pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
@@ -213,36 +148,6 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
     };
 
     let app = build_app(state);
-
-    if let Some((soft, hard)) = read_max_open_files() {
-        tracing::info!(
-            event = "process_limits",
-            max_open_files_soft = soft,
-            max_open_files_hard = hard,
-            "process limits"
-        );
-    }
-
-    let mem_start = Instant::now();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            if let Some(rss_kb) = read_rss_kb() {
-                let rss_mb = (rss_kb as f64) / 1024.0;
-                let open_fds = count_open_fds();
-                tracing::info!(
-                    event = "process_memory",
-                    rss_kb,
-                    rss_mb = rss_mb,
-                    open_fds = open_fds.unwrap_or_default(),
-                    open_fds_known = open_fds.is_some(),
-                    uptime_s = mem_start.elapsed().as_secs(),
-                    "rss sample"
-                );
-            }
-        }
-    });
 
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
     axum::serve(listener, app).await?;
@@ -283,7 +188,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
     let inflight_permit = match state.inflight_requests.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
-            tracing::warn!(
+            tracing::debug!(
                 event = "admission_rejected",
                 reason = "too_many_inflight_requests",
                 method = %method_str,
@@ -348,7 +253,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         match state.batchers.enqueue(&op, pending) {
             Ok(()) => {}
             Err(EnqueueError::QueueFull) => {
-                tracing::warn!(
+                tracing::debug!(
                     event = "enqueue_rejected",
                     reason = "queue_full",
                     method = %method_str,
@@ -359,7 +264,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                     .into_response();
             }
             Err(EnqueueError::BatcherClosed) => {
-                tracing::warn!(
+                tracing::debug!(
                     event = "enqueue_rejected",
                     reason = "batcher_closed",
                     method = %method_str,
@@ -424,7 +329,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         match state.batchers.enqueue(&op, pending) {
             Ok(()) => {}
             Err(EnqueueError::QueueFull) => {
-                tracing::warn!(
+                tracing::debug!(
                     event = "enqueue_rejected",
                     reason = "queue_full",
                     method = %method_str,
@@ -435,7 +340,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                     .into_response();
             }
             Err(EnqueueError::BatcherClosed) => {
-                tracing::warn!(
+                tracing::debug!(
                     event = "enqueue_rejected",
                     reason = "batcher_closed",
                     method = %method_str,
@@ -673,45 +578,6 @@ paths: {}
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn healthz_accepts_max_delay_query() {
-        let app = build_app(test_state(
-            br#"
-paths: {}
-"#,
-            1024,
-        ));
-
-        let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/healthz?max-delay=5")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-    }
-
-    #[test]
-    fn parse_max_delay_ms_handles_invalid_and_clamps() {
-        let mut params = HashMap::new();
-        assert_eq!(parse_max_delay_ms(&params), 0);
-
-        params.insert("max-delay".to_string(), "nope".to_string());
-        assert_eq!(parse_max_delay_ms(&params), 0);
-
-        params.insert("max-delay".to_string(), "5".to_string());
-        assert_eq!(parse_max_delay_ms(&params), 5);
-
-        params.insert(
-            "max-delay".to_string(),
-            (HEALTH_MAX_DELAY_MS + 1).to_string(),
-        );
-        assert_eq!(parse_max_delay_ms(&params), HEALTH_MAX_DELAY_MS);
     }
 
     #[tokio::test]

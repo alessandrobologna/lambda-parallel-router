@@ -71,21 +71,6 @@ def build_targets(outputs: dict[str, str]) -> list[dict[str, str]]:
         for name, output_key in required.items()
     ]
 
-
-def build_healthz_targets(outputs: dict[str, str]) -> list[dict[str, str]]:
-    base_url = outputs.get("RouterServiceBaseUrl")
-    if not base_url:
-        raise RuntimeError("Missing stack output: RouterServiceBaseUrl")
-    base_url = base_url.rstrip("/")
-    healthz_url = f"{base_url}/healthz"
-    names = [
-        "buffering-simple",
-        "buffering-dynamic",
-        "streaming-simple",
-        "streaming-dynamic",
-    ]
-    return [{"name": name, "url": healthz_url} for name in names]
-
 def parse_stage_targets(value: str) -> list[int]:
     targets = [int(x.strip()) for x in value.split(",") if x.strip()]
     if not targets:
@@ -456,13 +441,6 @@ def plot_results(
 @click.option("--arrival-max-vus", type=int, default=0, show_default=True)
 @click.option("--arrival-vus-multiplier", type=float, default=1.0, show_default=True)
 @click.option("--arrival-max-vus-multiplier", type=float, default=2.0, show_default=True)
-@click.option("--healthz-only", is_flag=True, default=False, help="Send all targets to /healthz.")
-@click.option(
-    "--target",
-    "single_target",
-    default=None,
-    help="Run a single endpoint by name (e.g. buffering-simple).",
-)
 @click.option("--skip-test", is_flag=True, default=False)
 @click.option("--label", default=None, help="Optional label for output filenames")
 def main(
@@ -484,8 +462,6 @@ def main(
     arrival_max_vus: int,
     arrival_vus_multiplier: float,
     arrival_max_vus_multiplier: float,
-    healthz_only: bool,
-    single_target: str | None,
     skip_test: bool,
     label: str | None,
 ) -> None:
@@ -522,15 +498,7 @@ def main(
         raise SystemExit("--max-delay-ms must be >= 0")
 
     outputs = get_stack_outputs(stack_name, region)
-    targets = build_healthz_targets(outputs) if healthz_only else build_targets(outputs)
-    if healthz_only:
-        print("Using /healthz targets only.")
-    if single_target:
-        matched = [target for target in targets if target["name"] == single_target]
-        if not matched:
-            known = ", ".join(t["name"] for t in targets)
-            raise SystemExit(f"Unknown --target '{single_target}'. Known targets: {known}")
-        targets = matched
+    targets = build_targets(outputs)
     endpoint_order = [t["name"] for t in targets]
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
