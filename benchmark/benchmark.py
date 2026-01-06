@@ -581,22 +581,67 @@ def plot_route_report(
     ax.set_title("Latency over time (scatter)")
     ax.legend(title="HTTP status", frameon=False, loc="upper right")
 
-    # Plot 2: Mean latency (1s buckets) for 200-only vs all.
+    # Plot 2: Success latency (1s buckets, 200 only): avg / p50 / p95 / max.
     ax = axes[0, 1]
-    if not latency_ok.empty:
-        ok_resampled = latency_ok.set_index("timestamp").resample("1s")["latency_ms"].mean().reset_index()
-        ok_resampled["elapsed_seconds"] = (ok_resampled["timestamp"] - min_ts).dt.total_seconds()
-        ax.plot(ok_resampled["elapsed_seconds"], ok_resampled["latency_ms"], label="200 only", linewidth=2)
-    all_resampled = latency_all.set_index("timestamp").resample("1s")["latency_ms"].mean().reset_index()
-    all_resampled["elapsed_seconds"] = (all_resampled["timestamp"] - min_ts).dt.total_seconds()
-    ax.plot(all_resampled["elapsed_seconds"], all_resampled["latency_ms"], label="all", linewidth=1.5, alpha=0.7)
+    if latency_ok.empty:
+        ax.set_title("Success latency (200 only)")
+        ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
+    else:
+        resampled = (
+            latency_ok.set_index("timestamp")
+            .resample("1s")["latency_ms"]
+            .agg(
+                avg="mean",
+                p50=lambda s: s.quantile(0.50),
+                p95=lambda s: s.quantile(0.95),
+                max="max",
+            )
+            .reset_index()
+        )
+        resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
+
+        overall_avg = float(latency_ok["latency_ms"].mean())
+        overall_p50 = float(latency_ok["latency_ms"].quantile(0.50))
+        overall_p95 = float(latency_ok["latency_ms"].quantile(0.95))
+        overall_max = float(latency_ok["latency_ms"].max())
+
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["avg"],
+            label=f"avg ({overall_avg:.1f}ms)",
+            linewidth=2,
+            linestyle="-",
+        )
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["p50"],
+            label=f"p50 ({overall_p50:.1f}ms)",
+            linewidth=1.8,
+            linestyle="--",
+        )
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["p95"],
+            label=f"p95 ({overall_p95:.1f}ms)",
+            linewidth=1.8,
+            linestyle="-.",
+        )
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["max"],
+            label=f"max ({overall_max:.1f}ms)",
+            linewidth=1.5,
+            linestyle=":",
+            alpha=0.8,
+        )
     if show_stage_markers:
         for x in stage_ends[:-1]:
             ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
     ax.set_xlabel("Elapsed time (s)")
-    ax.set_ylabel("Avg latency (ms)")
-    ax.set_title("Average latency (1s buckets)")
-    ax.legend(frameon=False)
+    ax.set_ylabel("Latency (ms)")
+    ax.set_title("Success latency (1s buckets, 200 only)")
+    if not latency_ok.empty:
+        ax.legend(frameon=False)
 
     # Plot 3: Error rate over time (1s buckets).
     ax = axes[1, 0]
@@ -613,6 +658,10 @@ def plot_route_report(
         rate["error_rate_pct"] = (rate["errors"] / rate["requests"].replace(0, pd.NA)) * 100
         rate["error_rate_pct"] = rate["error_rate_pct"].fillna(0)
         ax.plot(rate["elapsed_seconds"], rate["error_rate_pct"], linewidth=2)
+        ymax = float(rate["error_rate_pct"].max())
+        ax.set_ylim(0, 1.0 if ymax <= 0 else min(100.0, ymax * 1.1))
+    else:
+        ax.set_ylim(0, 1.0)
     if show_stage_markers:
         for x in stage_ends[:-1]:
             ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
