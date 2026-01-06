@@ -13,7 +13,7 @@ use std::{
 
 use axum::{
     body::{to_bytes, Body},
-    extract::State,
+    extract::{Query, State},
     http::{Request, StatusCode},
     response::IntoResponse,
     routing::get,
@@ -100,10 +100,40 @@ fn is_hop_by_hop_header(name: &http::HeaderName) -> bool {
 
 fn build_app(state: AppState) -> Router {
     Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(healthz))
         .route("/readyz", get(|| async { "ok" }))
         .fallback(handle_any)
         .with_state(state)
+}
+
+const HEALTH_MAX_DELAY_MS: u64 = 10_000;
+
+async fn healthz(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let max_delay_ms = parse_max_delay_ms(&params);
+    if max_delay_ms > 0 {
+        let delay_ms = random_delay_ms(max_delay_ms);
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+    "ok"
+}
+
+fn parse_max_delay_ms(params: &HashMap<String, String>) -> u64 {
+    let Some(raw) = params.get("max-delay") else {
+        return 0;
+    };
+    let parsed: u64 = match raw.parse() {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
+    parsed.min(HEALTH_MAX_DELAY_MS)
+}
+
+fn random_delay_ms(max_delay_ms: u64) -> u64 {
+    if max_delay_ms == 0 {
+        return 0;
+    }
+    let entropy = Uuid::new_v4().as_u128() as u64;
+    entropy % (max_delay_ms + 1)
 }
 
 fn read_rss_kb() -> Option<u64> {
@@ -538,6 +568,42 @@ paths: {}
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn healthz_accepts_max_delay_query() {
+        let app = build_app(test_state(
+            br#"
+paths: {}
+"#,
+            1024,
+        ));
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz?max-delay=5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn parse_max_delay_ms_handles_invalid_and_clamps() {
+        let mut params = HashMap::new();
+        assert_eq!(parse_max_delay_ms(&params), 0);
+
+        params.insert("max-delay".to_string(), "nope".to_string());
+        assert_eq!(parse_max_delay_ms(&params), 0);
+
+        params.insert("max-delay".to_string(), "5".to_string());
+        assert_eq!(parse_max_delay_ms(&params), 5);
+
+        params.insert("max-delay".to_string(), (HEALTH_MAX_DELAY_MS + 1).to_string());
+        assert_eq!(parse_max_delay_ms(&params), HEALTH_MAX_DELAY_MS);
     }
 
     #[tokio::test]
