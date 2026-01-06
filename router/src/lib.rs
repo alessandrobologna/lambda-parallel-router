@@ -5,7 +5,7 @@
 //! then demultiplexed back to the original callers.
 //!
 //! Core modules:
-//! - [`config`]: YAML router config
+//! - [`config`]: router config manifest (YAML/JSON)
 //! - [`spec`]: OpenAPI-ish routing spec + matcher
 //! - [`batching`]: microbatch queues + request/response demux
 //! - [`lambda`]: AWS Lambda invocation (buffered or response stream)
@@ -18,4 +18,3 @@ pub mod location;
 pub(crate) mod serde_ext;
 pub mod server;
 pub mod spec;
-pub mod template;

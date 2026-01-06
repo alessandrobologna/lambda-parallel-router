@@ -21,8 +21,6 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/lpr-router /app/lpr-router
-COPY sam/router/router.yaml /app/router.yaml
-COPY sam/router/spec.yaml /app/spec.yaml
 
 EXPOSE 8080
 CMD ["/app/lpr-router"]
