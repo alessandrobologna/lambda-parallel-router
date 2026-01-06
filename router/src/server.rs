@@ -6,6 +6,7 @@
 
 use std::{
     collections::HashMap,
+    fs,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -105,6 +106,19 @@ fn build_app(state: AppState) -> Router {
         .with_state(state)
 }
 
+fn read_rss_kb() -> Option<u64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if line.starts_with("VmRSS:") {
+            let mut parts = line.split_whitespace();
+            parts.next()?;
+            let value = parts.next()?;
+            return value.parse().ok();
+        }
+    }
+    None
+}
+
 pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
     let invoker = Arc::new(AwsLambdaInvoker::new(cfg.aws_region.clone()).await?);
     let batchers = BatcherManager::new(
@@ -127,6 +141,24 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
     };
 
     let app = build_app(state);
+
+    let mem_start = Instant::now();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            if let Some(rss_kb) = read_rss_kb() {
+                let rss_mb = (rss_kb as f64) / 1024.0;
+                tracing::info!(
+                    event = "process_memory",
+                    rss_kb,
+                    rss_mb = rss_mb,
+                    uptime_s = mem_start.elapsed().as_secs(),
+                    "rss sample"
+                );
+            }
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
     axum::serve(listener, app).await?;

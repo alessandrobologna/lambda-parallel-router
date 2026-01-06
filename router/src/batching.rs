@@ -710,7 +710,7 @@ async fn flush_batch(
                             }
                         };
 
-                        tracing::info!(
+                        tracing::debug!(
                             event = "lambda_invoke",
                             target_lambda = %key.target_lambda,
                             method = %key.method,
@@ -823,7 +823,7 @@ async fn flush_batch(
                             }
                         };
 
-                        tracing::info!(
+                        tracing::debug!(
                             event = "lambda_invoke",
                             target_lambda = %key.target_lambda,
                             method = %key.method,
