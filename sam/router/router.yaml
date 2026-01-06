@@ -6,6 +6,8 @@ spec_path: "/app/spec.yaml"
 # aws_region: "us-east-1"
 
 max_inflight_invocations: 64
+max_inflight_requests: 1000
+max_pending_invocations: 256
 max_queue_depth_per_key: 1000
 idle_ttl_ms: 30000
 default_timeout_ms: 2000
@@ -16,4 +18,3 @@ max_invoke_payload_bytes: 6291456
 forward_headers:
   allow: []
   deny: []
-

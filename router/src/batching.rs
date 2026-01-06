@@ -16,7 +16,7 @@ use dashmap::{mapref::entry::Entry, DashMap};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use memchr::memchr;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     lambda::{LambdaInvokeResult, LambdaInvoker},
@@ -99,6 +99,10 @@ pub struct PendingRequest {
 pub struct BatchingConfig {
     /// Global in-flight invocation limit across all routes.
     pub max_inflight_invocations: usize,
+    /// Maximum number of queued invocation jobs waiting to be executed.
+    ///
+    /// When full, the router rejects new batches with 429 to avoid unbounded memory growth.
+    pub max_pending_invocations: usize,
     /// Per-batch-key queue depth.
     pub max_queue_depth_per_key: usize,
     /// Idle eviction time for per-key batcher tasks.
@@ -162,9 +166,8 @@ impl BatcherConfig {
 #[derive(Clone)]
 /// Manages per-batch-key microbatchers.
 pub struct BatcherManager {
-    invoker: Arc<dyn LambdaInvoker>,
     cfg: BatchingConfig,
-    inflight: Arc<Semaphore>,
+    invocation_tx: mpsc::Sender<InvocationJob>,
     batchers: Arc<DashMap<BatchKey, mpsc::Sender<PendingRequest>>>,
 }
 
@@ -181,10 +184,17 @@ impl BatcherManager {
     /// Create a new manager using the given Lambda invoker and batching config.
     pub fn new(invoker: Arc<dyn LambdaInvoker>, cfg: BatchingConfig) -> Self {
         let inflight = Arc::new(Semaphore::new(cfg.max_inflight_invocations));
+        let (invocation_tx, invocation_rx) = mpsc::channel(cfg.max_pending_invocations.max(1));
+
+        tokio::spawn(invocation_dispatcher(
+            Arc::clone(&invoker),
+            Arc::clone(&inflight),
+            invocation_rx,
+        ));
+
         Self {
-            invoker,
             cfg,
-            inflight,
+            invocation_tx,
             batchers: Arc::new(DashMap::new()),
         }
     }
@@ -208,9 +218,8 @@ impl BatcherManager {
                     v.insert(tx.clone());
                     let batch_cfg = BatcherConfig::from_operation(op);
                     let runtime = BatcherRuntime {
-                        invoker: Arc::clone(&self.invoker),
                         idle_ttl: self.cfg.idle_ttl,
-                        inflight: Arc::clone(&self.inflight),
+                        invocation_tx: self.invocation_tx.clone(),
                         max_invoke_payload_bytes: self.cfg.max_invoke_payload_bytes,
                     };
                     tokio::spawn(batcher_task(
@@ -241,9 +250,8 @@ impl BatcherManager {
 
 #[derive(Clone)]
 struct BatcherRuntime {
-    invoker: Arc<dyn LambdaInvoker>,
     idle_ttl: Duration,
-    inflight: Arc<Semaphore>,
+    invocation_tx: mpsc::Sender<InvocationJob>,
     max_invoke_payload_bytes: usize,
 }
 
@@ -581,6 +589,170 @@ async fn batcher_task_dynamic(
     }
 }
 
+enum InvocationJob {
+    Buffered {
+        key: BatchKey,
+        wait_ms: u64,
+        estimated_rps: Option<f64>,
+        payload: Bytes,
+        pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+    },
+    Stream {
+        key: BatchKey,
+        wait_ms: u64,
+        estimated_rps: Option<f64>,
+        payload: Bytes,
+        pending: HashMap<String, StreamPending>,
+    },
+}
+
+impl InvocationJob {
+    fn fail(self, status: StatusCode, msg: String) {
+        match self {
+            InvocationJob::Buffered { pending, .. } => fail_all_buffered(pending, status, msg),
+            InvocationJob::Stream { pending, .. } => fail_all_stream(pending, status, msg),
+        }
+    }
+}
+
+async fn invocation_dispatcher(
+    invoker: Arc<dyn LambdaInvoker>,
+    inflight: Arc<Semaphore>,
+    mut rx: mpsc::Receiver<InvocationJob>,
+) {
+    while let Some(job) = rx.recv().await {
+        let permit = match inflight.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => {
+                job.fail(StatusCode::BAD_GATEWAY, "router shutting down".to_string());
+                continue;
+            }
+        };
+
+        let invoker = Arc::clone(&invoker);
+        tokio::spawn(async move {
+            run_invocation_job(invoker, permit, job).await;
+        });
+    }
+}
+
+async fn run_invocation_job(
+    invoker: Arc<dyn LambdaInvoker>,
+    _permit: OwnedSemaphorePermit,
+    job: InvocationJob,
+) {
+    match job {
+        InvocationJob::Buffered {
+            key,
+            wait_ms,
+            estimated_rps,
+            payload,
+            pending,
+        } => {
+            tracing::debug!(
+                event = "lambda_invoke",
+                target_lambda = %key.target_lambda,
+                method = %key.method,
+                route = %key.route,
+                invoke_mode = ?key.invoke_mode,
+                wait_ms,
+                estimated_rps = estimated_rps,
+                batch_size = pending.len(),
+                payload_bytes = payload.len(),
+                "invoking"
+            );
+
+            match invoker
+                .invoke(&key.target_lambda, payload, key.invoke_mode)
+                .await
+            {
+                Ok(LambdaInvokeResult::Buffered(bytes)) => dispatch_buffered(&key, bytes, pending),
+                Ok(LambdaInvokeResult::ResponseStream(_stream)) => {
+                    tracing::warn!(
+                        event = "lambda_response_error",
+                        reason = "unexpected_stream",
+                        target_lambda = %key.target_lambda,
+                        route = %key.route,
+                        batch_size = pending.len(),
+                        "unexpected response stream for buffered invocation"
+                    );
+                    fail_all_buffered(
+                        pending,
+                        StatusCode::BAD_GATEWAY,
+                        "unexpected response stream".to_string(),
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        event = "lambda_invoke_failed",
+                        target_lambda = %key.target_lambda,
+                        route = %key.route,
+                        batch_size = pending.len(),
+                        error = %err,
+                        "lambda invoke failed"
+                    );
+                    fail_all_buffered(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
+                }
+            }
+        }
+        InvocationJob::Stream {
+            key,
+            wait_ms,
+            estimated_rps,
+            payload,
+            pending,
+        } => {
+            tracing::debug!(
+                event = "lambda_invoke",
+                target_lambda = %key.target_lambda,
+                method = %key.method,
+                route = %key.route,
+                invoke_mode = ?key.invoke_mode,
+                wait_ms,
+                estimated_rps = estimated_rps,
+                batch_size = pending.len(),
+                payload_bytes = payload.len(),
+                "invoking"
+            );
+
+            match invoker
+                .invoke(&key.target_lambda, payload, key.invoke_mode)
+                .await
+            {
+                Ok(LambdaInvokeResult::Buffered(_bytes)) => {
+                    tracing::warn!(
+                        event = "lambda_response_error",
+                        reason = "unexpected_buffered",
+                        target_lambda = %key.target_lambda,
+                        route = %key.route,
+                        batch_size = pending.len(),
+                        "unexpected buffered response for streaming invocation"
+                    );
+                    fail_all_stream(
+                        pending,
+                        StatusCode::BAD_GATEWAY,
+                        "unexpected buffered response".to_string(),
+                    );
+                }
+                Ok(LambdaInvokeResult::ResponseStream(stream)) => {
+                    dispatch_response_stream(&key, stream, pending).await
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        event = "lambda_invoke_failed",
+                        target_lambda = %key.target_lambda,
+                        route = %key.route,
+                        batch_size = pending.len(),
+                        error = %err,
+                        "lambda invoke failed"
+                    );
+                    fail_all_stream(pending, StatusCode::BAD_GATEWAY, format!("invoke: {err}"));
+                }
+            }
+        }
+    }
+}
+
 async fn flush_batch(
     key: &BatchKey,
     runtime: &BatcherRuntime,
@@ -695,74 +867,34 @@ async fn flush_batch(
                     fail_all_buffered(pending, status, msg)
                 }
                 InvocationPlan::Invoke { pending, payload } => {
-                    let runtime = runtime.clone();
-                    let key = key.clone();
-                    tokio::spawn(async move {
-                        let _permit = match runtime.inflight.acquire().await {
-                            Ok(p) => p,
-                            Err(_) => {
-                                fail_all_buffered(
-                                    pending,
-                                    StatusCode::BAD_GATEWAY,
-                                    "router shutting down".to_string(),
-                                );
-                                return;
-                            }
-                        };
+                    let job = InvocationJob::Buffered {
+                        key: key.clone(),
+                        wait_ms,
+                        estimated_rps,
+                        payload,
+                        pending,
+                    };
 
-                        tracing::debug!(
-                            event = "lambda_invoke",
-                            target_lambda = %key.target_lambda,
-                            method = %key.method,
-                            route = %key.route,
-                            invoke_mode = ?key.invoke_mode,
-                            wait_ms,
-                            estimated_rps = estimated_rps,
-                            batch_size = pending.len(),
-                            payload_bytes = payload.len(),
-                            "invoking"
-                        );
-
-                        match runtime
-                            .invoker
-                            .invoke(&key.target_lambda, payload, key.invoke_mode)
-                            .await
-                        {
-                            Ok(LambdaInvokeResult::Buffered(bytes)) => {
-                                dispatch_buffered(&key, bytes, pending)
-                            }
-                            Ok(LambdaInvokeResult::ResponseStream(_stream)) => {
-                                tracing::warn!(
-                                    event = "lambda_response_error",
-                                    reason = "unexpected_stream",
-                                    target_lambda = %key.target_lambda,
-                                    route = %key.route,
-                                    batch_size = pending.len(),
-                                    "unexpected response stream for buffered invocation"
-                                );
-                                fail_all_buffered(
-                                    pending,
-                                    StatusCode::BAD_GATEWAY,
-                                    "unexpected response stream".to_string(),
-                                );
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    event = "lambda_invoke_failed",
-                                    target_lambda = %key.target_lambda,
-                                    route = %key.route,
-                                    batch_size = pending.len(),
-                                    error = %err,
-                                    "lambda invoke failed"
-                                );
-                                fail_all_buffered(
-                                    pending,
-                                    StatusCode::BAD_GATEWAY,
-                                    format!("invoke: {err}"),
-                                );
-                            }
+                    match runtime.invocation_tx.try_send(job) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(job)) => {
+                            tracing::warn!(
+                                event = "invoke_rejected",
+                                reason = "invocation_queue_full",
+                                target_lambda = %key.target_lambda,
+                                route = %key.route,
+                                wait_ms,
+                                "invocation queue full"
+                            );
+                            job.fail(
+                                StatusCode::TOO_MANY_REQUESTS,
+                                "router overloaded".to_string(),
+                            );
                         }
-                    });
+                        Err(mpsc::error::TrySendError::Closed(job)) => {
+                            job.fail(StatusCode::BAD_GATEWAY, "router shutting down".to_string());
+                        }
+                    }
                 }
             }
         }
@@ -808,74 +940,34 @@ async fn flush_batch(
                     fail_all_stream(pending, status, msg)
                 }
                 InvocationPlan::Invoke { pending, payload } => {
-                    let runtime = runtime.clone();
-                    let key = key.clone();
-                    tokio::spawn(async move {
-                        let _permit = match runtime.inflight.acquire().await {
-                            Ok(p) => p,
-                            Err(_) => {
-                                fail_all_stream(
-                                    pending,
-                                    StatusCode::BAD_GATEWAY,
-                                    "router shutting down".to_string(),
-                                );
-                                return;
-                            }
-                        };
+                    let job = InvocationJob::Stream {
+                        key: key.clone(),
+                        wait_ms,
+                        estimated_rps,
+                        payload,
+                        pending,
+                    };
 
-                        tracing::debug!(
-                            event = "lambda_invoke",
-                            target_lambda = %key.target_lambda,
-                            method = %key.method,
-                            route = %key.route,
-                            invoke_mode = ?key.invoke_mode,
-                            wait_ms,
-                            estimated_rps = estimated_rps,
-                            batch_size = pending.len(),
-                            payload_bytes = payload.len(),
-                            "invoking"
-                        );
-
-                        match runtime
-                            .invoker
-                            .invoke(&key.target_lambda, payload, key.invoke_mode)
-                            .await
-                        {
-                            Ok(LambdaInvokeResult::Buffered(_bytes)) => {
-                                tracing::warn!(
-                                    event = "lambda_response_error",
-                                    reason = "unexpected_buffered",
-                                    target_lambda = %key.target_lambda,
-                                    route = %key.route,
-                                    batch_size = pending.len(),
-                                    "unexpected buffered response for streaming invocation"
-                                );
-                                fail_all_stream(
-                                    pending,
-                                    StatusCode::BAD_GATEWAY,
-                                    "unexpected buffered response".to_string(),
-                                );
-                            }
-                            Ok(LambdaInvokeResult::ResponseStream(stream)) => {
-                                dispatch_response_stream(&key, stream, pending).await
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    event = "lambda_invoke_failed",
-                                    target_lambda = %key.target_lambda,
-                                    route = %key.route,
-                                    batch_size = pending.len(),
-                                    error = %err,
-                                    "lambda invoke failed"
-                                );
-                                fail_all_stream(
-                                    pending,
-                                    StatusCode::BAD_GATEWAY,
-                                    format!("invoke: {err}"),
-                                );
-                            }
+                    match runtime.invocation_tx.try_send(job) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(job)) => {
+                            tracing::warn!(
+                                event = "invoke_rejected",
+                                reason = "invocation_queue_full",
+                                target_lambda = %key.target_lambda,
+                                route = %key.route,
+                                wait_ms,
+                                "invocation queue full"
+                            );
+                            job.fail(
+                                StatusCode::TOO_MANY_REQUESTS,
+                                "router overloaded".to_string(),
+                            );
                         }
-                    });
+                        Err(mpsc::error::TrySendError::Closed(job)) => {
+                            job.fail(StatusCode::BAD_GATEWAY, "router shutting down".to_string());
+                        }
+                    }
                 }
             }
         }
@@ -945,10 +1037,10 @@ fn plan_invocations<T>(
     let payload = match build_payload_bytes(key, received_at_ms, &batch_items) {
         Ok(p) => p,
         Err(err) => {
-        return vec![InvocationPlan::Fail {
-            pending,
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            msg: format!("encode: {err}"),
+            return vec![InvocationPlan::Fail {
+                pending,
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                msg: format!("encode: {err}"),
             }];
         }
     };
@@ -1130,11 +1222,12 @@ fn send_stream_head(
     headers: HashMap<String, String>,
 ) -> Result<bool, String> {
     if let Some(init) = entry.init.take() {
-        let status = StatusCode::from_u16(status_code)
-            .map_err(|err| format!("bad status code: {err}"))?;
+        let status =
+            StatusCode::from_u16(status_code).map_err(|err| format!("bad status code: {err}"))?;
         let headers =
             headers_from_map(headers).map_err(|err| format!("bad response headers: {err}"))?;
-        if init.send(StreamInit::Stream(StreamHead { status, headers }))
+        if init
+            .send(StreamInit::Stream(StreamHead { status, headers }))
             .is_err()
         {
             return Ok(false);
@@ -1382,8 +1475,7 @@ async fn dispatch_stream_record(
                             let status = record.status_code.unwrap_or(502);
                             let msg = record.message.unwrap_or_else(|| "error".to_string());
                             let _ = init.send(StreamInit::Response(RouterResponse::text(
-                                StatusCode::from_u16(status)
-                                    .unwrap_or(StatusCode::BAD_GATEWAY),
+                                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                                 msg,
                             )));
                         }
@@ -1447,7 +1539,10 @@ fn fail_all_buffered(
 fn fail_all_stream(pending: HashMap<String, StreamPending>, status: StatusCode, msg: String) {
     for (_id, mut entry) in pending {
         if let Some(init) = entry.init.take() {
-            let _ = init.send(StreamInit::Response(RouterResponse::text(status, msg.clone())));
+            let _ = init.send(StreamInit::Response(RouterResponse::text(
+                status,
+                msg.clone(),
+            )));
         }
         // Dropping the sender closes the response body stream.
         drop(entry.body);
@@ -1679,6 +1774,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -1739,6 +1835,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -1824,6 +1921,7 @@ mod tests {
             invoker.clone(),
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -1864,6 +1962,7 @@ mod tests {
             invoker.clone(),
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -1907,6 +2006,7 @@ mod tests {
             invoker.clone(),
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -1941,6 +2041,7 @@ mod tests {
             invoker.clone(),
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -1995,6 +2096,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2026,6 +2128,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2056,6 +2159,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2086,6 +2190,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2118,6 +2223,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2145,6 +2251,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 1,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2159,6 +2266,34 @@ mod tests {
             mgr.enqueue(&op, req_b),
             Err(EnqueueError::QueueFull)
         ));
+    }
+
+    #[tokio::test]
+    async fn invocation_queue_full_rejects_with_too_many_requests() {
+        // Keep the receiver alive but do not consume jobs so the queue stays full.
+        let (invocation_tx, _invocation_rx) = mpsc::channel::<InvocationJob>(1);
+        let runtime = BatcherRuntime {
+            idle_ttl: Duration::from_secs(60),
+            invocation_tx,
+            max_invoke_payload_bytes: 6 * 1024 * 1024,
+        };
+
+        let key = BatchKey {
+            target_lambda: "fn".to_string(),
+            method: Method::GET,
+            route: "/hello".to_string(),
+            invoke_mode: InvokeMode::Buffered,
+            key_values: vec![],
+        };
+
+        let (req_a, _rx_a) = pending("a");
+        flush_batch(&key, &runtime, 0, None, vec![req_a]).await;
+
+        let (req_b, rx_b) = pending("b");
+        flush_batch(&key, &runtime, 0, None, vec![req_b]).await;
+
+        let b = rx_b.await.expect("b response");
+        assert_eq!(b.status, StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]
@@ -2290,6 +2425,7 @@ mod tests {
             invoker.clone(),
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes,
@@ -2367,6 +2503,7 @@ mod tests {
             invoker.clone(),
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: one_len - 1,
@@ -2396,6 +2533,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_millis(10),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2452,6 +2590,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2522,6 +2661,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2549,6 +2689,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2591,6 +2732,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2627,6 +2769,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2660,6 +2803,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -2703,6 +2847,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,

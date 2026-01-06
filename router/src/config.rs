@@ -30,6 +30,14 @@ fn default_max_invoke_payload_bytes() -> usize {
     6 * 1024 * 1024
 }
 
+fn default_max_inflight_requests() -> usize {
+    4096
+}
+
+fn default_max_pending_invocations() -> usize {
+    256
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 /// Header forwarding policy.
 ///
@@ -64,10 +72,28 @@ pub struct RouterConfig {
     pub max_inflight_invocations: usize,
 
     #[serde(
+        default = "default_max_inflight_requests",
+        deserialize_with = "crate::serde_ext::de_usize_or_string"
+    )]
+    /// Maximum number of in-flight HTTP requests across all routes.
+    ///
+    /// When exceeded, the router rejects requests with 429.
+    pub max_inflight_requests: usize,
+
+    #[serde(
+        default = "default_max_pending_invocations",
+        deserialize_with = "crate::serde_ext::de_usize_or_string"
+    )]
+    /// Maximum number of queued Lambda invocations waiting for execution.
+    ///
+    /// When full, the router rejects new batches with 429.
+    pub max_pending_invocations: usize,
+
+    #[serde(
         default = "default_max_queue_depth_per_key",
         deserialize_with = "crate::serde_ext::de_usize_or_string"
     )]
-    /// Per-batch-key enqueue depth. When full, requests are rejected with 503.
+    /// Per-batch-key enqueue depth. When full, requests are rejected with 429.
     pub max_queue_depth_per_key: usize,
 
     #[serde(
@@ -125,6 +151,8 @@ spec_path: "spec.yaml"
 "#;
         let cfg = RouterConfig::from_yaml_bytes(yaml).unwrap();
         assert_eq!(cfg.max_inflight_invocations, 64);
+        assert_eq!(cfg.max_inflight_requests, 4096);
+        assert_eq!(cfg.max_pending_invocations, 256);
         assert_eq!(cfg.max_queue_depth_per_key, 1000);
         assert_eq!(cfg.idle_ttl_ms, 30_000);
         assert_eq!(cfg.default_timeout_ms, 2_000);
@@ -141,6 +169,8 @@ spec_path: "spec.yaml"
 listen_addr: "127.0.0.1:3000"
 spec_path: "spec.yaml"
 max_inflight_invocations: "12"
+max_inflight_requests: "56"
+max_pending_invocations: "78"
 max_queue_depth_per_key: "34"
 idle_ttl_ms: "56000"
 default_timeout_ms: "789"
@@ -149,6 +179,8 @@ max_invoke_payload_bytes: "2048"
 "#;
         let cfg = RouterConfig::from_yaml_bytes(yaml).unwrap();
         assert_eq!(cfg.max_inflight_invocations, 12);
+        assert_eq!(cfg.max_inflight_requests, 56);
+        assert_eq!(cfg.max_pending_invocations, 78);
         assert_eq!(cfg.max_queue_depth_per_key, 34);
         assert_eq!(cfg.idle_ttl_ms, 56_000);
         assert_eq!(cfg.default_timeout_ms, 789);

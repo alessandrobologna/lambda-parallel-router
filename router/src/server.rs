@@ -21,6 +21,7 @@ use axum::{
 };
 use futures::StreamExt;
 use std::convert::Infallible;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -38,6 +39,7 @@ use crate::{
 struct AppState {
     spec: Arc<CompiledSpec>,
     batchers: BatcherManager,
+    inflight_requests: Arc<Semaphore>,
     max_body_bytes: usize,
     forward_headers: HeaderForwardPolicy,
 }
@@ -106,6 +108,23 @@ fn build_app(state: AppState) -> Router {
         .with_state(state)
 }
 
+struct PermitStream<S> {
+    inner: S,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl<S: futures::Stream> futures::Stream for PermitStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        // Safety: we never move `inner` after the wrapper is pinned.
+        unsafe { self.map_unchecked_mut(|s| &mut s.inner) }.poll_next(cx)
+    }
+}
+
 const HEALTH_MAX_DELAY_MS: u64 = 10_000;
 
 async fn healthz(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
@@ -150,7 +169,9 @@ fn read_rss_kb() -> Option<u64> {
 }
 
 fn count_open_fds() -> Option<usize> {
-    fs::read_dir("/proc/self/fd").ok().map(|entries| entries.count())
+    fs::read_dir("/proc/self/fd")
+        .ok()
+        .map(|entries| entries.count())
 }
 
 fn read_max_open_files() -> Option<(u64, u64)> {
@@ -174,6 +195,7 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
         invoker,
         BatchingConfig {
             max_inflight_invocations: cfg.max_inflight_invocations,
+            max_pending_invocations: cfg.max_pending_invocations,
             max_queue_depth_per_key: cfg.max_queue_depth_per_key,
             idle_ttl: Duration::from_millis(cfg.idle_ttl_ms),
             max_invoke_payload_bytes: cfg.max_invoke_payload_bytes,
@@ -185,6 +207,7 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
     let state = AppState {
         spec: Arc::new(spec),
         batchers,
+        inflight_requests: Arc::new(Semaphore::new(cfg.max_inflight_requests)),
         max_body_bytes: cfg.max_body_bytes,
         forward_headers,
     };
@@ -257,6 +280,21 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         RouteMatch::Matched { op, path_params } => (op.clone(), path_params),
     };
 
+    let inflight_permit = match state.inflight_requests.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!(
+                event = "admission_rejected",
+                reason = "too_many_inflight_requests",
+                method = %method_str,
+                route = %op.route_template,
+                "request rejected"
+            );
+            return RouterResponse::text(StatusCode::TOO_MANY_REQUESTS, "too many requests")
+                .into_response();
+        }
+    };
+
     let body = match to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
         Err(_) => {
@@ -317,7 +355,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                     route = %op.route_template,
                     "request rejected"
                 );
-                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "queue full")
+                return RouterResponse::text(StatusCode::TOO_MANY_REQUESTS, "queue full")
                     .into_response();
             }
             Err(EnqueueError::BatcherClosed) => {
@@ -328,7 +366,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                     route = %op.route_template,
                     "request rejected"
                 );
-                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "batcher closed")
+                return RouterResponse::text(StatusCode::TOO_MANY_REQUESTS, "batcher closed")
                     .into_response();
             }
         }
@@ -337,6 +375,10 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
             Ok(Ok(StreamInit::Response(resp))) => resp.into_response(),
             Ok(Ok(StreamInit::Stream(head))) => {
                 let stream = ReceiverStream::new(body_rx).map(Ok::<_, Infallible>);
+                let stream = PermitStream {
+                    inner: stream,
+                    _permit: inflight_permit,
+                };
                 let mut res = axum::response::Response::new(Body::from_stream(stream));
                 *res.status_mut() = head.status;
                 *res.headers_mut() = head.headers;
@@ -389,7 +431,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                     route = %op.route_template,
                     "request rejected"
                 );
-                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "queue full")
+                return RouterResponse::text(StatusCode::TOO_MANY_REQUESTS, "queue full")
                     .into_response();
             }
             Err(EnqueueError::BatcherClosed) => {
@@ -400,7 +442,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                     route = %op.route_template,
                     "request rejected"
                 );
-                return RouterResponse::text(StatusCode::SERVICE_UNAVAILABLE, "batcher closed")
+                return RouterResponse::text(StatusCode::TOO_MANY_REQUESTS, "batcher closed")
                     .into_response();
             }
         }
@@ -494,6 +536,65 @@ mod tests {
         }
     }
 
+    struct BlockingInvoker {
+        started: tokio::sync::Notify,
+        proceed: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl LambdaInvoker for BlockingInvoker {
+        async fn invoke(
+            &self,
+            _function_name: &str,
+            payload: Bytes,
+            mode: InvokeMode,
+        ) -> anyhow::Result<LambdaInvokeResult> {
+            assert_eq!(mode, InvokeMode::Buffered);
+            self.started.notify_one();
+            self.proceed.notified().await;
+
+            let input: serde_json::Value = serde_json::from_slice(&payload)?;
+            let batch = input["batch"].as_array().expect("batch array");
+
+            #[derive(serde::Serialize)]
+            struct Out {
+                v: u8,
+                responses: Vec<OutItem>,
+            }
+            #[derive(serde::Serialize)]
+            struct OutItem {
+                id: String,
+                #[serde(rename = "statusCode")]
+                status_code: u16,
+                headers: HashMap<String, String>,
+                body: String,
+                #[serde(rename = "isBase64Encoded")]
+                is_base64_encoded: bool,
+            }
+
+            let out = Out {
+                v: 1,
+                responses: batch
+                    .iter()
+                    .map(|item| OutItem {
+                        id: item["requestContext"]["requestId"]
+                            .as_str()
+                            .expect("requestId")
+                            .to_string(),
+                        status_code: 200,
+                        headers: HashMap::new(),
+                        body: "ok".to_string(),
+                        is_base64_encoded: false,
+                    })
+                    .collect(),
+            };
+
+            Ok(LambdaInvokeResult::Buffered(Bytes::from(
+                serde_json::to_vec(&out)?,
+            )))
+        }
+    }
+
     fn test_state(spec_yaml: &[u8], max_body_bytes: usize) -> AppState {
         let spec = CompiledSpec::from_yaml_bytes(spec_yaml, 1000).unwrap();
         let invoker = Arc::new(TestInvoker);
@@ -501,6 +602,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -510,6 +612,7 @@ mod tests {
         AppState {
             spec: Arc::new(spec),
             batchers,
+            inflight_requests: Arc::new(Semaphore::new(1024)),
             max_body_bytes,
             forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
                 .unwrap(),
@@ -535,6 +638,7 @@ mod tests {
             invoker,
             BatchingConfig {
                 max_inflight_invocations: 10,
+                max_pending_invocations: 10,
                 max_queue_depth_per_key: 10,
                 idle_ttl: Duration::from_secs(60),
                 max_invoke_payload_bytes: 6 * 1024 * 1024,
@@ -544,6 +648,7 @@ mod tests {
         build_app(AppState {
             spec: Arc::new(spec),
             batchers,
+            inflight_requests: Arc::new(Semaphore::new(1024)),
             max_body_bytes,
             forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
         })
@@ -602,7 +707,10 @@ paths: {}
         params.insert("max-delay".to_string(), "5".to_string());
         assert_eq!(parse_max_delay_ms(&params), 5);
 
-        params.insert("max-delay".to_string(), (HEALTH_MAX_DELAY_MS + 1).to_string());
+        params.insert(
+            "max-delay".to_string(),
+            (HEALTH_MAX_DELAY_MS + 1).to_string(),
+        );
         assert_eq!(parse_max_delay_ms(&params), HEALTH_MAX_DELAY_MS);
     }
 
@@ -786,6 +894,74 @@ paths:
             .unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admission_control_rejects_when_inflight_limit_reached() {
+        let invoker = Arc::new(BlockingInvoker {
+            started: tokio::sync::Notify::new(),
+            proceed: tokio::sync::Notify::new(),
+        });
+
+        let spec_yaml = br#"
+paths:
+  /hello:
+    get:
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
+      x-lpr: { max_wait_ms: 0, max_batch_size: 1, timeout_ms: 10000 }
+"#;
+
+        let spec = CompiledSpec::from_yaml_bytes(spec_yaml, 1000).unwrap();
+        let batchers = BatcherManager::new(
+            invoker.clone(),
+            BatchingConfig {
+                max_inflight_invocations: 1,
+                max_pending_invocations: 1,
+                max_queue_depth_per_key: 10,
+                idle_ttl: Duration::from_secs(60),
+                max_invoke_payload_bytes: 6 * 1024 * 1024,
+            },
+        );
+
+        let app = build_app(AppState {
+            spec: Arc::new(spec),
+            batchers,
+            inflight_requests: Arc::new(Semaphore::new(1)),
+            max_body_bytes: 1024,
+            forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
+                .unwrap(),
+        });
+
+        let app1 = app.clone();
+        let request1 = tokio::spawn(async move {
+            app1.oneshot(
+                Request::builder()
+                    .uri("/hello")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        });
+
+        // Wait until the Lambda invocation is underway, which implies the request has been
+        // admitted and is holding the inflight permit.
+        invoker.started.notified().await;
+
+        let res2 = app
+            .oneshot(
+                Request::builder()
+                    .uri("/hello")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        invoker.proceed.notify_one();
+        let res1 = request1.await.unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
     }
 
     struct AllowlistInvoker;
