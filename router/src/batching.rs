@@ -655,6 +655,14 @@ async fn flush_batch(
 
     if key.invoke_mode == InvokeMode::Buffered {
         if !pending_stream.is_empty() {
+            tracing::warn!(
+                event = "batcher_state_error",
+                reason = "unexpected_stream_sink",
+                target_lambda = %key.target_lambda,
+                route = %key.route,
+                pending = pending_stream.len(),
+                "unexpected streaming response sink for buffered invocation"
+            );
             fail_all_stream(
                 pending_stream,
                 StatusCode::BAD_GATEWAY,
@@ -674,7 +682,18 @@ async fn flush_batch(
                     pending,
                     status,
                     msg,
-                } => fail_all_buffered(pending, status, msg),
+                } => {
+                    tracing::warn!(
+                        event = "lambda_invocation_plan_failed",
+                        target_lambda = %key.target_lambda,
+                        route = %key.route,
+                        status = %status,
+                        batch_size = pending.len(),
+                        error = %msg,
+                        "invocation plan failed"
+                    );
+                    fail_all_buffered(pending, status, msg)
+                }
                 InvocationPlan::Invoke { pending, payload } => {
                     let runtime = runtime.clone();
                     let key = key.clone();
@@ -710,9 +729,17 @@ async fn flush_batch(
                             .await
                         {
                             Ok(LambdaInvokeResult::Buffered(bytes)) => {
-                                dispatch_buffered(bytes, pending)
+                                dispatch_buffered(&key, bytes, pending)
                             }
                             Ok(LambdaInvokeResult::ResponseStream(_stream)) => {
+                                tracing::warn!(
+                                    event = "lambda_response_error",
+                                    reason = "unexpected_stream",
+                                    target_lambda = %key.target_lambda,
+                                    route = %key.route,
+                                    batch_size = pending.len(),
+                                    "unexpected response stream for buffered invocation"
+                                );
                                 fail_all_buffered(
                                     pending,
                                     StatusCode::BAD_GATEWAY,
@@ -720,6 +747,14 @@ async fn flush_batch(
                                 );
                             }
                             Err(err) => {
+                                tracing::warn!(
+                                    event = "lambda_invoke_failed",
+                                    target_lambda = %key.target_lambda,
+                                    route = %key.route,
+                                    batch_size = pending.len(),
+                                    error = %err,
+                                    "lambda invoke failed"
+                                );
                                 fail_all_buffered(
                                     pending,
                                     StatusCode::BAD_GATEWAY,
@@ -733,6 +768,14 @@ async fn flush_batch(
         }
     } else {
         if !pending_buffered.is_empty() {
+            tracing::warn!(
+                event = "batcher_state_error",
+                reason = "unexpected_buffered_sink",
+                target_lambda = %key.target_lambda,
+                route = %key.route,
+                pending = pending_buffered.len(),
+                "unexpected buffered response sink for streaming invocation"
+            );
             fail_all_buffered(
                 pending_buffered,
                 StatusCode::BAD_GATEWAY,
@@ -752,7 +795,18 @@ async fn flush_batch(
                     pending,
                     status,
                     msg,
-                } => fail_all_stream(pending, status, msg),
+                } => {
+                    tracing::warn!(
+                        event = "lambda_invocation_plan_failed",
+                        target_lambda = %key.target_lambda,
+                        route = %key.route,
+                        status = %status,
+                        batch_size = pending.len(),
+                        error = %msg,
+                        "invocation plan failed"
+                    );
+                    fail_all_stream(pending, status, msg)
+                }
                 InvocationPlan::Invoke { pending, payload } => {
                     let runtime = runtime.clone();
                     let key = key.clone();
@@ -788,6 +842,14 @@ async fn flush_batch(
                             .await
                         {
                             Ok(LambdaInvokeResult::Buffered(_bytes)) => {
+                                tracing::warn!(
+                                    event = "lambda_response_error",
+                                    reason = "unexpected_buffered",
+                                    target_lambda = %key.target_lambda,
+                                    route = %key.route,
+                                    batch_size = pending.len(),
+                                    "unexpected buffered response for streaming invocation"
+                                );
                                 fail_all_stream(
                                     pending,
                                     StatusCode::BAD_GATEWAY,
@@ -795,9 +857,17 @@ async fn flush_batch(
                                 );
                             }
                             Ok(LambdaInvokeResult::ResponseStream(stream)) => {
-                                dispatch_response_stream(stream, pending).await
+                                dispatch_response_stream(&key, stream, pending).await
                             }
                             Err(err) => {
+                                tracing::warn!(
+                                    event = "lambda_invoke_failed",
+                                    target_lambda = %key.target_lambda,
+                                    route = %key.route,
+                                    batch_size = pending.len(),
+                                    error = %err,
+                                    "lambda invoke failed"
+                                );
                                 fail_all_stream(
                                     pending,
                                     StatusCode::BAD_GATEWAY,
@@ -967,12 +1037,22 @@ fn split_pending<T>(
 }
 
 fn dispatch_buffered(
+    key: &BatchKey,
     resp_bytes: Bytes,
     mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
 ) {
     let parsed: BatchResponse = match serde_json::from_slice(&resp_bytes) {
         Ok(r) => r,
         Err(err) => {
+            tracing::warn!(
+                event = "lambda_response_error",
+                reason = "decode_response",
+                target_lambda = %key.target_lambda,
+                route = %key.route,
+                batch_size = pending.len(),
+                error = %err,
+                "failed to decode buffered response"
+            );
             fail_all_buffered(
                 pending,
                 StatusCode::BAD_GATEWAY,
@@ -983,6 +1063,15 @@ fn dispatch_buffered(
     };
 
     if parsed.v != 1 {
+        tracing::warn!(
+            event = "lambda_response_error",
+            reason = "unsupported_version",
+            target_lambda = %key.target_lambda,
+            route = %key.route,
+            batch_size = pending.len(),
+            version = parsed.v,
+            "unsupported buffered response version"
+        );
         fail_all_buffered(
             pending,
             StatusCode::BAD_GATEWAY,
@@ -1003,12 +1092,31 @@ fn dispatch_buffered(
         ) {
             Ok(r) => r,
             Err(err) => {
+                tracing::warn!(
+                    event = "lambda_response_error",
+                    reason = "bad_response",
+                    target_lambda = %key.target_lambda,
+                    route = %key.route,
+                    request_id = %item.id,
+                    error = %err,
+                    "bad buffered response record"
+                );
                 RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
             }
         };
         let _ = tx.send(resp);
     }
 
+    if !pending.is_empty() {
+        tracing::warn!(
+            event = "lambda_response_error",
+            reason = "missing_response",
+            target_lambda = %key.target_lambda,
+            route = %key.route,
+            missing = pending.len(),
+            "missing buffered response records"
+        );
+    }
     fail_all_buffered(
         pending,
         StatusCode::BAD_GATEWAY,
@@ -1036,6 +1144,7 @@ fn send_stream_head(
 }
 
 async fn dispatch_response_stream(
+    key: &BatchKey,
     mut stream: tokio::sync::mpsc::Receiver<anyhow::Result<Bytes>>,
     mut pending: HashMap<String, StreamPending>,
 ) {
@@ -1046,6 +1155,15 @@ async fn dispatch_response_stream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(err) => {
+                tracing::warn!(
+                    event = "lambda_response_error",
+                    reason = "stream_error",
+                    target_lambda = %key.target_lambda,
+                    route = %key.route,
+                    batch_size = pending.len(),
+                    error = %err,
+                    "response stream error"
+                );
                 fail_all_stream(
                     pending,
                     StatusCode::BAD_GATEWAY,
@@ -1057,6 +1175,15 @@ async fn dispatch_response_stream(
 
         buffer.extend_from_slice(&chunk);
         if buffer.len() > MAX_BUFFER_BYTES {
+            tracing::warn!(
+                event = "lambda_response_error",
+                reason = "stream_too_large",
+                target_lambda = %key.target_lambda,
+                route = %key.route,
+                batch_size = pending.len(),
+                bytes = buffer.len(),
+                "response stream exceeded buffer limit"
+            );
             fail_all_stream(
                 pending,
                 StatusCode::BAD_GATEWAY,
@@ -1081,12 +1208,30 @@ async fn dispatch_response_stream(
             let record = match parse_stream_record(line) {
                 Ok(r) => r,
                 Err(err) => {
+                    tracing::warn!(
+                        event = "lambda_response_error",
+                        reason = "bad_ndjson",
+                        target_lambda = %key.target_lambda,
+                        route = %key.route,
+                        batch_size = pending.len(),
+                        error = %err,
+                        "invalid ndjson record"
+                    );
                     fail_all_stream(pending, StatusCode::BAD_GATEWAY, err);
                     return;
                 }
             };
 
             if let Err(msg) = dispatch_stream_record(record, &mut pending).await {
+                tracing::warn!(
+                    event = "lambda_response_error",
+                    reason = "dispatch_record",
+                    target_lambda = %key.target_lambda,
+                    route = %key.route,
+                    batch_size = pending.len(),
+                    error = %msg,
+                    "failed to dispatch stream record"
+                );
                 fail_all_stream(pending, StatusCode::BAD_GATEWAY, msg);
                 return;
             }
@@ -1107,17 +1252,45 @@ async fn dispatch_response_stream(
         let record = match parse_stream_record(tail) {
             Ok(r) => r,
             Err(err) => {
+                tracing::warn!(
+                    event = "lambda_response_error",
+                    reason = "bad_tail_record",
+                    target_lambda = %key.target_lambda,
+                    route = %key.route,
+                    batch_size = pending.len(),
+                    error = %err,
+                    "invalid trailing ndjson record"
+                );
                 fail_all_stream(pending, StatusCode::BAD_GATEWAY, err);
                 return;
             }
         };
 
         if let Err(msg) = dispatch_stream_record(record, &mut pending).await {
+            tracing::warn!(
+                event = "lambda_response_error",
+                reason = "dispatch_tail",
+                target_lambda = %key.target_lambda,
+                route = %key.route,
+                batch_size = pending.len(),
+                error = %msg,
+                "failed to dispatch trailing record"
+            );
             fail_all_stream(pending, StatusCode::BAD_GATEWAY, msg);
             return;
         }
     }
 
+    if !pending.is_empty() {
+        tracing::warn!(
+            event = "lambda_response_error",
+            reason = "missing_response",
+            target_lambda = %key.target_lambda,
+            route = %key.route,
+            missing = pending.len(),
+            "missing stream response records"
+        );
+    }
     fail_all_stream(
         pending,
         StatusCode::BAD_GATEWAY,
