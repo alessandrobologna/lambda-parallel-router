@@ -610,6 +610,8 @@ def plot_route_report(
         ax.set_title("Success latency (200 only)")
         ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
     else:
+        metric_colors = sns.color_palette("tab10", n_colors=4)
+
         resampled = (
             latency_ok.set_index("timestamp")
             .resample("1s")["latency_ms"]
@@ -632,29 +634,29 @@ def plot_route_report(
             resampled["elapsed_seconds"],
             resampled["avg"],
             label=f"avg ({overall_avg:.1f}ms)",
+            color=metric_colors[0],
             linewidth=2,
-            linestyle="-",
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["p50"],
             label=f"p50 ({overall_p50:.1f}ms)",
+            color=metric_colors[1],
             linewidth=1.8,
-            linestyle="--",
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["p95"],
             label=f"p95 ({overall_p95:.1f}ms)",
+            color=metric_colors[2],
             linewidth=1.8,
-            linestyle="-.",
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["max"],
             label=f"max ({overall_max:.1f}ms)",
+            color=metric_colors[3],
             linewidth=1.5,
-            linestyle=":",
             alpha=0.8,
         )
     if show_stage_markers:
