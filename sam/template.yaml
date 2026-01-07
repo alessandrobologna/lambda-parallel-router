@@ -188,7 +188,10 @@ Resources:
         ObservabilityConfigurationName: !Sub "${AWS::StackName}-xray"
         TraceConfiguration:
           Vendor: AWSXRAY
-      RouterConfig: {}
+      RouterConfig:
+        # Force a republish of the router config manifest (older deployments used a legacy
+        # two-manifest format). This also makes the default explicit.
+        DefaultTimeoutMs: 2000
       Spec:
         openapi: 3.0.0
         info:
