@@ -11,8 +11,8 @@ The bootstrap stack deploys shared resources:
 
 The bootstrap stack registers a CloudFormation macro named `LprRouter`.
 
-To enable the macro, add `LprRouter` to your template’s `Transform` section, then declare one or
-more `Lpr::Router::Service` resources. The macro expands them into App Runner + supporting
+To enable the macro, add `LprRouter` to your template's `Transform` section, then declare one or
+more `Lpr::Router::Service` resources. The macro expands them into App Runner and supporting
 resources.
 
 ## Resource type: `Lpr::Router::Service`
@@ -53,7 +53,7 @@ Router:
 | `AutoDeploymentsEnabled` | Boolean | No | `true` | Enables App Runner auto deployments for this service. See [Automatic deployments](#automatic-deployments). |
 | `ConfigPrefix` | String | No | `lpr/${AWS::StackName}/<LogicalId>/` | S3 prefix used for published manifests (must resolve to a string). The publisher writes `config/<sha256>.json` under this prefix. |
 | `InstanceRoleArn` | String | No | - | Use an existing App Runner instance role (you own permissions). If omitted, the macro creates an instance role with S3 read + Lambda invoke permissions derived from the spec. |
-| `InstanceConfiguration` | Object | No | - | Passed through to the service’s `InstanceConfiguration` (e.g. `Cpu`, `Memory`). Some CPU/memory combinations are not supported (see App Runner docs). If it includes `InstanceRoleArn`, it must match `InstanceRoleArn` when both are set. |
+| `InstanceConfiguration` | Object | No | - | Passed through to the service's `InstanceConfiguration` (e.g. `Cpu`, `Memory`). Some CPU/memory combinations are not supported (see App Runner docs). If it includes `InstanceRoleArn`, it must match `InstanceRoleArn` when both are set. |
 | `AutoScalingConfiguration` | Object | No | - | Creates an `AWS::AppRunner::AutoScalingConfiguration` resource and wires it to the service. Mutually exclusive with `AutoScalingConfigurationArn`. |
 | `AutoScalingConfigurationArn` | String | No | - | Uses an existing auto scaling configuration. Mutually exclusive with `AutoScalingConfiguration`. |
 
@@ -293,7 +293,7 @@ Do not declare resources with those logical IDs in the same template.
 ## Resource type: `Custom::LprConfigPublisher`
 
 The macro uses this custom resource to publish the config manifest to S3. You can also use it
-directly if you don’t want to use the macro.
+directly if you do not want to use the macro.
 
 ### Syntax
 
