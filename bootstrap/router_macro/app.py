@@ -293,6 +293,15 @@ def _expand_router_service(
     runtime_env.setdefault("RUST_LOG", "info")
     runtime_env["LPR_CONFIG_URI"] = _get_att(lpr_publisher_id, "ConfigS3Uri")
 
+    if observability_enabled:
+        runtime_env.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+        runtime_env.setdefault("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc")
+        runtime_env.setdefault("OTEL_EXPORTER_OTLP_INSECURE", "true")
+        runtime_env.setdefault("OTEL_PROPAGATORS", "xray,tracecontext,baggage")
+        runtime_env.setdefault("OTEL_METRICS_EXPORTER", "none")
+        if service_name is not None:
+            runtime_env.setdefault("OTEL_SERVICE_NAME", service_name)
+
     image_cfg: Dict[str, Any] = {
         "Port": port,
         "RuntimeEnvironmentVariables": _as_env_kv_list(runtime_env),

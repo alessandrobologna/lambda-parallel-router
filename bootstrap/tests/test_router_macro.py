@@ -220,6 +220,18 @@ class RouterMacroTests(unittest.TestCase):
             {"Fn::GetAtt": ["RouterLprObservability", "ObservabilityConfigurationArn"]},
         )
 
+        svc_env = (
+            resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
+                "RuntimeEnvironmentVariables"
+            ]
+        )
+        env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
+        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4317")
+        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"], "grpc")
+        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_INSECURE"], "true")
+        self.assertEqual(env_map["OTEL_PROPAGATORS"], "xray,tracecontext,baggage")
+        self.assertEqual(env_map["OTEL_METRICS_EXPORTER"], "none")
+
         instance_role = resources["RouterLprInstanceRole"]["Properties"]
         self.assertIn("ManagedPolicyArns", instance_role)
         self.assertIn(
@@ -270,6 +282,18 @@ class RouterMacroTests(unittest.TestCase):
             service_props["ObservabilityConfiguration"]["ObservabilityConfigurationArn"],
             "arn:aws:apprunner:us-east-1:123456789012:observabilityconfiguration/xray-tracing/3",
         )
+
+        svc_env = (
+            resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
+                "RuntimeEnvironmentVariables"
+            ]
+        )
+        env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
+        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4317")
+        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"], "grpc")
+        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_INSECURE"], "true")
+        self.assertEqual(env_map["OTEL_PROPAGATORS"], "xray,tracecontext,baggage")
+        self.assertEqual(env_map["OTEL_METRICS_EXPORTER"], "none")
 
         instance_role = resources["RouterLprInstanceRole"]["Properties"]
         self.assertIn("ManagedPolicyArns", instance_role)
