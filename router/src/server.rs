@@ -20,6 +20,8 @@ use axum::{
 };
 use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
 use futures::StreamExt;
+use init_tracing_opentelemetry::tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use opentelemetry::trace::TraceContextExt as _;
 use std::convert::Infallible;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
@@ -102,6 +104,26 @@ fn is_hop_by_hop_header(name: &http::HeaderName) -> bool {
 
 fn trace_filter(path: &str) -> bool {
     path != "/healthz"
+}
+
+struct HeaderMapInjector<'a>(&'a mut HashMap<String, String>);
+
+impl opentelemetry::propagation::Injector for HeaderMapInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_ascii_lowercase(), value);
+    }
+}
+
+fn inject_trace_context(headers: &mut HashMap<String, String>) {
+    let cx = tracing::Span::current().context();
+    if !cx.span().span_context().is_valid() {
+        return;
+    }
+
+    let mut injector = HeaderMapInjector(headers);
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&cx, &mut injector);
+    });
 }
 
 fn build_app(state: AppState, otel_enabled: bool) -> Router {
@@ -229,6 +251,10 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
             headers.insert(name.as_str().to_string(), v.to_string());
         }
     }
+    // Create a per-request downstream trace context for each event item. This ensures downstream
+    // handlers see a `traceparent` (and any other configured propagation headers), even when the
+    // client request isn't traced.
+    inject_trace_context(&mut headers);
 
     let mut query = HashMap::new();
     let raw_query_string = parts.uri.query().unwrap_or("").to_string();
@@ -399,6 +425,43 @@ mod tests {
     use bytes::Bytes;
     use http::header::ALLOW;
     use tower::ServiceExt as _;
+
+    #[test]
+    fn inject_trace_context_sets_trace_headers_when_span_is_enabled() {
+        use std::sync::Once;
+
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            opentelemetry::global::set_text_map_propagator(
+                opentelemetry::propagation::TextMapCompositePropagator::new(vec![
+                    Box::new(opentelemetry_aws::trace::XrayPropagator::default()),
+                    Box::new(opentelemetry_sdk::propagation::TraceContextPropagator::new()),
+                    Box::new(opentelemetry_sdk::propagation::BaggagePropagator::new()),
+                ]),
+            );
+        });
+
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+        let tracer = provider.tracer("test");
+        let otel_layer = init_tracing_opentelemetry::tracing_opentelemetry::layer()
+            .with_error_records_to_exceptions(true)
+            .with_tracer(tracer);
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new("otel::tracing=trace"))
+            .with(otel_layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let span = tracing::span!(target: "otel::tracing", tracing::Level::TRACE, "test");
+        let _entered = span.enter();
+
+        let mut headers = HashMap::new();
+        inject_trace_context(&mut headers);
+        assert!(headers.contains_key("traceparent"));
+        assert!(headers.contains_key("x-amzn-trace-id"));
+    }
 
     struct TestInvoker;
 
