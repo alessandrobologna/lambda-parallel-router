@@ -256,34 +256,33 @@ def _expand_router_service(
         if observability_enabled:
             managed_policy_arns.append("arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess")
 
-        resources[lpr_instance_role_id] = {
-            "Type": "AWS::IAM::Role",
-            "Properties": {
-                "AssumeRolePolicyDocument": {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Principal": {"Service": "tasks.apprunner.amazonaws.com"},
-                            "Action": "sts:AssumeRole",
-                        }
-                    ],
-                },
-                "Policies": [
+        instance_role_props = {
+            "AssumeRolePolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
                     {
-                        "PolicyName": "LprRouterInstancePolicy",
-                        "PolicyDocument": {
-                            "Version": "2012-10-17",
-                            "Statement": statements,
-                        },
+                        "Effect": "Allow",
+                        "Principal": {"Service": "tasks.apprunner.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
                     }
                 ],
-                **(
-                    {"ManagedPolicyArns": managed_policy_arns}
-                    if managed_policy_arns
-                    else {}
-                ),
             },
+            "Policies": [
+                {
+                    "PolicyName": "LprRouterInstancePolicy",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": statements,
+                    },
+                }
+            ],
+        }
+        if managed_policy_arns:
+            instance_role_props["ManagedPolicyArns"] = managed_policy_arns
+
+        resources[lpr_instance_role_id] = {
+            "Type": "AWS::IAM::Role",
+            "Properties": instance_role_props,
         }
 
         instance_role_arn = _get_att(lpr_instance_role_id, "Arn")
