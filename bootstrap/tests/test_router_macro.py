@@ -169,6 +169,115 @@ class RouterMacroTests(unittest.TestCase):
             "1 GB",
         )
 
+    def test_supports_observability_configuration_resource(self) -> None:
+        event = {
+            "requestId": "req-4",
+            "fragment": {
+                "Resources": {
+                    "Router": {
+                        "Type": "Lpr::Router::Service",
+                        "Properties": {
+                            "ImageIdentifier": "x",
+                            "RouterConfig": {},
+                            "ObservabilityConfiguration": {
+                                "ObservabilityConfigurationName": "xray-tracing",
+                                "TraceConfiguration": {"Vendor": "AWSXRAY"},
+                            },
+                            "Spec": {
+                                "openapi": "3.0.0",
+                                "paths": {
+                                    "/hello": {
+                                        "get": {
+                                            "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
+                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                        }
+                                    }
+                                },
+                            },
+                        },
+                    }
+                }
+            },
+        }
+
+        out = app.handler(event, context=None)
+        self.assertEqual(out["status"], "success")
+        resources = out["fragment"]["Resources"]
+
+        self.assertIn("RouterLprObservability", resources)
+        self.assertEqual(
+            resources["RouterLprObservability"]["Type"],
+            "AWS::AppRunner::ObservabilityConfiguration",
+        )
+
+        service_props = resources["Router"]["Properties"]
+        self.assertEqual(
+            service_props["ObservabilityConfiguration"]["ObservabilityEnabled"],
+            True,
+        )
+        self.assertEqual(
+            service_props["ObservabilityConfiguration"]["ObservabilityConfigurationArn"],
+            {"Fn::GetAtt": ["RouterLprObservability", "ObservabilityConfigurationArn"]},
+        )
+
+        instance_role = resources["RouterLprInstanceRole"]["Properties"]
+        self.assertIn("ManagedPolicyArns", instance_role)
+        self.assertIn(
+            "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
+            instance_role["ManagedPolicyArns"],
+        )
+
+    def test_supports_observability_configuration_arn(self) -> None:
+        event = {
+            "requestId": "req-5",
+            "fragment": {
+                "Resources": {
+                    "Router": {
+                        "Type": "Lpr::Router::Service",
+                        "Properties": {
+                            "ImageIdentifier": "x",
+                            "RouterConfig": {},
+                            "ObservabilityConfigurationArn": "arn:aws:apprunner:us-east-1:123456789012:observabilityconfiguration/xray-tracing/3",
+                            "Spec": {
+                                "openapi": "3.0.0",
+                                "paths": {
+                                    "/hello": {
+                                        "get": {
+                                            "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
+                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                        }
+                                    }
+                                },
+                            },
+                        },
+                    }
+                }
+            },
+        }
+
+        out = app.handler(event, context=None)
+        self.assertEqual(out["status"], "success")
+        resources = out["fragment"]["Resources"]
+
+        self.assertNotIn("RouterLprObservability", resources)
+
+        service_props = resources["Router"]["Properties"]
+        self.assertEqual(
+            service_props["ObservabilityConfiguration"]["ObservabilityEnabled"],
+            True,
+        )
+        self.assertEqual(
+            service_props["ObservabilityConfiguration"]["ObservabilityConfigurationArn"],
+            "arn:aws:apprunner:us-east-1:123456789012:observabilityconfiguration/xray-tracing/3",
+        )
+
+        instance_role = resources["RouterLprInstanceRole"]["Properties"]
+        self.assertIn("ManagedPolicyArns", instance_role)
+        self.assertIn(
+            "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
+            instance_role["ManagedPolicyArns"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,8 @@ Router:
     InstanceConfiguration: {}
     AutoScalingConfiguration: {}
     AutoScalingConfigurationArn: <string>
+    ObservabilityConfiguration: {}
+    ObservabilityConfigurationArn: <string>
 ```
 
 ### Properties
@@ -56,6 +58,11 @@ Router:
 | `InstanceConfiguration` | Object | No | - | Passed through to the service's `InstanceConfiguration` (e.g. `Cpu`, `Memory`). Some CPU/memory combinations are not supported (see App Runner docs). If it includes `InstanceRoleArn`, it must match `InstanceRoleArn` when both are set. |
 | `AutoScalingConfiguration` | Object | No | - | Creates an `AWS::AppRunner::AutoScalingConfiguration` resource and wires it to the service. Mutually exclusive with `AutoScalingConfigurationArn`. |
 | `AutoScalingConfigurationArn` | String | No | - | Uses an existing auto scaling configuration. Mutually exclusive with `AutoScalingConfiguration`. |
+| `ObservabilityConfiguration` | Object | No | - | Creates an `AWS::AppRunner::ObservabilityConfiguration` resource and associates it with the service. Mutually exclusive with `ObservabilityConfigurationArn`. |
+| `ObservabilityConfigurationArn` | String | No | - | Associates an existing App Runner observability configuration ARN with the service. Mutually exclusive with `ObservabilityConfiguration`. |
+
+Notes:
+- X-Ray tracing requires application instrumentation (for example AWS Distro for OpenTelemetry) and X-Ray permissions on the instance role.
 
 ### Return values
 
@@ -270,13 +277,14 @@ at the same time, CloudFormation may fail with:
 Options:
 - Set `AutoDeploymentsEnabled: false` and let CloudFormation drive deployments.
 - Use immutable tags (e.g. `:gitsha`) and update `ImageIdentifier` when deploying.
-- If you keep auto-deploy enabled + mutable tags, deploy after pushes (or retry once the service is `RUNNING`).
+- If you keep auto-deploy enabled and mutable tags, deploy after pushes (or retry once the service is `RUNNING`).
 
 ## Permissions model
 
 If you do not set `InstanceRoleArn`, the macro creates an App Runner instance role with:
 - `s3:GetObject` on the generated prefix for the published manifest
 - `lambda:InvokeFunction` and `lambda:InvokeWithResponseStream` on every `x-target-lambda` ARN found in the `Spec`
+- `AWSXRayDaemonWriteAccess` when observability is enabled
 
 If you set `InstanceRoleArn`, you must provide equivalent permissions yourself.
 

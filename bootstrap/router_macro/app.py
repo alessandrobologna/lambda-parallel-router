@@ -144,6 +144,23 @@ def _expand_router_service(
             f"{logical_id}.Properties.AutoScalingConfiguration and AutoScalingConfigurationArn are mutually exclusive."
         )
 
+    observability_cfg = props.get("ObservabilityConfiguration")
+    if observability_cfg is not None and not isinstance(observability_cfg, dict):
+        raise ValueError(f"{logical_id}.Properties.ObservabilityConfiguration must be an object.")
+
+    observability_arn = props.get("ObservabilityConfigurationArn")
+    if observability_arn is not None and not isinstance(observability_arn, (str, dict)):
+        raise ValueError(
+            f"{logical_id}.Properties.ObservabilityConfigurationArn must be a string or intrinsic function object."
+        )
+
+    if observability_cfg is not None and observability_arn is not None:
+        raise ValueError(
+            f"{logical_id}.Properties.ObservabilityConfiguration and ObservabilityConfigurationArn are mutually exclusive."
+        )
+
+    observability_enabled = observability_cfg is not None or observability_arn is not None
+
     instance_role_arn = props.get("InstanceRoleArn")
     if instance_cfg and "InstanceRoleArn" in instance_cfg:
         if instance_role_arn is None:
@@ -160,6 +177,7 @@ def _expand_router_service(
     lpr_instance_role_id = f"{logical_id}LprInstanceRole"
     lpr_publisher_id = f"{logical_id}LprConfigPublisher"
     lpr_autoscaling_id = f"{logical_id}LprAutoScaling"
+    lpr_observability_id = f"{logical_id}LprObservability"
 
     for rid in (lpr_ecr_role_id, lpr_instance_role_id, lpr_publisher_id):
         _ensure_no_collision(resources, rid)
@@ -169,6 +187,13 @@ def _expand_router_service(
         resources[lpr_autoscaling_id] = {
             "Type": "AWS::AppRunner::AutoScalingConfiguration",
             "Properties": auto_scaling_cfg,
+        }
+
+    if observability_cfg is not None:
+        _ensure_no_collision(resources, lpr_observability_id)
+        resources[lpr_observability_id] = {
+            "Type": "AWS::AppRunner::ObservabilityConfiguration",
+            "Properties": observability_cfg,
         }
 
     resources[lpr_publisher_id] = {
@@ -227,6 +252,10 @@ def _expand_router_service(
                 }
             )
 
+        managed_policy_arns = []
+        if observability_enabled:
+            managed_policy_arns.append("arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess")
+
         resources[lpr_instance_role_id] = {
             "Type": "AWS::IAM::Role",
             "Properties": {
@@ -249,6 +278,11 @@ def _expand_router_service(
                         },
                     }
                 ],
+                **(
+                    {"ManagedPolicyArns": managed_policy_arns}
+                    if managed_policy_arns
+                    else {}
+                ),
             },
         }
 
@@ -294,6 +328,16 @@ def _expand_router_service(
         )
     elif auto_scaling_arn is not None:
         service_props["AutoScalingConfigurationArn"] = auto_scaling_arn
+
+    if observability_enabled:
+        service_props["ObservabilityConfiguration"] = {
+            "ObservabilityEnabled": True,
+            "ObservabilityConfigurationArn": (
+                _get_att(lpr_observability_id, "ObservabilityConfigurationArn")
+                if observability_cfg is not None
+                else observability_arn
+            ),
+        }
 
     # Replace the original resource in-place (same logical id) so `!GetAtt Router.ServiceUrl` keeps working.
     resources[logical_id] = {"Type": "AWS::AppRunner::Service", "Properties": service_props}
