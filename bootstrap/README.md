@@ -1,17 +1,19 @@
 # Bootstrap stack
 
-This folder contains the account/region bootstrap resources used by `lambda-parallel-router`.
+This folder contains the account/region bootstrap stack used by `lambda-parallel-router`.
 
-It deploys:
+The bootstrap stack deploys shared resources:
 - a shared S3 bucket for router config manifests (or uses an existing bucket)
 - a CloudFormation macro (`LprRouter`) that expands `Lpr::Router::Service` into App Runner resources
 - a custom resource handler (`Custom::LprConfigPublisher`) used by the macro to publish config manifests
 
-## Macro (recommended)
+## Macro
 
 The bootstrap stack registers a CloudFormation macro named `LprRouter`.
 
-With the macro enabled, templates can declare a simplified router resource.
+To enable the macro, add `LprRouter` to your template’s `Transform` section, then declare one or
+more `Lpr::Router::Service` resources. The macro expands them into App Runner + supporting
+resources.
 
 ## Resource type: `Lpr::Router::Service`
 
@@ -48,7 +50,7 @@ Router:
 | `ServiceName` | String | No | - | Sets the App Runner service name (`AWS::AppRunner::Service.Properties.ServiceName`). |
 | `Port` | Integer | No | `8080` | Container port App Runner routes traffic to. Also used as the default for `RouterConfig.ListenAddr` when omitted. |
 | `Environment` | Object | No | `{}` | Map of environment variables for the router container. Values must resolve to strings (intrinsic functions are allowed). The macro always injects `LPR_CONFIG_URI`, and defaults `AWS_REGION`, `AWS_DEFAULT_REGION`, and `RUST_LOG` if not provided. |
-| `AutoDeploymentsEnabled` | Boolean | No | `true` | Enables App Runner auto deployments for this service. See [Automatic deployments (important)](#automatic-deployments-important). |
+| `AutoDeploymentsEnabled` | Boolean | No | `true` | Enables App Runner auto deployments for this service. See [Automatic deployments](#automatic-deployments). |
 | `ConfigPrefix` | String | No | `lpr/${AWS::StackName}/<LogicalId>/` | S3 prefix used for published manifests (must resolve to a string). The publisher writes `config/<sha256>.json` under this prefix. |
 | `InstanceRoleArn` | String | No | - | Use an existing App Runner instance role (you own permissions). If omitted, the macro creates an instance role with S3 read + Lambda invoke permissions derived from the spec. |
 | `InstanceConfiguration` | Object | No | - | Passed through to the service’s `InstanceConfiguration` (e.g. `Cpu`, `Memory`). Some CPU/memory combinations are not supported (see App Runner docs). If it includes `InstanceRoleArn`, it must match `InstanceRoleArn` when both are set. |
@@ -255,7 +257,7 @@ based on the request rate for the current batch key.
 | `samplingIntervalMs` | Integer | No | `100` | Sampling period (milliseconds). Must be `> 0`. |
 | `smoothingSamples` | Integer | No | `10` | Moving average window size (number of samples). Must be `> 0`. |
 
-## Automatic deployments (important)
+## Automatic deployments
 
 By default, the macro sets `AutoDeploymentsEnabled: true` on the App Runner service.
 
@@ -288,7 +290,7 @@ For a resource with logical id `Router`, the macro may create additional resourc
 
 Do not declare resources with those logical IDs in the same template.
 
-## Resource type: `Custom::LprConfigPublisher` (optional)
+## Resource type: `Custom::LprConfigPublisher`
 
 The macro uses this custom resource to publish the config manifest to S3. You can also use it
 directly if you don’t want to use the macro.
