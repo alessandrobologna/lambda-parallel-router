@@ -104,13 +104,18 @@ fn trace_filter(path: &str) -> bool {
     path != "/healthz"
 }
 
-fn build_app(state: AppState) -> Router {
-    Router::new()
+fn build_app(state: AppState, otel_enabled: bool) -> Router {
+    let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(|| async { "ok" }))
         .fallback(handle_any)
-        .with_state(state)
-        .layer(OtelInResponseLayer)
+        .with_state(state);
+
+    if !otel_enabled {
+        return app;
+    }
+
+    app.layer(OtelInResponseLayer)
         .layer(OtelAxumLayer::default().filter(trace_filter))
 }
 
@@ -131,7 +136,7 @@ impl<S: futures::Stream> futures::Stream for PermitStream<S> {
     }
 }
 
-pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
+pub async fn run(cfg: RouterConfig, spec: CompiledSpec, otel_enabled: bool) -> anyhow::Result<()> {
     let invoker = Arc::new(AwsLambdaInvoker::new(cfg.aws_region.clone()).await?);
     let batchers = BatcherManager::new(
         invoker,
@@ -154,7 +159,7 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec) -> anyhow::Result<()> {
         forward_headers,
     };
 
-    let app = build_app(state);
+    let app = build_app(state, otel_enabled);
 
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
     axum::serve(listener, app).await?;
@@ -557,23 +562,29 @@ mod tests {
             },
         );
 
-        build_app(AppState {
-            spec: Arc::new(spec),
-            batchers,
-            inflight_requests: Arc::new(Semaphore::new(1024)),
-            max_body_bytes,
-            forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
-        })
+        build_app(
+            AppState {
+                spec: Arc::new(spec),
+                batchers,
+                inflight_requests: Arc::new(Semaphore::new(1024)),
+                max_body_bytes,
+                forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
+            },
+            false,
+        )
     }
 
     #[tokio::test]
     async fn healthz_works() {
-        let app = build_app(test_state(
-            br#"
+        let app = build_app(
+            test_state(
+                br#"
 paths: {}
 "#,
-            1024,
-        ));
+                1024,
+            ),
+            false,
+        );
 
         let res = app
             .oneshot(
@@ -589,16 +600,19 @@ paths: {}
 
     #[tokio::test]
     async fn not_found_when_no_route_matches() {
-        let app = build_app(test_state(
-            br#"
+        let app = build_app(
+            test_state(
+                br#"
 paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
-            1024,
-        ));
+                1024,
+            ),
+            false,
+        );
 
         let res = app
             .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
@@ -609,16 +623,19 @@ paths:
 
     #[tokio::test]
     async fn method_not_allowed_sets_allow_header() {
-        let app = build_app(test_state(
-            br#"
+        let app = build_app(
+            test_state(
+                br#"
 paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
-            1024,
-        ));
+                1024,
+            ),
+            false,
+        );
 
         let res = app
             .oneshot(
@@ -636,16 +653,19 @@ paths:
 
     #[tokio::test]
     async fn payload_too_large_is_rejected() {
-        let app = build_app(test_state(
-            br#"
+        let app = build_app(
+            test_state(
+                br#"
 paths:
   /hello:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
-            1,
-        ));
+                1,
+            ),
+            false,
+        );
 
         let res = app
             .oneshot(
@@ -662,16 +682,19 @@ paths:
 
     #[tokio::test]
     async fn successful_route_invokes_batcher() {
-        let app = build_app(test_state(
-            br#"
+        let app = build_app(
+            test_state(
+                br#"
 paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
-            1024,
-        ));
+                1024,
+            ),
+            false,
+        );
 
         let res = app
             .oneshot(
@@ -796,14 +819,17 @@ paths:
             },
         );
 
-        let app = build_app(AppState {
-            spec: Arc::new(spec),
-            batchers,
-            inflight_requests: Arc::new(Semaphore::new(1)),
-            max_body_bytes: 1024,
-            forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
-                .unwrap(),
-        });
+        let app = build_app(
+            AppState {
+                spec: Arc::new(spec),
+                batchers,
+                inflight_requests: Arc::new(Semaphore::new(1)),
+                max_body_bytes: 1024,
+                forward_headers:
+                    HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default()).unwrap(),
+            },
+            false,
+        );
 
         let app1 = app.clone();
         let request1 = tokio::spawn(async move {

@@ -2,6 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use opentelemetry::trace::TracerProvider as _;
 use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 use lpr_router::{config::RouterConfig, location::DocumentLocation, server, spec::CompiledSpec};
 
@@ -34,25 +35,6 @@ fn env_missing_or_empty(name: &str) -> bool {
     }
 }
 
-fn configure_otel_env_defaults() {
-    // Export traces to the local collector by default (for App Runner X-Ray integration).
-    if env_missing_or_empty("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        && env_missing_or_empty("OTEL_EXPORTER_OTLP_ENDPOINT")
-    {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
-    }
-
-    // Accept AWS X-Ray trace headers (`X-Amzn-Trace-Id`) and W3C trace context.
-    if env_missing_or_empty("OTEL_PROPAGATORS") {
-        std::env::set_var("OTEL_PROPAGATORS", "xray,tracecontext,baggage");
-    }
-
-    // App Runner's managed OTEL collector is trace-only (AWS X-Ray). Disable metrics by default.
-    if env_missing_or_empty("OTEL_METRICS_EXPORTER") {
-        std::env::set_var("OTEL_METRICS_EXPORTER", "none");
-    }
-}
-
 struct TracerProviderGuard(opentelemetry_sdk::trace::SdkTracerProvider);
 
 impl Drop for TracerProviderGuard {
@@ -73,72 +55,37 @@ fn otlp_traces_endpoint_env() -> Option<String> {
     .filter(|v| !v.is_empty())
 }
 
-fn resolve_host_port(endpoint: &str) -> Option<String> {
-    if let Ok(url) = url::Url::parse(endpoint) {
-        let host = url.host_str()?;
-        let port = url.port_or_known_default()?;
-        return Some(format!("{host}:{port}"));
+fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuard>)> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let fmt = tracing_subscriber::fmt::layer()
+        .json()
+        .with_ansi(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_target(true)
+        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339());
+
+    let otel_enabled = otlp_traces_endpoint_env().is_some();
+    if !otel_enabled {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt)
+            .try_init()
+            .context("init tracing subscriber")?;
+        return Ok((false, None));
     }
 
-    // Fallback for endpoints configured without a scheme (e.g. `localhost:4317`).
-    let trimmed = endpoint.trim().trim_end_matches('/');
-    if trimmed.contains(':') {
-        return Some(trimmed.to_string());
+    // If OTEL is enabled, provide sane defaults for App Runner X-Ray integration. The exporter endpoint
+    // must be configured explicitly via env vars (for example `OTEL_EXPORTER_OTLP_ENDPOINT`).
+    if env_missing_or_empty("OTEL_PROPAGATORS") {
+        std::env::set_var("OTEL_PROPAGATORS", "xray,tracecontext,baggage");
+    }
+    if env_missing_or_empty("OTEL_METRICS_EXPORTER") {
+        std::env::set_var("OTEL_METRICS_EXPORTER", "none");
     }
 
-    None
-}
-
-async fn probe_otlp_collector() {
-    let endpoint = match otlp_traces_endpoint_env() {
-        Some(v) => v,
-        None => return,
-    };
-    let addr = match resolve_host_port(&endpoint) {
-        Some(v) => v,
-        None => {
-            tracing::warn!(
-                event = "otel_probe_invalid_endpoint",
-                otlp_endpoint = %endpoint,
-                "failed to parse OTLP endpoint"
-            );
-            return;
-        }
-    };
-
-    let timeout = std::time::Duration::from_secs(1);
-    let connect = tokio::net::TcpStream::connect(&addr);
-    match tokio::time::timeout(timeout, connect).await {
-        Ok(Ok(_)) => {
-            tracing::debug!(
-                event = "otel_probe",
-                otlp_endpoint = %endpoint,
-                otlp_addr = %addr,
-                "connected to OTLP collector"
-            );
-        }
-        Ok(Err(err)) => {
-            tracing::warn!(
-                event = "otel_probe_failed",
-                otlp_endpoint = %endpoint,
-                otlp_addr = %addr,
-                error = ?err,
-                "failed to connect to OTLP collector"
-            );
-        }
-        Err(err) => {
-            tracing::warn!(
-                event = "otel_probe_failed",
-                otlp_endpoint = %endpoint,
-                otlp_addr = %addr,
-                error = ?err,
-                "failed to connect to OTLP collector"
-            );
-        }
-    }
-}
-
-fn init_tracing() -> anyhow::Result<TracerProviderGuard> {
     let resource = init_tracing_opentelemetry::resource::DetectResource::default()
         .with_fallback_service_name(env!("CARGO_PKG_NAME"))
         .with_fallback_service_version(env!("CARGO_PKG_VERSION"))
@@ -170,21 +117,19 @@ fn init_tracing() -> anyhow::Result<TracerProviderGuard> {
         .with_error_records_to_exceptions(true)
         .with_tracer(tracer);
 
-    let _log_guard = init_tracing_opentelemetry::TracingConfig::production()
-        .with_file_names(false)
-        .with_otel(false)
-        .init_subscriber_ext(|subscriber| subscriber.with(otel_layer))
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt)
+        .with(otel_layer)
+        .try_init()
         .context("init tracing subscriber")?;
 
-    Ok(TracerProviderGuard(tracer_provider))
+    Ok((true, Some(TracerProviderGuard(tracer_provider))))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    configure_otel_env_defaults();
-
-    let _tracer_guard = init_tracing().context("init tracing")?;
-    probe_otlp_collector().await;
+    let (otel_enabled, _tracer_guard) = init_logging_and_tracing().context("init tracing")?;
 
     let args = Args::parse();
     let config_location = resolve_config_location(&args)?;
@@ -206,5 +151,5 @@ async fn main() -> anyhow::Result<()> {
     let spec = CompiledSpec::from_spec(spec_doc, cfg.default_timeout_ms)?;
 
     tracing::info!(listen_addr = %cfg.listen_addr, "loaded config + spec");
-    server::run(cfg, spec).await
+    server::run(cfg, spec, otel_enabled).await
 }
