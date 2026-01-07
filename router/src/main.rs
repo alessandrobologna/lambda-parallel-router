@@ -56,6 +56,8 @@ fn otlp_traces_endpoint_env() -> Option<String> {
 }
 
 fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuard>)> {
+    let otel_enabled = otlp_traces_endpoint_env().is_some();
+
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -67,7 +69,6 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         .with_target(true)
         .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339());
 
-    let otel_enabled = otlp_traces_endpoint_env().is_some();
     if !otel_enabled {
         tracing_subscriber::registry()
             .with(filter)
@@ -76,6 +77,13 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
             .context("init tracing subscriber")?;
         return Ok((false, None));
     }
+
+    // `axum-tracing-opentelemetry` creates spans with target `otel::tracing` at `trace` level.
+    // Ensure those spans are enabled even when the app logs at `info` by default.
+    let filter = match std::env::var("RUST_LOG") {
+        Ok(v) if v.contains("otel::tracing") => filter,
+        _ => filter.add_directive("otel::tracing=trace".parse()?),
+    };
 
     // If OTEL is enabled, provide sane defaults for App Runner X-Ray integration. The exporter endpoint
     // must be configured explicitly via env vars (for example `OTEL_EXPORTER_OTLP_ENDPOINT`).
