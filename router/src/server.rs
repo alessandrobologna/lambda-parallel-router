@@ -18,6 +18,7 @@ use axum::{
     routing::get,
     Router,
 };
+use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
 use futures::StreamExt;
 use std::convert::Infallible;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -99,12 +100,18 @@ fn is_hop_by_hop_header(name: &http::HeaderName) -> bool {
     )
 }
 
+fn trace_filter(path: &str) -> bool {
+    path != "/healthz"
+}
+
 fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(|| async { "ok" }))
         .fallback(handle_any)
         .with_state(state)
+        .layer(OtelInResponseLayer)
+        .layer(OtelAxumLayer::default().filter(trace_filter))
 }
 
 struct PermitStream<S> {

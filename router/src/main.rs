@@ -25,13 +25,40 @@ fn resolve_config_location(args: &Args) -> anyhow::Result<String> {
     anyhow::bail!("missing config location: provide --config or set LPR_CONFIG_URI")
 }
 
+fn env_missing_or_empty(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => v.trim().is_empty(),
+        Err(_) => true,
+    }
+}
+
+fn configure_otel_env_defaults() {
+    // Export traces to the local collector by default (for App Runner X-Ray integration).
+    if env_missing_or_empty("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        && env_missing_or_empty("OTEL_EXPORTER_OTLP_ENDPOINT")
+    {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317");
+    }
+
+    // Accept AWS X-Ray trace headers (`X-Amzn-Trace-Id`) and W3C trace context.
+    if env_missing_or_empty("OTEL_PROPAGATORS") {
+        std::env::set_var("OTEL_PROPAGATORS", "xray,tracecontext,baggage");
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .json()
-        .with_ansi(false)
-        .init();
+    configure_otel_env_defaults();
+
+    let _otel_guard = init_tracing_opentelemetry::TracingConfig::production()
+        .with_file_names(false)
+        .with_resource_config(
+            init_tracing_opentelemetry::resource::DetectResource::default()
+                .with_fallback_service_name(env!("CARGO_PKG_NAME"))
+                .with_fallback_service_version(env!("CARGO_PKG_VERSION")),
+        )
+        .init_subscriber()
+        .context("init tracing")?;
 
     let args = Args::parse();
     let config_location = resolve_config_location(&args)?;

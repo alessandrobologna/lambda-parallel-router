@@ -4,3 +4,6 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+# Needed to accept/emit `X-Amzn-Trace-Id` via the `xray` feature.
+init-tracing-opentelemetry = { git = "https://github.com/alessandrobologna/tracing-opentelemetry-instrumentation-sdk.git", branch = "feat/re-enable-xray-propagator" }

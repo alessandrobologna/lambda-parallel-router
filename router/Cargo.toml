@@ -11,12 +11,14 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-lambda = "1"
 aws-sdk-s3 = "1"
 axum = "0.8"
+axum-tracing-opentelemetry = "0.32"
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 futures = "0.3"
 http = "1"
+init-tracing-opentelemetry = { version = "0.34", features = ["tracing_subscriber_ext", "xray"] }
 matchit = "0.8"
 memchr = "2"
 serde = { version = "1", features = ["derive"] }
@@ -25,7 +27,6 @@ serde_yaml = "0.9"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 
