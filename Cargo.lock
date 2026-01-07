@@ -1844,6 +1844,8 @@ dependencies = [
  "memchr",
  "opentelemetry",
  "opentelemetry-aws",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2034,6 +2036,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic",
+ "tracing",
 ]
 
 [[package]]

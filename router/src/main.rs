@@ -53,7 +53,7 @@ fn configure_otel_env_defaults() {
     }
 }
 
-struct TracerProviderGuard(init_tracing_opentelemetry::opentelemetry_sdk::trace::SdkTracerProvider);
+struct TracerProviderGuard(opentelemetry_sdk::trace::SdkTracerProvider);
 
 impl Drop for TracerProviderGuard {
     fn drop(&mut self) {
@@ -68,10 +68,23 @@ fn init_tracing() -> anyhow::Result<TracerProviderGuard> {
         .with_fallback_service_version(env!("CARGO_PKG_VERSION"))
         .build();
 
-    let tracer_provider =
-        init_tracing_opentelemetry::otlp::traces::init_tracerprovider(resource, |builder| {
-            builder.with_id_generator(opentelemetry_aws::trace::XrayIdGenerator::default())
-        })?;
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()
+        .context("build OTLP span exporter")?;
+
+    let batch =
+        opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor::builder(
+            exporter,
+            opentelemetry_sdk::runtime::Tokio,
+        )
+        .build();
+
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_span_processor(batch)
+        .with_id_generator(opentelemetry_aws::trace::XrayIdGenerator::default())
+        .build();
 
     init_tracing_opentelemetry::init_propagator()?;
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
