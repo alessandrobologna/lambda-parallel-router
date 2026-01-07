@@ -15,6 +15,7 @@ Globals:
     Handler: app.handler
     Timeout: 10
     MemorySize: 256
+    Tracing: Active
     LoggingConfig:
       ApplicationLogLevel: INFO
       LogFormat: JSON
