@@ -62,6 +62,82 @@ impl Drop for TracerProviderGuard {
     }
 }
 
+fn otlp_traces_endpoint_env() -> Option<String> {
+    [
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ]
+    .into_iter()
+    .find_map(|name| std::env::var(name).ok())
+    .map(|v| v.trim().to_string())
+    .filter(|v| !v.is_empty())
+}
+
+fn resolve_host_port(endpoint: &str) -> Option<String> {
+    if let Ok(url) = url::Url::parse(endpoint) {
+        let host = url.host_str()?;
+        let port = url.port_or_known_default()?;
+        return Some(format!("{host}:{port}"));
+    }
+
+    // Fallback for endpoints configured without a scheme (e.g. `localhost:4317`).
+    let trimmed = endpoint.trim().trim_end_matches('/');
+    if trimmed.contains(':') {
+        return Some(trimmed.to_string());
+    }
+
+    None
+}
+
+async fn probe_otlp_collector() {
+    let endpoint = match otlp_traces_endpoint_env() {
+        Some(v) => v,
+        None => return,
+    };
+    let addr = match resolve_host_port(&endpoint) {
+        Some(v) => v,
+        None => {
+            tracing::warn!(
+                event = "otel_probe_invalid_endpoint",
+                otlp_endpoint = %endpoint,
+                "failed to parse OTLP endpoint"
+            );
+            return;
+        }
+    };
+
+    let timeout = std::time::Duration::from_secs(1);
+    let connect = tokio::net::TcpStream::connect(&addr);
+    match tokio::time::timeout(timeout, connect).await {
+        Ok(Ok(_)) => {
+            tracing::debug!(
+                event = "otel_probe",
+                otlp_endpoint = %endpoint,
+                otlp_addr = %addr,
+                "connected to OTLP collector"
+            );
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(
+                event = "otel_probe_failed",
+                otlp_endpoint = %endpoint,
+                otlp_addr = %addr,
+                error = ?err,
+                "failed to connect to OTLP collector"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                event = "otel_probe_failed",
+                otlp_endpoint = %endpoint,
+                otlp_addr = %addr,
+                error = ?err,
+                "failed to connect to OTLP collector"
+            );
+        }
+    }
+}
+
 fn init_tracing() -> anyhow::Result<TracerProviderGuard> {
     let resource = init_tracing_opentelemetry::resource::DetectResource::default()
         .with_fallback_service_name(env!("CARGO_PKG_NAME"))
@@ -108,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
     configure_otel_env_defaults();
 
     let _tracer_guard = init_tracing().context("init tracing")?;
+    probe_otlp_collector().await;
 
     let args = Args::parse();
     let config_location = resolve_config_location(&args)?;
