@@ -1,5 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
+use opentelemetry::trace::TracerProvider as _;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 use lpr_router::{config::RouterConfig, location::DocumentLocation, server, spec::CompiledSpec};
 
@@ -44,21 +46,55 @@ fn configure_otel_env_defaults() {
     if env_missing_or_empty("OTEL_PROPAGATORS") {
         std::env::set_var("OTEL_PROPAGATORS", "xray,tracecontext,baggage");
     }
+
+    // App Runner's managed OTEL collector is trace-only (AWS X-Ray). Disable metrics by default.
+    if env_missing_or_empty("OTEL_METRICS_EXPORTER") {
+        std::env::set_var("OTEL_METRICS_EXPORTER", "none");
+    }
+}
+
+struct TracerProviderGuard(init_tracing_opentelemetry::opentelemetry_sdk::trace::SdkTracerProvider);
+
+impl Drop for TracerProviderGuard {
+    fn drop(&mut self) {
+        let _ = self.0.force_flush();
+        let _ = self.0.shutdown();
+    }
+}
+
+fn init_tracing() -> anyhow::Result<TracerProviderGuard> {
+    let resource = init_tracing_opentelemetry::resource::DetectResource::default()
+        .with_fallback_service_name(env!("CARGO_PKG_NAME"))
+        .with_fallback_service_version(env!("CARGO_PKG_VERSION"))
+        .build();
+
+    let tracer_provider =
+        init_tracing_opentelemetry::otlp::traces::init_tracerprovider(resource, |builder| {
+            builder.with_id_generator(opentelemetry_aws::trace::XrayIdGenerator::default())
+        })?;
+
+    init_tracing_opentelemetry::init_propagator()?;
+    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+
+    let tracer = tracer_provider.tracer("");
+    let otel_layer = init_tracing_opentelemetry::tracing_opentelemetry::layer()
+        .with_error_records_to_exceptions(true)
+        .with_tracer(tracer);
+
+    let _log_guard = init_tracing_opentelemetry::TracingConfig::production()
+        .with_file_names(false)
+        .with_otel(false)
+        .init_subscriber_ext(|subscriber| subscriber.with(otel_layer))
+        .context("init tracing subscriber")?;
+
+    Ok(TracerProviderGuard(tracer_provider))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     configure_otel_env_defaults();
 
-    let _otel_guard = init_tracing_opentelemetry::TracingConfig::production()
-        .with_file_names(false)
-        .with_resource_config(
-            init_tracing_opentelemetry::resource::DetectResource::default()
-                .with_fallback_service_name(env!("CARGO_PKG_NAME"))
-                .with_fallback_service_version(env!("CARGO_PKG_VERSION")),
-        )
-        .init_subscriber()
-        .context("init tracing")?;
+    let _tracer_guard = init_tracing().context("init tracing")?;
 
     let args = Args::parse();
     let config_location = resolve_config_location(&args)?;

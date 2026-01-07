@@ -1842,6 +1842,8 @@ dependencies = [
  "init-tracing-opentelemetry",
  "matchit",
  "memchr",
+ "opentelemetry",
+ "opentelemetry-aws",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1849,6 +1851,7 @@ dependencies = [
  "tokio-stream",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
@@ -1999,6 +2002,7 @@ checksum = "09fbe9af6b9403e7fe43c11cc341d320d7cf5e779c6708b41415228af1921045"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
+ "tracing",
 ]
 
 [[package]]
@@ -3256,9 +3260,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sharded-slab",
+ "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
+ "tracing-log",
  "tracing-serde",
 ]
 
