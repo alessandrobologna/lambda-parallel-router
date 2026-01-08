@@ -1052,26 +1052,27 @@ paths:
             let v: serde_json::Value = serde_json::from_slice(&payload)?;
 
             assert_eq!(v["v"], 1);
-            assert_eq!(v["meta"]["route"], "/hello");
+            assert_eq!(v["meta"]["route"], "/hello/{greeting}");
             assert!(v["meta"]["receivedAtMs"].as_u64().is_some());
 
             let batch = v["batch"].as_array().unwrap();
             assert_eq!(batch.len(), 1);
             let item = &batch[0];
             assert_eq!(item["version"], "2.0");
-            assert_eq!(item["routeKey"], "POST /hello");
-            assert_eq!(item["rawPath"], "/hello");
+            assert_eq!(item["routeKey"], "POST /hello/{greeting}");
+            assert_eq!(item["rawPath"], "/hello/ciao");
             assert_eq!(item["rawQueryString"], "x=1&y=2");
             assert_eq!(item["queryStringParameters"]["x"], "1");
             assert_eq!(item["queryStringParameters"]["y"], "2");
+            assert_eq!(item["pathParameters"]["greeting"], "ciao");
             assert_eq!(item["headers"]["x-foo"], "bar");
             assert!(item["headers"]["connection"].is_null());
             assert_eq!(item["isBase64Encoded"], false);
             assert_eq!(item["body"], "hi");
 
             assert_eq!(item["requestContext"]["http"]["method"], "POST");
-            assert_eq!(item["requestContext"]["http"]["path"], "/hello");
-            assert_eq!(item["requestContext"]["routeKey"], "POST /hello");
+            assert_eq!(item["requestContext"]["http"]["path"], "/hello/ciao");
+            assert_eq!(item["requestContext"]["routeKey"], "POST /hello/{greeting}");
 
             let id = item["requestContext"]["requestId"].as_str().unwrap();
             let out = serde_json::json!({
@@ -1093,7 +1094,7 @@ paths:
             Arc::new(InspectInvoker),
             br#"
 paths:
-  /hello:
+  /hello/{greeting}:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
       x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
@@ -1105,7 +1106,7 @@ paths:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/hello?x=1&y=2")
+                    .uri("/hello/ciao?x=1&y=2")
                     .header("x-foo", "bar")
                     .header("connection", "close")
                     .body(Body::from("hi"))

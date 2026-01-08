@@ -3,12 +3,12 @@
 This folder contains an AWS SAM template that deploys:
 
 - Seven sample Lambda functions that implement the router batch contract:
-  - buffering/simple (`/buffering/simple/hello`)
-  - buffering/dynamic (`/buffering/dynamic/hello`)
-  - streaming/simple (`/streaming/simple/hello`)
-  - streaming/dynamic (`/streaming/dynamic/hello`)
-  - buffering/adapter (`/buffering/adapter/hello`)
-  - streaming/adapter (`/streaming/adapter/hello`)
+  - buffering/simple (`/buffering/simple/{greeting}`)
+  - buffering/dynamic (`/buffering/dynamic/{greeting}`)
+  - streaming/simple (`/streaming/simple/{greeting}`)
+  - streaming/dynamic (`/streaming/dynamic/{greeting}`)
+  - buffering/adapter (`/buffering/adapter/{greeting}`)
+  - streaming/adapter (`/streaming/adapter/{greeting}`)
   - streaming/adapter SSE (`/streaming/adapter/sse`)
 - An App Runner service that runs the router container (ECR image)
 
@@ -61,6 +61,8 @@ Notes:
 - The Makefile defaults to building `linux/amd64` images. This matches the App Runner runtime in this demo.
 
 ## Try it
+
+The `{greeting}` path parameter can be any string. The examples below use `hello`.
 
 - Buffering simple: `GET {RouterServiceUrl}/buffering/simple/hello?max-delay=250`
 - Buffering dynamic: `GET {RouterServiceUrl}/buffering/dynamic/hello?max-delay=250`

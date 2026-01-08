@@ -9,6 +9,7 @@ type ApiGatewayV2Event = {
   rawPath?: string;
   routeKey?: string;
   queryStringParameters?: Record<string, string>;
+  pathParameters?: Record<string, string>;
   body?: string;
   isBase64Encoded?: boolean;
 };
@@ -46,9 +47,11 @@ export const handler = batchAdapterStream(
       ok: true,
       id: event?.requestContext?.requestId ?? "",
       method: event?.requestContext?.http?.method ?? "",
+      greeting: event?.pathParameters?.greeting ?? "",
       path: event?.rawPath ?? "",
       routeKey: event?.routeKey ?? event?.requestContext?.routeKey ?? "",
       query: event?.queryStringParameters ?? {},
+      pathParameters: event?.pathParameters ?? {},
       maxDelayMs,
       delayMs,
       bodyUtf8: decodeBody(event),

@@ -9,6 +9,7 @@ type BatchItem = {
   path?: string;
   routeKey?: string;
   queryStringParameters?: Record<string, string>;
+  pathParameters?: Record<string, string>;
   query?: Record<string, string>;
   headers?: Record<string, string>;
   httpMethod?: string;
@@ -69,10 +70,12 @@ export async function handler(event: BatchEvent): Promise<BatchResponse> {
       const out = {
         ok: true,
         id,
+        greeting: item?.pathParameters?.greeting ?? "",
         method: item?.requestContext?.http?.method ?? item?.httpMethod ?? item?.method ?? "",
         path: item?.rawPath ?? item?.path ?? "",
         routeKey: item?.routeKey ?? item?.requestContext?.routeKey ?? "",
         query: item?.queryStringParameters ?? item?.query ?? {},
+        pathParameters: item?.pathParameters ?? {},
         maxDelayMs,
         delayMs,
         bodyUtf8: bodyBuf.toString("utf8"),
