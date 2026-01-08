@@ -1,6 +1,9 @@
 use anyhow::Context;
 use clap::Parser;
-use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::{
+    propagation::TextMapCompositePropagator,
+    KeyValue,
+};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
@@ -78,13 +81,6 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         return Ok((false, None));
     }
 
-    // `axum-tracing-opentelemetry` creates spans with target `otel::tracing` at `trace` level.
-    // Ensure those spans are enabled even when the app logs at `info` by default.
-    let filter = match std::env::var("RUST_LOG") {
-        Ok(v) if v.contains("otel::tracing") => filter,
-        _ => filter.add_directive("otel::tracing=trace".parse()?),
-    };
-
     // If OTEL is enabled, provide sane defaults for App Runner X-Ray integration. The exporter endpoint
     // must be configured explicitly via env vars (for example `OTEL_EXPORTER_OTLP_ENDPOINT`).
     if env_missing_or_empty("OTEL_PROPAGATORS") {
@@ -94,9 +90,18 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         std::env::set_var("OTEL_METRICS_EXPORTER", "none");
     }
 
-    let resource = init_tracing_opentelemetry::resource::DetectResource::default()
-        .with_fallback_service_name(env!("CARGO_PKG_NAME"))
-        .with_fallback_service_version(env!("CARGO_PKG_VERSION"))
+    let service_name = std::env::var("OTEL_SERVICE_NAME")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string());
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name(service_name)
+        .with_attributes([
+            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            KeyValue::new("cloud.provider", "aws"),
+            KeyValue::new("cloud.platform", "aws_app_runner"),
+        ])
         .build();
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -117,18 +122,16 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         .with_id_generator(opentelemetry_aws::trace::XrayIdGenerator::default())
         .build();
 
-    init_tracing_opentelemetry::init_propagator()?;
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
-
-    let tracer = tracer_provider.tracer("");
-    let otel_layer = init_tracing_opentelemetry::tracing_opentelemetry::layer()
-        .with_error_records_to_exceptions(true)
-        .with_tracer(tracer);
+    opentelemetry::global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+        Box::new(opentelemetry_aws::trace::XrayPropagator::default()),
+        Box::new(opentelemetry_sdk::propagation::TraceContextPropagator::new()),
+        Box::new(opentelemetry_sdk::propagation::BaggagePropagator::new()),
+    ]));
 
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt)
-        .with(otel_layer)
         .try_init()
         .context("init tracing subscriber")?;
 

@@ -11,19 +11,19 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-lambda = "1"
 aws-sdk-s3 = "1"
 axum = "0.8"
-axum-tracing-opentelemetry = "0.32"
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 futures = "0.3"
 http = "1"
-init-tracing-opentelemetry = { version = "0.34", features = ["tracing_subscriber_ext", "xray"] }
 matchit = "0.8"
 memchr = "2"
 opentelemetry = "0.31"
 opentelemetry-aws = { version = "0.19", features = ["trace"] }
+opentelemetry-http = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "trace"] }
+opentelemetry-semantic-conventions = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -37,5 +37,6 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 aws_lambda_events = "1"
+opentelemetry_sdk = { version = "0.31", features = ["testing"] }
 tokio = { version = "1", features = ["test-util"] }
 tower = "0.5"
