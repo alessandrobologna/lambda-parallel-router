@@ -189,6 +189,7 @@ fn start_request_span(
         .map(normalize_route_template_for_span_name)
         .unwrap_or_else(|| path.to_string());
     let span_name = format!("{} {}", method.as_str(), route_for_name);
+    let aws_local_operation = span_name.clone();
 
     let tracer = global::tracer("lpr-router");
     let span = tracer
@@ -196,6 +197,14 @@ fn start_request_span(
         .with_kind(SpanKind::Server)
         .start_with_context(&tracer, parent);
     let cx = parent.clone().with_span(span);
+
+    // AWS X-Ray represents services as segments. In CloudWatch `aws/spans`, the segment `name` is
+    // derived from `service.name`, not the OTEL span name. Setting `aws.local.operation` helps
+    // surface the HTTP operation in AWS-specific views.
+    cx.span().set_attribute(KeyValue::new(
+        "aws.local.operation",
+        aws_local_operation,
+    ));
 
     cx.span().set_attribute(KeyValue::new(
         semconv_trace::HTTP_REQUEST_METHOD,
