@@ -178,6 +178,16 @@ fn http_version_to_str(version: http::Version) -> Option<&'static str> {
     }
 }
 
+fn start_operation_span(parent: &Context, method: &http::Method, route_for_name: &str) -> Context {
+    let span_name = format!("{} {}", method.as_str(), route_for_name);
+    let tracer = global::tracer("lpr-router");
+    let span = tracer
+        .span_builder(span_name)
+        .with_kind(SpanKind::Internal)
+        .start_with_context(&tracer, parent);
+    parent.clone().with_span(span)
+}
+
 fn start_request_span(
     parent: &Context,
     method: &http::Method,
@@ -357,11 +367,19 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         _ => None,
     };
 
+    let route_for_span_name = route_template
+        .map(normalize_route_template_for_span_name)
+        .unwrap_or_else(|| path.to_string());
+
     let request_cx = state.otel_enabled.then(|| {
         let parent = extract_trace_context(&parts.headers);
         start_request_span(&parent, &method, &path, route_template, &parts)
     });
-    let cx_for_fut = request_cx.clone();
+    let operation_cx = request_cx
+        .as_ref()
+        .map(|cx| start_operation_span(cx, &method, &route_for_span_name));
+    let cx_for_fut = operation_cx.clone().or_else(|| request_cx.clone());
+    let cx_for_injection = cx_for_fut.clone();
 
     let response = async move {
         match outcome {
@@ -421,7 +439,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                         headers.insert(name.as_str().to_string(), v.to_string());
                     }
                 }
-                if let Some(cx) = &cx_for_fut {
+                if let Some(cx) = &cx_for_injection {
                     // Propagate the current request trace context into the per-item payload headers.
                     inject_trace_context(cx, &mut headers);
                 }
@@ -605,10 +623,23 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         }
     };
 
-    let res = match &request_cx {
+    let res = match &cx_for_fut {
         Some(cx) => response.with_context(cx.clone()).await,
         None => response.await,
     };
+
+    let status = res.status();
+
+    if let Some(cx) = operation_cx {
+        cx.span().set_attribute(KeyValue::new(
+            semconv_trace::HTTP_RESPONSE_STATUS_CODE,
+            status.as_u16() as i64,
+        ));
+        if status.is_server_error() {
+            cx.span().set_status(Status::error(status.to_string()));
+        }
+        cx.span().end();
+    }
 
     if let Some(cx) = request_cx {
         let status = res.status();
@@ -712,10 +743,8 @@ paths:
         let spans = exporter.get_finished_spans().unwrap();
         let span = spans
             .iter()
-            .find(|s| s.name == "GET /hello/:id")
+            .find(|s| s.name == "GET /hello/:id" && s.span_kind == opentelemetry::trace::SpanKind::Server)
             .expect("request span");
-
-        assert_eq!(span.span_kind, opentelemetry::trace::SpanKind::Server);
 
         let get_attr = |key: &str| {
             span.attributes
