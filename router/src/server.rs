@@ -139,16 +139,6 @@ fn http_version_to_str(version: http::Version) -> Option<&'static str> {
     }
 }
 
-fn start_operation_span(parent: &Context, method: &http::Method, route_for_name: &str) -> Context {
-    let span_name = format!("{} {}", method.as_str(), route_for_name);
-    let tracer = global::tracer("lpr-router");
-    let span = tracer
-        .span_builder(span_name)
-        .with_kind(SpanKind::Internal)
-        .start_with_context(&tracer, parent);
-    parent.clone().with_span(span)
-}
-
 fn start_request_span(
     parent: &Context,
     method: &http::Method,
@@ -158,7 +148,6 @@ fn start_request_span(
 ) -> Context {
     let route_for_name = route_template.unwrap_or(path);
     let span_name = format!("{} {}", method.as_str(), route_for_name);
-    let aws_local_operation = span_name.clone();
 
     let tracer = global::tracer("lpr-router");
     let span = tracer
@@ -166,14 +155,6 @@ fn start_request_span(
         .with_kind(SpanKind::Server)
         .start_with_context(&tracer, parent);
     let cx = parent.clone().with_span(span);
-
-    // AWS X-Ray represents services as segments. In CloudWatch `aws/spans`, the segment `name` is
-    // derived from `service.name`, not the OTEL span name. Setting `aws.local.operation` helps
-    // surface the HTTP operation in AWS-specific views.
-    cx.span().set_attribute(KeyValue::new(
-        "aws.local.operation",
-        aws_local_operation,
-    ));
 
     cx.span().set_attribute(KeyValue::new(
         semconv_trace::HTTP_REQUEST_METHOD,
@@ -326,19 +307,11 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         _ => None,
     };
 
-    let route_for_span_name = route_template
-        .map(|template| template.to_string())
-        .unwrap_or_else(|| path.clone());
-
     let request_cx = state.otel_enabled.then(|| {
         let parent = extract_trace_context(&parts.headers);
         start_request_span(&parent, &method, &path, route_template, &parts)
     });
-    let operation_cx = request_cx
-        .as_ref()
-        .map(|cx| start_operation_span(cx, &method, &route_for_span_name));
-    let cx_for_fut = operation_cx.clone().or_else(|| request_cx.clone());
-    let cx_for_injection = cx_for_fut.clone();
+    let request_cx_for_injection = request_cx.clone();
 
     let response = async move {
         match outcome {
@@ -398,7 +371,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                         headers.insert(name.as_str().to_string(), v.to_string());
                     }
                 }
-                if let Some(cx) = &cx_for_injection {
+                if let Some(cx) = &request_cx_for_injection {
                     // Propagate the current request trace context into the per-item payload headers.
                     inject_trace_context(cx, &mut headers);
                 }
@@ -582,23 +555,10 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         }
     };
 
-    let res = match &cx_for_fut {
+    let res = match &request_cx {
         Some(cx) => response.with_context(cx.clone()).await,
         None => response.await,
     };
-
-    let status = res.status();
-
-    if let Some(cx) = operation_cx {
-        cx.span().set_attribute(KeyValue::new(
-            semconv_trace::HTTP_RESPONSE_STATUS_CODE,
-            status.as_u16() as i64,
-        ));
-        if status.is_server_error() {
-            cx.span().set_status(Status::error(status.to_string()));
-        }
-        cx.span().end();
-    }
 
     if let Some(cx) = request_cx {
         let status = res.status();
