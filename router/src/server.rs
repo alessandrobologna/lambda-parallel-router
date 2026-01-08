@@ -128,45 +128,6 @@ fn inject_trace_context(cx: &Context, headers: &mut HashMap<String, String>) {
     global::get_text_map_propagator(|propagator| propagator.inject_context(cx, &mut injector));
 }
 
-fn normalize_route_template_for_span_name(route_template: &str) -> String {
-    let mut out = String::with_capacity(route_template.len());
-    let mut in_param = false;
-    let mut param_name = String::new();
-
-    for ch in route_template.chars() {
-        match ch {
-            '{' if !in_param => {
-                in_param = true;
-                param_name.clear();
-            }
-            '}' if in_param => {
-                in_param = false;
-                if param_name.is_empty() {
-                    out.push_str("{}");
-                } else {
-                    out.push(':');
-                    out.push_str(&param_name);
-                }
-            }
-            _ => {
-                if in_param {
-                    param_name.push(ch);
-                } else {
-                    out.push(ch);
-                }
-            }
-        }
-    }
-
-    // Keep the original string if the template is malformed. The spec parser validates templates,
-    // but this also covers the unmatched close brace case.
-    if in_param {
-        return route_template.to_string();
-    }
-
-    out
-}
-
 fn http_version_to_str(version: http::Version) -> Option<&'static str> {
     match version {
         http::Version::HTTP_09 => Some("0.9"),
@@ -195,9 +156,7 @@ fn start_request_span(
     route_template: Option<&str>,
     parts: &http::request::Parts,
 ) -> Context {
-    let route_for_name = route_template
-        .map(normalize_route_template_for_span_name)
-        .unwrap_or_else(|| path.to_string());
+    let route_for_name = route_template.unwrap_or(path);
     let span_name = format!("{} {}", method.as_str(), route_for_name);
     let aws_local_operation = span_name.clone();
 
@@ -368,8 +327,8 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
     };
 
     let route_for_span_name = route_template
-        .map(normalize_route_template_for_span_name)
-        .unwrap_or_else(|| path.to_string());
+        .map(|template| template.to_string())
+        .unwrap_or_else(|| path.clone());
 
     let request_cx = state.otel_enabled.then(|| {
         let parent = extract_trace_context(&parts.headers);
@@ -743,7 +702,10 @@ paths:
         let spans = exporter.get_finished_spans().unwrap();
         let span = spans
             .iter()
-            .find(|s| s.name == "GET /hello/:id" && s.span_kind == opentelemetry::trace::SpanKind::Server)
+            .find(|s| {
+                s.name == "GET /hello/{id}"
+                    && s.span_kind == opentelemetry::trace::SpanKind::Server
+            })
             .expect("request span");
 
         let get_attr = |key: &str| {
