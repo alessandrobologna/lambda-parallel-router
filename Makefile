@@ -13,9 +13,6 @@ ROUTER_IMAGE_TAG ?= $(ROUTER_VERSION)
 ROUTER_IMAGE_PLATFORM ?= linux/amd64
 ROUTER_IMAGE_IDENTIFIER ?= $(ECR_REGISTRY)/$(ROUTER_REPO_NAME):$(ROUTER_IMAGE_TAG)
 
-STACK_NAME ?= lambda-parallel-router-demo
-SAM_TEMPLATE ?= sam/template.yaml
-SAM_BUILD_TEMPLATE ?= .aws-sam/build/template.yaml
 SAM_DEPLOY_FLAGS ?= --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset
 
 BOOTSTRAP_STACK_NAME ?= lpr-bootstrap
@@ -38,7 +35,6 @@ help:
 		'  make ecr-template-delete  Delete the ECR repository creation template' \
 		'' \
 		'Common overrides:' \
-		'  make deploy AWS_REGION=us-east-1 STACK_NAME=my-stack' \
 		'  make deploy BOOTSTRAP_BUCKET=my-existing-bucket' \
 		'  make deploy ROUTER_REPO_PREFIX=my-prefix ROUTER_REPO_NAME=my-prefix/router ROUTER_IMAGE_TAG=latest'
 
@@ -63,9 +59,7 @@ print-vars: check
 		"ROUTER_IMAGE_IDENTIFIER=$(ROUTER_IMAGE_IDENTIFIER)" \
 		"BOOTSTRAP_STACK_NAME=$(BOOTSTRAP_STACK_NAME)" \
 		"BOOTSTRAP_TEMPLATE=$(BOOTSTRAP_TEMPLATE)" \
-		"BOOTSTRAP_BUCKET=$(BOOTSTRAP_BUCKET)" \
-		"STACK_NAME=$(STACK_NAME)" \
-		"SAM_TEMPLATE=$(SAM_TEMPLATE)"
+		"BOOTSTRAP_BUCKET=$(BOOTSTRAP_BUCKET)"
 
 .PHONY: ecr-template
 ecr-template: check
@@ -107,17 +101,11 @@ image-push: ecr-template ecr-login image-build
 
 .PHONY: sam-build
 sam-build:
-	sam build --template-file "$(SAM_TEMPLATE)"
+	sam build --config-file sam/samconfig.toml --config-env default
 
 .PHONY: sam-deploy
-sam-deploy: check sam-build
-	AWS_REGION="$(AWS_REGION)" AWS_DEFAULT_REGION="$(AWS_REGION)" \
-		sam deploy \
-			--config-file sam/samconfig.toml \
-			--stack-name "$(STACK_NAME)" \
-			--region "$(AWS_REGION)" \
-			--template-file "$(SAM_BUILD_TEMPLATE)" \
-			--config-env default
+sam-deploy: sam-build
+	sam deploy --config-file sam/samconfig.toml --config-env default
 
 .PHONY: bootstrap-deploy
 bootstrap-deploy: check

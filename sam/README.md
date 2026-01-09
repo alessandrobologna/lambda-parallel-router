@@ -50,10 +50,11 @@ This runs:
 3) build + push the router image (`Dockerfile.router`)
 4) `sam build` + `sam deploy` (deploys the built template in `.aws-sam/build/`)
 
+Edit `sam/samconfig.toml` to change the stack name, region, or SAM deploy parameters.
+
 Common overrides:
 
 ```bash
-make deploy AWS_REGION=us-east-1 STACK_NAME=lambda-parallel-router-demo
 make deploy ROUTER_REPO_PREFIX=lambda-parallel-router ROUTER_REPO_NAME=lambda-parallel-router/router ROUTER_IMAGE_TAG=0.0.0
 make deploy ROUTER_IMAGE_PLATFORM=linux/amd64
 ```
