@@ -8,7 +8,7 @@ Parameters:
   RouterImageIdentifier:
     Type: String
     Default: ""
-    Description: Optional ECR image identifier override for the router container (defaults to the bootstrap export LprDefaultRouterImageIdentifier).
+    Description: Optional ECR image identifier override for the router container. Leave empty to use the default image configured in the bootstrap stack.
   OtelTracesEndpoint:
     Type: String
     Default: https://api.honeycomb.io/v1/traces
@@ -23,9 +23,6 @@ Parameters:
   OtelHeadersSecretArn:
     Type: String
     Description: Secrets Manager secret ARN containing a JSON object of HTTP headers to send with OTLP requests.
-
-Conditions:
-  HasRouterImageIdentifier: !Not [!Equals [!Ref RouterImageIdentifier, ""]]
 
 Globals:
   Function:
@@ -192,10 +189,7 @@ Resources:
     Type: Lpr::Router::Service
     Properties:
       ServiceName: !Sub '${AWS::StackName}-service'
-      ImageIdentifier: !If
-        - HasRouterImageIdentifier
-        - !Ref RouterImageIdentifier
-        - !ImportValue LprDefaultRouterImageIdentifier
+      ImageIdentifier: !Ref RouterImageIdentifier
       Port: 8080
       Environment:
         RUST_LOG: info

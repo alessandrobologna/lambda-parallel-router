@@ -34,8 +34,9 @@ sam deploy \
 
 The router image must already exist in ECR.
 
-By default, the template uses the bootstrap export `LprDefaultRouterImageIdentifier`. You can
-optionally override the image by setting the `RouterImageIdentifier` parameter.
+By default, `RouterImageIdentifier` is empty and the macro uses the default router image configured
+in the bootstrap stack. Optionally override the image by setting `RouterImageIdentifier` to a full
+ECR image identifier.
 
 ### Recommended: `make deploy` (repo root)
 

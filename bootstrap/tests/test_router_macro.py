@@ -1,6 +1,7 @@
 import unittest
 import importlib.util
 from pathlib import Path
+import os
 
 BOOTSTRAP_DIR = Path(__file__).resolve().parents[1]
 
@@ -12,7 +13,11 @@ _SPEC.loader.exec_module(app)  # type: ignore[union-attr]
 
 
 class RouterMacroTests(unittest.TestCase):
-    def test_defaults_image_identifier_from_bootstrap_export(self) -> None:
+    def test_defaults_image_identifier_from_macro_env(self) -> None:
+        old = os.environ.get("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER")
+        os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = (
+            "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0"
+        )
         event = {
             "requestId": "req-0",
             "fragment": {
@@ -38,15 +43,80 @@ class RouterMacroTests(unittest.TestCase):
             },
         }
 
-        out = app.handler(event, context=None)
-        self.assertEqual(out["status"], "success")
-        resources = out["fragment"]["Resources"]
-        image_id = (
-            resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"][
-                "ImageIdentifier"
-            ]
+        try:
+            out = app.handler(event, context=None)
+            self.assertEqual(out["status"], "success")
+            resources = out["fragment"]["Resources"]
+            image_id = (
+                resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"][
+                    "ImageIdentifier"
+                ]
+            )
+            self.assertEqual(
+                image_id,
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0",
+            )
+        finally:
+            if old is None:
+                os.environ.pop("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER", None)
+            else:
+                os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = old
+
+    def test_defaults_image_identifier_from_empty_ref_param(self) -> None:
+        old = os.environ.get("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER")
+        os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = (
+            "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0"
         )
-        self.assertEqual(image_id, {"Fn::ImportValue": "LprDefaultRouterImageIdentifier"})
+        event = {
+            "requestId": "req-0b",
+            "fragment": {
+                "Parameters": {
+                    "RouterImageIdentifier": {
+                        "Type": "String",
+                        "Default": "",
+                    }
+                },
+                "Resources": {
+                    "Router": {
+                        "Type": "Lpr::Router::Service",
+                        "Properties": {
+                            "ImageIdentifier": {"Ref": "RouterImageIdentifier"},
+                            "RouterConfig": {},
+                            "Spec": {
+                                "openapi": "3.0.0",
+                                "paths": {
+                                    "/hello": {
+                                        "get": {
+                                            "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
+                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                        }
+                                    }
+                                },
+                            },
+                        },
+                    }
+                },
+            },
+        }
+
+        try:
+            out = app.handler(event, context=None)
+            self.assertEqual(out["status"], "success")
+            resources = out["fragment"]["Resources"]
+            image_id = (
+                resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"][
+                    "ImageIdentifier"
+                ]
+            )
+            self.assertEqual(
+                image_id,
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0",
+            )
+        finally:
+            if old is None:
+                os.environ.pop("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER", None)
+            else:
+                os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = old
 
     def test_expands_router_resource(self) -> None:
         event = {

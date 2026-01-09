@@ -1,6 +1,7 @@
 import copy
 import json
 import logging
+import os
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
 
@@ -11,10 +12,10 @@ LPR_ROUTER_RESOURCE_TYPE = "Lpr::Router::Service"
 
 EXPORT_CONFIG_BUCKET_NAME = "LprConfigBucketName"
 EXPORT_CONFIG_PUBLISHER_SERVICE_TOKEN = "LprConfigPublisherServiceToken"
-EXPORT_DEFAULT_ROUTER_IMAGE_IDENTIFIER = "LprDefaultRouterImageIdentifier"
 
 LPR_OTEL_HEADERS_ENV_VAR = "LPR_OTEL_HEADERS_JSON"
 LPR_OBSERVABILITY_VENDOR_ENV_VAR = "LPR_OBSERVABILITY_VENDOR"
+LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER_ENV_VAR = "LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"
 
 
 def _as_env_kv_list(env: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -65,6 +66,16 @@ def _sub(template: str, variables: Optional[dict[str, Any]] = None) -> Any:
 
 def _get_att(logical_id: str, attr: str) -> dict[str, Any]:
     return {"Fn::GetAtt": [logical_id, attr]}
+
+
+def _read_default_router_image_identifier() -> str:
+    image = os.environ.get(LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER_ENV_VAR, "").strip()
+    if not image:
+        raise ValueError(
+            f"Macro is missing environment variable {LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER_ENV_VAR}."
+        )
+    return image
+
 
 def _intrinsic_equal(a: Any, b: Any) -> bool:
     if a is b:
@@ -156,19 +167,32 @@ def _expand_router_service(
     resources: MutableMapping[str, Any],
     logical_id: str,
     original: Mapping[str, Any],
+    template_parameter_values: Mapping[str, Any],
+    template_parameters: Mapping[str, Any],
 ) -> None:
     props = original.get("Properties") or {}
     if not isinstance(props, dict):
         raise ValueError(f"{logical_id}.Properties must be an object.")
 
-    if "ImageIdentifier" not in props:
-        image_identifier = _import_value(EXPORT_DEFAULT_ROUTER_IMAGE_IDENTIFIER)
-    else:
-        image_identifier = props["ImageIdentifier"]
-        if not isinstance(image_identifier, (str, dict)):
-            raise ValueError(
-                f"{logical_id}.Properties.ImageIdentifier must be a string or intrinsic function object."
-            )
+    image_identifier: Any = props.get("ImageIdentifier")
+    if image_identifier is None or (isinstance(image_identifier, str) and not image_identifier.strip()):
+        image_identifier = _read_default_router_image_identifier()
+    elif isinstance(image_identifier, dict) and list(image_identifier.keys()) == ["Ref"]:
+        param_name = image_identifier["Ref"]
+        if isinstance(param_name, str) and param_name:
+            raw_value = template_parameter_values.get(param_name)
+            if isinstance(raw_value, str) and raw_value == "":
+                image_identifier = _read_default_router_image_identifier()
+            elif raw_value is None:
+                # `templateParameterValues` may omit parameters that used their template defaults.
+                param_def = template_parameters.get(param_name)
+                if isinstance(param_def, dict) and param_def.get("Default") == "":
+                    image_identifier = _read_default_router_image_identifier()
+
+    if not isinstance(image_identifier, (str, dict)):
+        raise ValueError(
+            f"{logical_id}.Properties.ImageIdentifier must be a string or intrinsic function object."
+        )
 
     router_config = props.get("RouterConfig")
     if not isinstance(router_config, dict):
@@ -540,6 +564,12 @@ def handler(event: Mapping[str, Any], context: Any) -> Dict[str, Any]:
         resources = fragment.get("Resources") or {}
         if not isinstance(resources, dict):
             raise ValueError("Template Resources must be an object.")
+        template_parameters = fragment.get("Parameters") or {}
+        if not isinstance(template_parameters, dict):
+            raise ValueError("Template Parameters must be an object.")
+        template_parameter_values = event.get("templateParameterValues") or {}
+        if not isinstance(template_parameter_values, dict):
+            raise ValueError("Macro event templateParameterValues must be an object.")
 
         new_fragment = copy.deepcopy(fragment)
         new_resources = copy.deepcopy(resources)
@@ -553,6 +583,8 @@ def handler(event: Mapping[str, Any], context: Any) -> Dict[str, Any]:
                 resources=new_resources,
                 logical_id=logical_id,
                 original=res,
+                template_parameter_values=template_parameter_values,
+                template_parameters=template_parameters,
             )
 
         new_fragment["Resources"] = new_resources

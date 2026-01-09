@@ -6,7 +6,7 @@ The bootstrap stack deploys shared resources:
 - a shared S3 bucket for router config manifests (or uses an existing bucket)
 - a CloudFormation macro (`LprRouter`) that expands `Lpr::Router::Service` into App Runner resources
 - a custom resource handler (`Custom::LprConfigPublisher`) used by the macro to publish config manifests
-- an exported default router image identifier (`LprDefaultRouterImageIdentifier`) used when `ImageIdentifier` is omitted
+- a default router image identifier configured on the macro function and used when `ImageIdentifier` is empty or omitted
 
 ## Macro
 
@@ -47,7 +47,7 @@ Router:
 
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `ImageIdentifier` | String | No | `!ImportValue LprDefaultRouterImageIdentifier` | ECR image identifier for the router. If omitted, the macro uses the bootstrap export `LprDefaultRouterImageIdentifier`. |
+| `ImageIdentifier` | String | No | bootstrap default | ECR image identifier for the router. If omitted (or empty), the macro uses the default image configured by the bootstrap stack. |
 | `RouterConfig` | Object | Yes | - | Router settings object. Keys are PascalCase. See [RouterConfig (manifest fields)](#routerconfig-manifest-fields). |
 | `Spec` | Object | Yes | - | OpenAPI-like `paths` map. See [Spec object](#spec-object). |
 | `ServiceName` | String | No | - | Sets the App Runner service name (`AWS::AppRunner::Service.Properties.ServiceName`). |
@@ -64,6 +64,7 @@ Router:
 
 Notes:
 - `PORT` is a reserved App Runner environment variable name. It can't be set in `Environment` or `EnvironmentSecrets`.
+- If `ImageIdentifier` is omitted (or empty), the macro uses the default router image configured by the bootstrap stack.
 - X-Ray tracing requires application instrumentation and X-Ray permissions on the instance role.
 
 ### Return values
@@ -85,7 +86,6 @@ Resources:
   Router:
     Type: Lpr::Router::Service
     Properties:
-      ImageIdentifier: <your ECR image identifier>
       Port: 8080
       Environment:
         RUST_LOG: info
@@ -397,6 +397,18 @@ sam deploy \
   --template-file bootstrap/template.yaml \
   --stack-name lpr-bootstrap \
   --capabilities CAPABILITY_IAM
+```
+
+Set the default router image used by the macro (for services that omit `ImageIdentifier`):
+
+```bash
+sam deploy \
+  --template-file bootstrap/template.yaml \
+  --stack-name lpr-bootstrap \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    DefaultRouterRepositoryName=lambda-parallel-router/router \
+    DefaultRouterImageTag=0.0.0
 ```
 
 Use an existing bucket (leave it managed by you):
