@@ -23,21 +23,11 @@ use crate::{
     spec::{BatchKeyDimension, DynamicWaitConfig, InvokeMode, OperationConfig},
 };
 
-const LPR_BATCH_SIZE_HEADER_NAME: &str = "x-lpr-batch-size";
-const LPR_BATCH_WAIT_MS_HEADER_NAME: &str = "x-lpr-batch-wait-ms";
-
-fn insert_batch_size_header(headers: &mut HeaderMap, batch_size: usize) {
-    headers.insert(
-        HeaderName::from_static(LPR_BATCH_SIZE_HEADER_NAME),
-        HeaderValue::from_str(&batch_size.to_string()).expect("batch size is ASCII digits"),
-    );
-}
-
-fn insert_batch_wait_ms_header(headers: &mut HeaderMap, wait_ms: u64) {
-    headers.insert(
-        HeaderName::from_static(LPR_BATCH_WAIT_MS_HEADER_NAME),
-        HeaderValue::from_str(&wait_ms.to_string()).expect("wait_ms is ASCII digits"),
-    );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Metadata about the batch that produced a particular per-request response.
+pub struct RouterResponseMeta {
+    pub batch_size: usize,
+    pub batch_wait_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +36,7 @@ pub struct RouterResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
+    pub meta: Option<RouterResponseMeta>,
 }
 
 impl RouterResponse {
@@ -55,6 +46,7 @@ impl RouterResponse {
             status,
             headers: HeaderMap::new(),
             body: Bytes::from(body.into()),
+            meta: None,
         }
     }
 }
@@ -64,6 +56,9 @@ impl axum::response::IntoResponse for RouterResponse {
         let mut res = axum::response::Response::new(axum::body::Body::from(self.body));
         *res.status_mut() = self.status;
         *res.headers_mut() = self.headers;
+        if let Some(meta) = self.meta {
+            res.extensions_mut().insert(meta);
+        }
         res
     }
 }
@@ -90,6 +85,7 @@ pub(crate) enum StreamInit {
 pub(crate) struct StreamHead {
     pub(crate) status: StatusCode,
     pub(crate) headers: HeaderMap,
+    pub(crate) meta: RouterResponseMeta,
 }
 
 #[derive(Debug)]
@@ -1257,8 +1253,10 @@ fn dispatch_buffered(
                 RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
             }
         };
-        insert_batch_size_header(&mut resp.headers, batch_size);
-        insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
+        resp.meta = Some(RouterResponseMeta {
+            batch_size,
+            batch_wait_ms: wait_ms,
+        });
         let _ = tx.send(resp);
     }
 
@@ -1291,12 +1289,17 @@ fn send_stream_head(
     if let Some(init) = entry.init.take() {
         let status =
             StatusCode::from_u16(status_code).map_err(|err| format!("bad status code: {err}"))?;
-        let mut headers =
+        let headers =
             headers_from_map(headers).map_err(|err| format!("bad response headers: {err}"))?;
-        insert_batch_size_header(&mut headers, batch_size);
-        insert_batch_wait_ms_header(&mut headers, wait_ms);
         if init
-            .send(StreamInit::Stream(StreamHead { status, headers }))
+            .send(StreamInit::Stream(StreamHead {
+                status,
+                headers,
+                meta: RouterResponseMeta {
+                    batch_size,
+                    batch_wait_ms: wait_ms,
+                },
+            }))
             .is_err()
         {
             return Ok(false);
@@ -1504,8 +1507,10 @@ async fn dispatch_stream_record(
                     record.is_base64_encoded,
                 )
                 .map_err(|err| format!("bad response: {err}"))?;
-                insert_batch_size_header(&mut resp.headers, batch_size);
-                insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
+                resp.meta = Some(RouterResponseMeta {
+                    batch_size,
+                    batch_wait_ms: wait_ms,
+                });
                 if let Some(init) = entry.init.take() {
                     let _ = init.send(StreamInit::Response(resp));
                 }
@@ -1579,8 +1584,10 @@ async fn dispatch_stream_record(
                                 StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                                 msg,
                             );
-                            insert_batch_size_header(&mut resp.headers, batch_size);
-                            insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
+                            resp.meta = Some(RouterResponseMeta {
+                                batch_size,
+                                batch_wait_ms: wait_ms,
+                            });
                             let _ = init.send(StreamInit::Response(resp));
                         }
                         drop(entry.body);
@@ -1609,6 +1616,7 @@ fn build_router_response_parts(
         status,
         headers,
         body: body_bytes,
+        meta: None,
     })
 }
 
@@ -1639,8 +1647,10 @@ fn fail_all_buffered(
 ) {
     for (_id, tx) in pending {
         let mut resp = RouterResponse::text(status, msg.clone());
-        insert_batch_size_header(&mut resp.headers, batch_size);
-        insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
+        resp.meta = Some(RouterResponseMeta {
+            batch_size,
+            batch_wait_ms: wait_ms,
+        });
         let _ = tx.send(resp);
     }
 }
@@ -1655,8 +1665,10 @@ fn fail_all_stream(
     for (_id, mut entry) in pending {
         if let Some(init) = entry.init.take() {
             let mut resp = RouterResponse::text(status, msg.clone());
-            insert_batch_size_header(&mut resp.headers, batch_size);
-            insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
+            resp.meta = Some(RouterResponseMeta {
+                batch_size,
+                batch_wait_ms: wait_ms,
+            });
             let _ = init.send(StreamInit::Response(resp));
         }
         // Dropping the sender closes the response body stream.
