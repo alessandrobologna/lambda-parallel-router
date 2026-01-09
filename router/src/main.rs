@@ -1,9 +1,6 @@
 use anyhow::Context;
 use clap::Parser;
-use opentelemetry::{
-    propagation::TextMapCompositePropagator,
-    KeyValue,
-};
+use opentelemetry::{propagation::TextMapCompositePropagator, KeyValue};
 use serde_json::Value as JsonValue;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -84,7 +81,8 @@ fn default_otlp_traces_protocol() -> String {
 fn url_encode_header_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for &b in value.as_bytes() {
-        let is_unreserved = matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~');
+        let is_unreserved =
+            matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~');
         if is_unreserved {
             out.push(b as char);
         } else {
@@ -187,8 +185,12 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
 
     let protocol = otlp_traces_protocol_env().unwrap_or_else(default_otlp_traces_protocol);
     let exporter = match protocol.as_str() {
-        "grpc" => opentelemetry_otlp::SpanExporter::builder().with_tonic().build(),
-        "http/protobuf" => opentelemetry_otlp::SpanExporter::builder().with_http().build(),
+        "grpc" => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .build(),
+        "http/protobuf" => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .build(),
         other => anyhow::bail!("unsupported OTLP traces protocol: {other}"),
     }
     .context("build OTLP span exporter")?;

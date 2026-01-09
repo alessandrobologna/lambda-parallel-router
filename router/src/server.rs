@@ -162,10 +162,8 @@ fn start_request_span(
     ));
     cx.span()
         .set_attribute(KeyValue::new(semconv_trace::URL_PATH, path.to_string()));
-    cx.span().set_attribute(KeyValue::new(
-        semconv_trace::NETWORK_PROTOCOL_NAME,
-        "http",
-    ));
+    cx.span()
+        .set_attribute(KeyValue::new(semconv_trace::NETWORK_PROTOCOL_NAME, "http"));
 
     if let Some(version) = http_version_to_str(parts.version) {
         cx.span().set_attribute(KeyValue::new(
@@ -208,10 +206,8 @@ fn start_request_span(
 
     if let Some(value) = parts.headers.get("x-forwarded-proto") {
         if let Ok(value) = value.to_str() {
-            cx.span().set_attribute(KeyValue::new(
-                semconv_trace::URL_SCHEME,
-                value.to_string(),
-            ));
+            cx.span()
+                .set_attribute(KeyValue::new(semconv_trace::URL_SCHEME, value.to_string()));
         }
     }
 
@@ -286,7 +282,9 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
 
     enum MatchOutcome {
         NotFound,
-        MethodNotAllowed { allowed: Vec<http::Method> },
+        MethodNotAllowed {
+            allowed: Vec<http::Method>,
+        },
         Matched {
             op: Box<crate::spec::OperationConfig>,
             path_params: HashMap<String, String>,
@@ -663,8 +661,7 @@ paths:
         let span = spans
             .iter()
             .find(|s| {
-                s.name == "GET /hello/{id}"
-                    && s.span_kind == opentelemetry::trace::SpanKind::Server
+                s.name == "GET /hello/{id}" && s.span_kind == opentelemetry::trace::SpanKind::Server
             })
             .expect("request span");
 
@@ -862,16 +859,14 @@ paths:
             },
         );
 
-        build_app(
-            AppState {
-                spec: Arc::new(spec),
-                batchers,
-                inflight_requests: Arc::new(Semaphore::new(1024)),
-                max_body_bytes,
-                forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
-                otel_enabled: false,
-            },
-        )
+        build_app(AppState {
+            spec: Arc::new(spec),
+            batchers,
+            inflight_requests: Arc::new(Semaphore::new(1024)),
+            max_body_bytes,
+            forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
+            otel_enabled: false,
+        })
     }
 
     #[tokio::test]
@@ -1105,17 +1100,15 @@ paths:
             },
         );
 
-        let app = build_app(
-            AppState {
-                spec: Arc::new(spec),
-                batchers,
-                inflight_requests: Arc::new(Semaphore::new(1)),
-                max_body_bytes: 1024,
-                forward_headers:
-                    HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default()).unwrap(),
-                otel_enabled: false,
-            },
-        );
+        let app = build_app(AppState {
+            spec: Arc::new(spec),
+            batchers,
+            inflight_requests: Arc::new(Semaphore::new(1)),
+            max_body_bytes: 1024,
+            forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
+                .unwrap(),
+            otel_enabled: false,
+        });
 
         let app1 = app.clone();
         let request1 = tokio::spawn(async move {
