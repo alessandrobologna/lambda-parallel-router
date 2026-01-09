@@ -4,6 +4,7 @@ use opentelemetry::{
     propagation::TextMapCompositePropagator,
     KeyValue,
 };
+use serde_json::Value as JsonValue;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
@@ -58,6 +59,84 @@ fn otlp_traces_endpoint_env() -> Option<String> {
     .filter(|v| !v.is_empty())
 }
 
+fn otlp_traces_protocol_env() -> Option<String> {
+    [
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+    ]
+    .into_iter()
+    .find_map(|name| std::env::var(name).ok())
+    .map(|v| v.trim().to_ascii_lowercase())
+    .filter(|v| !v.is_empty())
+}
+
+fn default_otlp_traces_protocol() -> String {
+    match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        Some(endpoint) if endpoint.contains("localhost:4317") => "grpc".to_string(),
+        _ => "http/protobuf".to_string(),
+    }
+}
+
+fn url_encode_header_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for &b in value.as_bytes() {
+        let is_unreserved = matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~');
+        if is_unreserved {
+            out.push(b as char);
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut out, "%{:02X}", b).expect("writing into a String can't fail");
+        }
+    }
+    out
+}
+
+fn try_set_otlp_headers_from_json_secret() -> anyhow::Result<()> {
+    if !env_missing_or_empty("OTEL_EXPORTER_OTLP_HEADERS")
+        || !env_missing_or_empty("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+    {
+        return Ok(());
+    }
+
+    let raw = match std::env::var("LPR_OTEL_HEADERS_JSON") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return Ok(()),
+    };
+
+    let parsed: JsonValue =
+        serde_json::from_str(&raw).context("parse LPR_OTEL_HEADERS_JSON as JSON")?;
+    let obj = parsed
+        .as_object()
+        .context("LPR_OTEL_HEADERS_JSON must be a JSON object")?;
+
+    let mut parts: Vec<String> = Vec::with_capacity(obj.len());
+    for (k, v) in obj {
+        let key = k.trim();
+        if key.is_empty() {
+            anyhow::bail!("LPR_OTEL_HEADERS_JSON contains an empty header name");
+        }
+        let value = v
+            .as_str()
+            .context("LPR_OTEL_HEADERS_JSON header values must be strings")?
+            .trim();
+        if value.is_empty() {
+            anyhow::bail!("LPR_OTEL_HEADERS_JSON contains an empty value for header {key}");
+        }
+        parts.push(format!("{key}={}", url_encode_header_value(value)));
+    }
+
+    if parts.is_empty() {
+        anyhow::bail!("LPR_OTEL_HEADERS_JSON must contain at least one header");
+    }
+
+    std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", parts.join(","));
+    Ok(())
+}
+
 fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuard>)> {
     let otel_enabled = otlp_traces_endpoint_env().is_some();
 
@@ -90,6 +169,8 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         std::env::set_var("OTEL_METRICS_EXPORTER", "none");
     }
 
+    try_set_otlp_headers_from_json_secret().context("configure OTLP headers")?;
+
     let service_name = std::env::var("OTEL_SERVICE_NAME")
         .ok()
         .map(|v| v.trim().to_string())
@@ -104,10 +185,13 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         ])
         .build();
 
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .build()
-        .context("build OTLP span exporter")?;
+    let protocol = otlp_traces_protocol_env().unwrap_or_else(default_otlp_traces_protocol);
+    let exporter = match protocol.as_str() {
+        "grpc" => opentelemetry_otlp::SpanExporter::builder().with_tonic().build(),
+        "http/protobuf" => opentelemetry_otlp::SpanExporter::builder().with_http().build(),
+        other => anyhow::bail!("unsupported OTLP traces protocol: {other}"),
+    }
+    .context("build OTLP span exporter")?;
 
     let batch =
         opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor::builder(
@@ -116,11 +200,21 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         )
         .build();
 
-    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+    let mut tracer_provider_builder = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_resource(resource)
-        .with_span_processor(batch)
-        .with_id_generator(opentelemetry_aws::trace::XrayIdGenerator::default())
-        .build();
+        .with_span_processor(batch);
+
+    if std::env::var("LPR_OBSERVABILITY_VENDOR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .as_deref()
+        == Some("AWSXRAY")
+    {
+        tracer_provider_builder = tracer_provider_builder
+            .with_id_generator(opentelemetry_aws::trace::XrayIdGenerator::default());
+    }
+
+    let tracer_provider = tracer_provider_builder.build();
 
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
     opentelemetry::global::set_text_map_propagator(TextMapCompositePropagator::new(vec![

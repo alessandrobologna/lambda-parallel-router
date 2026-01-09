@@ -32,6 +32,7 @@ Router:
     ServiceName: <string>
     Port: 8080
     Environment: {}
+    EnvironmentSecrets: {}
     AutoDeploymentsEnabled: true
     ConfigPrefix: <string>
     InstanceRoleArn: <string>
@@ -39,7 +40,6 @@ Router:
     AutoScalingConfiguration: {}
     AutoScalingConfigurationArn: <string>
     ObservabilityConfiguration: {}
-    ObservabilityConfigurationArn: <string>
 ```
 
 ### Properties
@@ -52,17 +52,18 @@ Router:
 | `ServiceName` | String | No | - | Sets the App Runner service name (`AWS::AppRunner::Service.Properties.ServiceName`). |
 | `Port` | Integer | No | `8080` | Container port App Runner routes traffic to. Also used as the default for `RouterConfig.ListenAddr` when omitted. |
 | `Environment` | Object | No | `{}` | Map of environment variables for the router container. Values must resolve to strings (intrinsic functions are allowed). The macro always injects `LPR_CONFIG_URI`, and defaults `AWS_REGION`, `AWS_DEFAULT_REGION`, and `RUST_LOG` if not provided. |
+| `EnvironmentSecrets` | Object | No | `{}` | Map of environment variables sourced from Secrets Manager or SSM Parameter Store. Values must resolve to ARNs (intrinsic functions are allowed). These are emitted as `AWS::AppRunner::Service.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentSecrets`. |
 | `AutoDeploymentsEnabled` | Boolean | No | `true` | Enables App Runner auto deployments for this service. See [Automatic deployments](#automatic-deployments). |
 | `ConfigPrefix` | String | No | `lpr/${AWS::StackName}/<LogicalId>/` | S3 prefix used for published manifests (must resolve to a string). The publisher writes `config/<sha256>.json` under this prefix. |
 | `InstanceRoleArn` | String | No | - | Use an existing App Runner instance role (you own permissions). If omitted, the macro creates an instance role with S3 read + Lambda invoke permissions derived from the spec. |
 | `InstanceConfiguration` | Object | No | - | Passed through to the service's `InstanceConfiguration` (e.g. `Cpu`, `Memory`). Some CPU/memory combinations are not supported (see App Runner docs). If it includes `InstanceRoleArn`, it must match `InstanceRoleArn` when both are set. |
 | `AutoScalingConfiguration` | Object | No | - | Creates an `AWS::AppRunner::AutoScalingConfiguration` resource and wires it to the service. Mutually exclusive with `AutoScalingConfigurationArn`. |
 | `AutoScalingConfigurationArn` | String | No | - | Uses an existing auto scaling configuration. Mutually exclusive with `AutoScalingConfiguration`. |
-| `ObservabilityConfiguration` | Object | No | - | Creates an `AWS::AppRunner::ObservabilityConfiguration` resource and associates it with the service. Mutually exclusive with `ObservabilityConfigurationArn`. |
-| `ObservabilityConfigurationArn` | String | No | - | Associates an existing App Runner observability configuration ARN with the service. Mutually exclusive with `ObservabilityConfiguration`. |
+| `ObservabilityConfiguration` | Object | No | - | Enables tracing. This macro supports `AWSXRAY` (App Runner built-in X-Ray integration) and `OTEL` (direct OTLP export configured via env vars/secrets). See [ObservabilityConfiguration](#observabilityconfiguration). |
 
 Notes:
-- X-Ray tracing requires application instrumentation (for example AWS Distro for OpenTelemetry) and X-Ray permissions on the instance role.
+- `PORT` is a reserved App Runner environment variable name. It can't be set in `Environment` or `EnvironmentSecrets`.
+- X-Ray tracing requires application instrumentation and X-Ray permissions on the instance role.
 
 ### Return values
 
@@ -279,12 +280,58 @@ Options:
 - Use immutable tags (e.g. `:gitsha`) and update `ImageIdentifier` when deploying.
 - If you keep auto-deploy enabled and mutable tags, deploy after pushes (or retry once the service is `RUNNING`).
 
+## ObservabilityConfiguration
+
+`ObservabilityConfiguration` enables trace export from the router.
+
+### Syntax
+
+```yaml
+ObservabilityConfiguration:
+  Vendor: AWSXRAY # AWSXRAY | OTEL
+
+  # Required when Vendor is OTEL.
+  OpentelemetryConfiguration:
+    TracesEndpoint: https://ingest.vendor.example/v1/traces
+    Protocol: http/protobuf # http/protobuf | grpc
+    HeadersSecretArn: arn:aws:secretsmanager:us-east-1:123456789012:secret:otel-headers
+```
+
+### Behavior
+
+`Vendor: AWSXRAY`
+  - Creates an `AWS::AppRunner::ObservabilityConfiguration` and associates it with the service.
+  - Defaults the router OTLP settings for App Runner X-Ray integration:
+    - `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`
+    - `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc`
+    - `OTEL_EXPORTER_OTLP_INSECURE=true`
+    - `OTEL_PROPAGATORS=xray,tracecontext,baggage`
+    - `OTEL_METRICS_EXPORTER=none`
+    - `LPR_OBSERVABILITY_VENDOR=AWSXRAY`
+
+`Vendor: OTEL`
+  - Does not create an App Runner observability configuration (App Runner built-in tracing is X-Ray only).
+  - Configures the router exporter:
+    - `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=<TracesEndpoint>`
+    - `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=<Protocol>` (defaults to `http/protobuf`)
+    - `OTEL_PROPAGATORS=xray,tracecontext,baggage`
+    - `OTEL_METRICS_EXPORTER=none`
+    - `LPR_OBSERVABILITY_VENDOR=OTEL`
+  - If `HeadersSecretArn` is set, the macro injects the referenced secret as `LPR_OTEL_HEADERS_JSON` using App Runner `RuntimeEnvironmentSecrets`.
+    The router expects a JSON object whose keys are HTTP header names and values are header values.
+
+Notes:
+  - When `ServiceName` is set, the macro defaults `OTEL_SERVICE_NAME` to the same value.
+  - `Environment` and `EnvironmentSecrets` override macro defaults.
+
 ## Permissions model
 
 If you do not set `InstanceRoleArn`, the macro creates an App Runner instance role with:
 - `s3:GetObject` on the generated prefix for the published manifest
 - `lambda:InvokeFunction` and `lambda:InvokeWithResponseStream` on every `x-target-lambda` ARN found in the `Spec`
-- `AWSXRayDaemonWriteAccess` when observability is enabled
+- `AWSXRayDaemonWriteAccess` when `ObservabilityConfiguration.Vendor` is `AWSXRAY`
+- `secretsmanager:GetSecretValue` and/or `ssm:GetParameters` when `EnvironmentSecrets` is set
+- `secretsmanager:GetSecretValue` for `ObservabilityConfiguration.OpentelemetryConfiguration.HeadersSecretArn` when provided
 
 If you set `InstanceRoleArn`, you must provide equivalent permissions yourself.
 

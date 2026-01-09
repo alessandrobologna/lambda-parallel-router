@@ -179,10 +179,7 @@ class RouterMacroTests(unittest.TestCase):
                         "Properties": {
                             "ImageIdentifier": "x",
                             "RouterConfig": {},
-                            "ObservabilityConfiguration": {
-                                "ObservabilityConfigurationName": "xray-tracing",
-                                "TraceConfiguration": {"Vendor": "AWSXRAY"},
-                            },
+                            "ObservabilityConfiguration": {"Vendor": "AWSXRAY"},
                             "Spec": {
                                 "openapi": "3.0.0",
                                 "paths": {
@@ -226,6 +223,7 @@ class RouterMacroTests(unittest.TestCase):
             ]
         )
         env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
+        self.assertEqual(env_map["LPR_OBSERVABILITY_VENDOR"], "AWSXRAY")
         self.assertEqual(env_map["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4317")
         self.assertEqual(env_map["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"], "grpc")
         self.assertEqual(env_map["OTEL_EXPORTER_OTLP_INSECURE"], "true")
@@ -239,7 +237,7 @@ class RouterMacroTests(unittest.TestCase):
             instance_role["ManagedPolicyArns"],
         )
 
-    def test_supports_observability_configuration_arn(self) -> None:
+    def test_supports_otlp_observability(self) -> None:
         event = {
             "requestId": "req-5",
             "fragment": {
@@ -249,7 +247,14 @@ class RouterMacroTests(unittest.TestCase):
                         "Properties": {
                             "ImageIdentifier": "x",
                             "RouterConfig": {},
-                            "ObservabilityConfigurationArn": "arn:aws:apprunner:us-east-1:123456789012:observabilityconfiguration/xray-tracing/3",
+                            "ObservabilityConfiguration": {
+                                "Vendor": "OTEL",
+                                "OpentelemetryConfiguration": {
+                                    "TracesEndpoint": "https://ingest.example.com/v1/traces",
+                                    "Protocol": "http/protobuf",
+                                    "HeadersSecretArn": "arn:aws:secretsmanager:us-east-1:123:secret:otel-headers",
+                                },
+                            },
                             "Spec": {
                                 "openapi": "3.0.0",
                                 "paths": {
@@ -274,32 +279,33 @@ class RouterMacroTests(unittest.TestCase):
         self.assertNotIn("RouterLprObservability", resources)
 
         service_props = resources["Router"]["Properties"]
-        self.assertEqual(
-            service_props["ObservabilityConfiguration"]["ObservabilityEnabled"],
-            True,
-        )
-        self.assertEqual(
-            service_props["ObservabilityConfiguration"]["ObservabilityConfigurationArn"],
-            "arn:aws:apprunner:us-east-1:123456789012:observabilityconfiguration/xray-tracing/3",
-        )
+        self.assertNotIn("ObservabilityConfiguration", service_props)
 
-        svc_env = (
-            resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
-                "RuntimeEnvironmentVariables"
-            ]
-        )
+        image_cfg = service_props["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"]
+        svc_env = image_cfg["RuntimeEnvironmentVariables"]
         env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
-        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4317")
-        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"], "grpc")
-        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_INSECURE"], "true")
+        self.assertEqual(env_map["LPR_OBSERVABILITY_VENDOR"], "OTEL")
+        self.assertEqual(
+            env_map["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"], "https://ingest.example.com/v1/traces"
+        )
+        self.assertEqual(env_map["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"], "http/protobuf")
         self.assertEqual(env_map["OTEL_PROPAGATORS"], "xray,tracecontext,baggage")
         self.assertEqual(env_map["OTEL_METRICS_EXPORTER"], "none")
 
-        instance_role = resources["RouterLprInstanceRole"]["Properties"]
-        self.assertIn("ManagedPolicyArns", instance_role)
+        runtime_secrets = image_cfg["RuntimeEnvironmentSecrets"]
+        secret_map = {kv["Name"]: kv["Value"] for kv in runtime_secrets}
+        self.assertEqual(
+            secret_map["LPR_OTEL_HEADERS_JSON"],
+            "arn:aws:secretsmanager:us-east-1:123:secret:otel-headers",
+        )
+
+        policy_doc = resources["RouterLprInstanceRole"]["Properties"]["Policies"][0]["PolicyDocument"]
+        secrets_stmt = next(
+            s for s in policy_doc["Statement"] if s.get("Sid") == "ReadSecretsManagerSecrets"
+        )
         self.assertIn(
-            "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
-            instance_role["ManagedPolicyArns"],
+            "arn:aws:secretsmanager:us-east-1:123:secret:otel-headers",
+            secrets_stmt["Resource"],
         )
 
 

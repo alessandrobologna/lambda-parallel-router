@@ -178,12 +178,6 @@ Resources:
       Port: 8080
       Environment:
         RUST_LOG: info
-        OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
-        OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: grpc
-        OTEL_EXPORTER_OTLP_INSECURE: "true"
-        OTEL_PROPAGATORS: xray,tracecontext,baggage
-        OTEL_METRICS_EXPORTER: none
-        OTEL_SERVICE_NAME: !Sub '${AWS::StackName}-service'
       InstanceConfiguration:
         Cpu: "1 vCPU"
         Memory: "2 GB"
@@ -191,14 +185,12 @@ Resources:
         MaxConcurrency: 100
         MinSize: 4
         MaxSize: 8
-      ObservabilityConfiguration:
-        ObservabilityConfigurationName: !Sub "${AWS::StackName}-xray"
-        TraceConfiguration:
-          Vendor: AWSXRAY
       RouterConfig:
         # Force a republish of the router config manifest (older deployments used a legacy
         # two-manifest format). This also makes the default explicit.
         DefaultTimeoutMs: 2000
+      ObservabilityConfiguration:
+        Vendor: AWSXRAY
       Spec:
         openapi: 3.0.0
         info:

@@ -12,16 +12,37 @@ LPR_ROUTER_RESOURCE_TYPE = "Lpr::Router::Service"
 EXPORT_CONFIG_BUCKET_NAME = "LprConfigBucketName"
 EXPORT_CONFIG_PUBLISHER_SERVICE_TOKEN = "LprConfigPublisherServiceToken"
 
+LPR_OTEL_HEADERS_ENV_VAR = "LPR_OTEL_HEADERS_JSON"
+LPR_OBSERVABILITY_VENDOR_ENV_VAR = "LPR_OBSERVABILITY_VENDOR"
+
 
 def _as_env_kv_list(env: Mapping[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for k, v in env.items():
         if not isinstance(k, str) or not k:
             raise ValueError("Environment keys must be non-empty strings.")
+        if k == "PORT":
+            raise ValueError("PORT is a reserved environment variable name in App Runner.")
         if isinstance(v, (dict, str)):
             out.append({"Name": k, "Value": v})
             continue
         raise ValueError(f"Environment[{k}] must be a string (or an intrinsic function object).")
+    return out
+
+
+def _as_env_secret_kv_list(env: Mapping[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for k, v in env.items():
+        if not isinstance(k, str) or not k:
+            raise ValueError("Environment secret keys must be non-empty strings.")
+        if k == "PORT":
+            raise ValueError("PORT is a reserved environment variable name in App Runner.")
+        if isinstance(v, (dict, str)):
+            out.append({"Name": k, "Value": v})
+            continue
+        raise ValueError(
+            f"EnvironmentSecrets[{k}] must be a string (or an intrinsic function object)."
+        )
     return out
 
 
@@ -95,6 +116,40 @@ def _collect_target_lambda_arns(spec: Mapping[str, Any]) -> list[Any]:
     return out
 
 
+def _split_secret_arns(values: list[Any]) -> tuple[list[Any], list[Any]]:
+    secrets: list[Any] = []
+    params: list[Any] = []
+
+    for v in values:
+        if isinstance(v, str):
+            if not v.startswith("arn:"):
+                raise ValueError(
+                    "EnvironmentSecrets values must be ARNs (or intrinsic function objects resolving to ARNs)."
+                )
+            if ":secretsmanager:" in v:
+                secrets.append(v)
+            elif ":ssm:" in v:
+                params.append(v)
+            else:
+                raise ValueError(
+                    f"EnvironmentSecrets value must be a Secrets Manager or SSM Parameter Store ARN (got: {v!r})."
+                )
+            continue
+
+        if isinstance(v, dict):
+            # Intrinsics can resolve to either an SSM parameter ARN or a Secrets Manager ARN.
+            # Add to both statements to keep the policy simple while still remaining scoped.
+            secrets.append(v)
+            params.append(v)
+            continue
+
+        raise ValueError(
+            "EnvironmentSecrets values must be ARNs (or intrinsic function objects resolving to ARNs)."
+        )
+
+    return secrets, params
+
+
 def _expand_router_service(
     *,
     resources: MutableMapping[str, Any],
@@ -125,6 +180,17 @@ def _expand_router_service(
     if not isinstance(env, dict):
         raise ValueError(f"{logical_id}.Properties.Environment must be an object.")
 
+    env_secrets = props.get("EnvironmentSecrets") or {}
+    if not isinstance(env_secrets, dict):
+        raise ValueError(f"{logical_id}.Properties.EnvironmentSecrets must be an object.")
+
+    env_overlap = set(env.keys()) & set(env_secrets.keys())
+    if env_overlap:
+        overlap = ", ".join(sorted(env_overlap))
+        raise ValueError(
+            f"{logical_id}.Properties.Environment and EnvironmentSecrets contain duplicate keys: {overlap}"
+        )
+
     instance_cfg = props.get("InstanceConfiguration")
     if instance_cfg is not None and not isinstance(instance_cfg, dict):
         raise ValueError(f"{logical_id}.Properties.InstanceConfiguration must be an object.")
@@ -144,22 +210,84 @@ def _expand_router_service(
             f"{logical_id}.Properties.AutoScalingConfiguration and AutoScalingConfigurationArn are mutually exclusive."
         )
 
+    if "ObservabilityConfigurationArn" in props:
+        raise ValueError(
+            f"{logical_id}.Properties.ObservabilityConfigurationArn is not supported. Use ObservabilityConfiguration.Vendor instead."
+        )
+
     observability_cfg = props.get("ObservabilityConfiguration")
     if observability_cfg is not None and not isinstance(observability_cfg, dict):
         raise ValueError(f"{logical_id}.Properties.ObservabilityConfiguration must be an object.")
 
-    observability_arn = props.get("ObservabilityConfigurationArn")
-    if observability_arn is not None and not isinstance(observability_arn, (str, dict)):
-        raise ValueError(
-            f"{logical_id}.Properties.ObservabilityConfigurationArn must be a string or intrinsic function object."
-        )
+    observability_vendor: Optional[str] = None
+    otel_cfg: Optional[dict[str, Any]] = None
+    if observability_cfg is not None:
+        vendor = observability_cfg.get("Vendor")
+        if vendor not in ("AWSXRAY", "OTEL"):
+            raise ValueError(
+                f"{logical_id}.Properties.ObservabilityConfiguration.Vendor must be AWSXRAY or OTEL."
+            )
+        observability_vendor = vendor
 
-    if observability_cfg is not None and observability_arn is not None:
-        raise ValueError(
-            f"{logical_id}.Properties.ObservabilityConfiguration and ObservabilityConfigurationArn are mutually exclusive."
-        )
+        raw_otel_cfg = observability_cfg.get("OpentelemetryConfiguration")
+        if vendor == "AWSXRAY":
+            if raw_otel_cfg is not None:
+                raise ValueError(
+                    f"{logical_id}.Properties.ObservabilityConfiguration.OpentelemetryConfiguration is not allowed when Vendor is AWSXRAY."
+                )
+        else:
+            if raw_otel_cfg is None or not isinstance(raw_otel_cfg, dict):
+                raise ValueError(
+                    f"{logical_id}.Properties.ObservabilityConfiguration.OpentelemetryConfiguration is required when Vendor is OTEL."
+                )
+            otel_cfg = raw_otel_cfg
 
-    observability_enabled = observability_cfg is not None or observability_arn is not None
+    apprunner_xray_enabled = observability_vendor == "AWSXRAY"
+
+    otel_traces_endpoint: Any = None
+    otel_protocol: Any = None
+    otel_headers_secret_arn: Any = None
+    if observability_vendor == "OTEL":
+        assert otel_cfg is not None
+
+        otel_traces_endpoint = otel_cfg.get("TracesEndpoint")
+        if otel_traces_endpoint is None or not isinstance(otel_traces_endpoint, (str, dict)):
+            raise ValueError(
+                f"{logical_id}.Properties.ObservabilityConfiguration.OpentelemetryConfiguration.TracesEndpoint is required and must be a string (or an intrinsic function object)."
+            )
+
+        otel_protocol = otel_cfg.get("Protocol", "http/protobuf")
+        if not isinstance(otel_protocol, (str, dict)):
+            raise ValueError(
+                f"{logical_id}.Properties.ObservabilityConfiguration.OpentelemetryConfiguration.Protocol must be a string (or an intrinsic function object)."
+            )
+        if isinstance(otel_protocol, str) and otel_protocol not in ("http/protobuf", "grpc"):
+            raise ValueError(
+                f"{logical_id}.Properties.ObservabilityConfiguration.OpentelemetryConfiguration.Protocol must be http/protobuf or grpc."
+            )
+
+        otel_headers_secret_arn = otel_cfg.get("HeadersSecretArn")
+        if otel_headers_secret_arn is not None and not isinstance(otel_headers_secret_arn, (str, dict)):
+            raise ValueError(
+                f"{logical_id}.Properties.ObservabilityConfiguration.OpentelemetryConfiguration.HeadersSecretArn must be a string (or an intrinsic function object)."
+            )
+        if isinstance(otel_headers_secret_arn, str) and not otel_headers_secret_arn.startswith(
+            "arn:aws:secretsmanager:"
+        ):
+            raise ValueError(
+                f"{logical_id}.Properties.ObservabilityConfiguration.OpentelemetryConfiguration.HeadersSecretArn must be a Secrets Manager ARN."
+            )
+
+    effective_env_secrets = dict(env_secrets)
+    if otel_headers_secret_arn is not None:
+        if (
+            LPR_OTEL_HEADERS_ENV_VAR in effective_env_secrets
+            and not _intrinsic_equal(effective_env_secrets[LPR_OTEL_HEADERS_ENV_VAR], otel_headers_secret_arn)
+        ):
+            raise ValueError(
+                f"{logical_id}.Properties.EnvironmentSecrets already defines {LPR_OTEL_HEADERS_ENV_VAR}, which conflicts with OpentelemetryConfiguration.HeadersSecretArn."
+            )
+        effective_env_secrets.setdefault(LPR_OTEL_HEADERS_ENV_VAR, otel_headers_secret_arn)
 
     instance_role_arn = props.get("InstanceRoleArn")
     if instance_cfg and "InstanceRoleArn" in instance_cfg:
@@ -189,11 +317,13 @@ def _expand_router_service(
             "Properties": auto_scaling_cfg,
         }
 
-    if observability_cfg is not None:
+    if apprunner_xray_enabled:
         _ensure_no_collision(resources, lpr_observability_id)
         resources[lpr_observability_id] = {
             "Type": "AWS::AppRunner::ObservabilityConfiguration",
-            "Properties": observability_cfg,
+            "Properties": {
+                "TraceConfiguration": {"Vendor": "AWSXRAY"},
+            },
         }
 
     resources[lpr_publisher_id] = {
@@ -252,8 +382,32 @@ def _expand_router_service(
                 }
             )
 
+        if effective_env_secrets:
+            secret_values = list(effective_env_secrets.values())
+            secrets_arns, params_arns = _split_secret_arns(secret_values)
+
+            if secrets_arns:
+                statements.append(
+                    {
+                        "Sid": "ReadSecretsManagerSecrets",
+                        "Effect": "Allow",
+                        "Action": ["secretsmanager:GetSecretValue"],
+                        "Resource": secrets_arns,
+                    }
+                )
+
+            if params_arns:
+                statements.append(
+                    {
+                        "Sid": "ReadSsmParameters",
+                        "Effect": "Allow",
+                        "Action": ["ssm:GetParameters"],
+                        "Resource": params_arns,
+                    }
+                )
+
         managed_policy_arns = []
-        if observability_enabled:
+        if apprunner_xray_enabled:
             managed_policy_arns.append("arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess")
 
         instance_role_props = {
@@ -293,10 +447,23 @@ def _expand_router_service(
     runtime_env.setdefault("RUST_LOG", "info")
     runtime_env["LPR_CONFIG_URI"] = _get_att(lpr_publisher_id, "ConfigS3Uri")
 
-    if observability_enabled:
+    runtime_env_secrets = dict(effective_env_secrets)
+
+    if observability_vendor is not None:
+        runtime_env.setdefault(LPR_OBSERVABILITY_VENDOR_ENV_VAR, observability_vendor)
+
+    if apprunner_xray_enabled:
         runtime_env.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
         runtime_env.setdefault("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc")
         runtime_env.setdefault("OTEL_EXPORTER_OTLP_INSECURE", "true")
+        runtime_env.setdefault("OTEL_PROPAGATORS", "xray,tracecontext,baggage")
+        runtime_env.setdefault("OTEL_METRICS_EXPORTER", "none")
+        if service_name is not None:
+            runtime_env.setdefault("OTEL_SERVICE_NAME", service_name)
+
+    if observability_vendor == "OTEL":
+        runtime_env.setdefault("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", otel_traces_endpoint)
+        runtime_env.setdefault("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", otel_protocol)
         runtime_env.setdefault("OTEL_PROPAGATORS", "xray,tracecontext,baggage")
         runtime_env.setdefault("OTEL_METRICS_EXPORTER", "none")
         if service_name is not None:
@@ -306,6 +473,8 @@ def _expand_router_service(
         "Port": port,
         "RuntimeEnvironmentVariables": _as_env_kv_list(runtime_env),
     }
+    if runtime_env_secrets:
+        image_cfg["RuntimeEnvironmentSecrets"] = _as_env_secret_kv_list(runtime_env_secrets)
 
     instance_cfg_final: Dict[str, Any] = {"InstanceRoleArn": instance_role_arn}
     if instance_cfg:
@@ -337,13 +506,11 @@ def _expand_router_service(
     elif auto_scaling_arn is not None:
         service_props["AutoScalingConfigurationArn"] = auto_scaling_arn
 
-    if observability_enabled:
+    if apprunner_xray_enabled:
         service_props["ObservabilityConfiguration"] = {
             "ObservabilityEnabled": True,
-            "ObservabilityConfigurationArn": (
-                _get_att(lpr_observability_id, "ObservabilityConfigurationArn")
-                if observability_cfg is not None
-                else observability_arn
+            "ObservabilityConfigurationArn": _get_att(
+                lpr_observability_id, "ObservabilityConfigurationArn"
             ),
         }
 
