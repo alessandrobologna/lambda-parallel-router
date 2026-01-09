@@ -17,6 +17,7 @@ resolve_s3 = true
 s3_prefix = "lambda-parallel-router-demo"
 region = "us-east-1"
 beta_features = true
+parameter_overrides = "OtelHeadersSecretArn=arn:aws:secretsmanager:us-east-1:961341555982:secret:otel-header-AjUDyF"
 
 [default.sync.parameters]
 watch = true

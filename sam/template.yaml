@@ -8,6 +8,20 @@ Parameters:
   RouterImageIdentifier:
     Type: String
     Description: ECR image identifier for the router container (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:latest).
+  OtelTracesEndpoint:
+    Type: String
+    Default: https://api.honeycomb.io/v1/traces
+    Description: OTLP traces endpoint URL (used as-is, not modified by the router).
+  OtelTracesProtocol:
+    Type: String
+    Default: http/protobuf
+    AllowedValues:
+      - http/protobuf
+      - grpc
+    Description: OTLP protocol to use for exporting traces.
+  OtelHeadersSecretArn:
+    Type: String
+    Description: Secrets Manager secret ARN containing a JSON object of HTTP headers to send with OTLP requests.
 
 Globals:
   Function:
@@ -186,11 +200,13 @@ Resources:
         MinSize: 4
         MaxSize: 8
       RouterConfig:
-        # Force a republish of the router config manifest (older deployments used a legacy
-        # two-manifest format). This also makes the default explicit.
         DefaultTimeoutMs: 2000
       ObservabilityConfiguration:
-        Vendor: AWSXRAY
+        Vendor: OTEL
+        OpentelemetryConfiguration:
+          TracesEndpoint: !Ref OtelTracesEndpoint
+          Protocol: !Ref OtelTracesProtocol
+          HeadersSecretArn: !Ref OtelHeadersSecretArn
       Spec:
         openapi: 3.0.0
         info:
