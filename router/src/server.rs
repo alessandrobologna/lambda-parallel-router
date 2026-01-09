@@ -41,6 +41,8 @@ use crate::{
     spec::{CompiledSpec, InvokeMode, RouteMatch},
 };
 
+const LPR_BATCH_SIZE_HEADER_NAME: &str = "x-lpr-batch-size";
+
 #[derive(Clone)]
 struct AppState {
     spec: Arc<CompiledSpec>,
@@ -558,7 +560,22 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         None => response.await,
     };
 
+    let batch_size = res
+        .headers()
+        .get(LPR_BATCH_SIZE_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
+
+    // This is an internal implementation detail used to enrich spans. Don't return it to clients.
+    let mut res = res;
+    res.headers_mut().remove(LPR_BATCH_SIZE_HEADER_NAME);
+
     if let Some(cx) = request_cx {
+        if let Some(batch_size) = batch_size {
+            cx.span()
+                .set_attribute(KeyValue::new("lpr.batch.size", batch_size));
+        }
+
         let status = res.status();
         cx.span().set_attribute(KeyValue::new(
             semconv_trace::HTTP_RESPONSE_STATUS_CODE,
@@ -656,6 +673,10 @@ paths:
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+        assert!(res
+            .headers()
+            .get(super::LPR_BATCH_SIZE_HEADER_NAME)
+            .is_none());
 
         let spans = exporter.get_finished_spans().unwrap();
         let span = spans
@@ -693,6 +714,10 @@ paths:
         assert_eq!(
             get_attr(semconv_trace::HTTP_RESPONSE_STATUS_CODE).unwrap(),
             opentelemetry::Value::I64(200)
+        );
+        assert_eq!(
+            get_attr("lpr.batch.size").unwrap(),
+            opentelemetry::Value::I64(1)
         );
     }
 
