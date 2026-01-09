@@ -42,6 +42,7 @@ use crate::{
 };
 
 const LPR_BATCH_SIZE_HEADER_NAME: &str = "x-lpr-batch-size";
+const LPR_BATCH_WAIT_MS_HEADER_NAME: &str = "x-lpr-batch-wait-ms";
 
 #[derive(Clone)]
 struct AppState {
@@ -333,6 +334,15 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                 resp.into_response()
             }
             MatchOutcome::Matched { op, path_params } => {
+                if let Some(cx) = &request_cx_for_injection {
+                    let mode = match op.invoke_mode {
+                        InvokeMode::Buffered => "buffered",
+                        InvokeMode::ResponseStream => "response_stream",
+                    };
+                    cx.span()
+                        .set_attribute(KeyValue::new("lpr.invoke.mode", mode));
+                }
+
                 let inflight_permit = match state.inflight_requests.clone().try_acquire_owned() {
                     Ok(p) => p,
                     Err(_) => {
@@ -565,15 +575,25 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         .get(LPR_BATCH_SIZE_HEADER_NAME)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok());
+    let batch_wait_ms = res
+        .headers()
+        .get(LPR_BATCH_WAIT_MS_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
 
     // This is an internal implementation detail used to enrich spans. Don't return it to clients.
     let mut res = res;
     res.headers_mut().remove(LPR_BATCH_SIZE_HEADER_NAME);
+    res.headers_mut().remove(LPR_BATCH_WAIT_MS_HEADER_NAME);
 
     if let Some(cx) = request_cx {
         if let Some(batch_size) = batch_size {
             cx.span()
                 .set_attribute(KeyValue::new("lpr.batch.size", batch_size));
+        }
+        if let Some(batch_wait_ms) = batch_wait_ms {
+            cx.span()
+                .set_attribute(KeyValue::new("lpr.batch.wait_ms", batch_wait_ms));
         }
 
         let status = res.status();
@@ -677,6 +697,10 @@ paths:
             .headers()
             .get(super::LPR_BATCH_SIZE_HEADER_NAME)
             .is_none());
+        assert!(res
+            .headers()
+            .get(super::LPR_BATCH_WAIT_MS_HEADER_NAME)
+            .is_none());
 
         let spans = exporter.get_finished_spans().unwrap();
         let span = spans
@@ -719,6 +743,11 @@ paths:
             get_attr("lpr.batch.size").unwrap(),
             opentelemetry::Value::I64(1)
         );
+        assert_eq!(
+            get_attr("lpr.batch.wait_ms").unwrap(),
+            opentelemetry::Value::I64(0)
+        );
+        assert_eq!(get_attr("lpr.invoke.mode").unwrap().as_str(), "buffered");
     }
 
     struct TestInvoker;

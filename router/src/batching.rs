@@ -24,11 +24,19 @@ use crate::{
 };
 
 const LPR_BATCH_SIZE_HEADER_NAME: &str = "x-lpr-batch-size";
+const LPR_BATCH_WAIT_MS_HEADER_NAME: &str = "x-lpr-batch-wait-ms";
 
 fn insert_batch_size_header(headers: &mut HeaderMap, batch_size: usize) {
     headers.insert(
         HeaderName::from_static(LPR_BATCH_SIZE_HEADER_NAME),
         HeaderValue::from_str(&batch_size.to_string()).expect("batch size is ASCII digits"),
+    );
+}
+
+fn insert_batch_wait_ms_header(headers: &mut HeaderMap, wait_ms: u64) {
+    headers.insert(
+        HeaderName::from_static(LPR_BATCH_WAIT_MS_HEADER_NAME),
+        HeaderValue::from_str(&wait_ms.to_string()).expect("wait_ms is ASCII digits"),
     );
 }
 
@@ -618,13 +626,17 @@ enum InvocationJob {
 impl InvocationJob {
     fn fail(self, status: StatusCode, msg: String) {
         match self {
-            InvocationJob::Buffered { pending, .. } => {
+            InvocationJob::Buffered {
+                wait_ms, pending, ..
+            } => {
                 let batch_size = pending.len();
-                fail_all_buffered(pending, batch_size, status, msg)
+                fail_all_buffered(pending, batch_size, wait_ms, status, msg)
             }
-            InvocationJob::Stream { pending, .. } => {
+            InvocationJob::Stream {
+                wait_ms, pending, ..
+            } => {
                 let batch_size = pending.len();
-                fail_all_stream(pending, batch_size, status, msg)
+                fail_all_stream(pending, batch_size, wait_ms, status, msg)
             }
         }
     }
@@ -682,7 +694,9 @@ async fn run_invocation_job(
                 .invoke(&key.target_lambda, payload, key.invoke_mode)
                 .await
             {
-                Ok(LambdaInvokeResult::Buffered(bytes)) => dispatch_buffered(&key, bytes, pending),
+                Ok(LambdaInvokeResult::Buffered(bytes)) => {
+                    dispatch_buffered(&key, wait_ms, bytes, pending)
+                }
                 Ok(LambdaInvokeResult::ResponseStream(_stream)) => {
                     tracing::warn!(
                         event = "lambda_response_error",
@@ -695,6 +709,7 @@ async fn run_invocation_job(
                     fail_all_buffered(
                         pending,
                         batch_size,
+                        wait_ms,
                         StatusCode::BAD_GATEWAY,
                         "unexpected response stream".to_string(),
                     );
@@ -711,6 +726,7 @@ async fn run_invocation_job(
                     fail_all_buffered(
                         pending,
                         batch_size,
+                        wait_ms,
                         StatusCode::BAD_GATEWAY,
                         format!("invoke: {err}"),
                     );
@@ -754,12 +770,13 @@ async fn run_invocation_job(
                     fail_all_stream(
                         pending,
                         batch_size,
+                        wait_ms,
                         StatusCode::BAD_GATEWAY,
                         "unexpected buffered response".to_string(),
                     );
                 }
                 Ok(LambdaInvokeResult::ResponseStream(stream)) => {
-                    dispatch_response_stream(&key, stream, pending).await
+                    dispatch_response_stream(&key, wait_ms, stream, pending).await
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -773,6 +790,7 @@ async fn run_invocation_job(
                     fail_all_stream(
                         pending,
                         batch_size,
+                        wait_ms,
                         StatusCode::BAD_GATEWAY,
                         format!("invoke: {err}"),
                     );
@@ -868,6 +886,7 @@ async fn flush_batch(
             fail_all_stream(
                 pending_stream,
                 batch_size,
+                wait_ms,
                 StatusCode::BAD_GATEWAY,
                 "unexpected streaming response sink".to_string(),
             );
@@ -896,7 +915,7 @@ async fn flush_batch(
                         "invocation plan failed"
                     );
                     let batch_size = pending.len();
-                    fail_all_buffered(pending, batch_size, status, msg)
+                    fail_all_buffered(pending, batch_size, wait_ms, status, msg)
                 }
                 InvocationPlan::Invoke { pending, payload } => {
                     let job = InvocationJob::Buffered {
@@ -944,6 +963,7 @@ async fn flush_batch(
             fail_all_buffered(
                 pending_buffered,
                 batch_size,
+                wait_ms,
                 StatusCode::BAD_GATEWAY,
                 "unexpected buffered response sink".to_string(),
             );
@@ -972,7 +992,7 @@ async fn flush_batch(
                         "invocation plan failed"
                     );
                     let batch_size = pending.len();
-                    fail_all_stream(pending, batch_size, status, msg)
+                    fail_all_stream(pending, batch_size, wait_ms, status, msg)
                 }
                 InvocationPlan::Invoke { pending, payload } => {
                     let job = InvocationJob::Stream {
@@ -1165,6 +1185,7 @@ fn split_pending<T>(
 
 fn dispatch_buffered(
     key: &BatchKey,
+    wait_ms: u64,
     resp_bytes: Bytes,
     mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
 ) {
@@ -1184,6 +1205,7 @@ fn dispatch_buffered(
             fail_all_buffered(
                 pending,
                 batch_size,
+                wait_ms,
                 StatusCode::BAD_GATEWAY,
                 format!("decode response: {err}"),
             );
@@ -1204,6 +1226,7 @@ fn dispatch_buffered(
         fail_all_buffered(
             pending,
             batch_size,
+            wait_ms,
             StatusCode::BAD_GATEWAY,
             format!("unsupported response version: {}", parsed.v),
         );
@@ -1235,6 +1258,7 @@ fn dispatch_buffered(
             }
         };
         insert_batch_size_header(&mut resp.headers, batch_size);
+        insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
         let _ = tx.send(resp);
     }
 
@@ -1251,6 +1275,7 @@ fn dispatch_buffered(
     fail_all_buffered(
         pending,
         batch_size,
+        wait_ms,
         StatusCode::BAD_GATEWAY,
         "missing response record".to_string(),
     );
@@ -1259,6 +1284,7 @@ fn dispatch_buffered(
 fn send_stream_head(
     entry: &mut StreamPending,
     batch_size: usize,
+    wait_ms: u64,
     status_code: u16,
     headers: HashMap<String, String>,
 ) -> Result<bool, String> {
@@ -1268,6 +1294,7 @@ fn send_stream_head(
         let mut headers =
             headers_from_map(headers).map_err(|err| format!("bad response headers: {err}"))?;
         insert_batch_size_header(&mut headers, batch_size);
+        insert_batch_wait_ms_header(&mut headers, wait_ms);
         if init
             .send(StreamInit::Stream(StreamHead { status, headers }))
             .is_err()
@@ -1280,6 +1307,7 @@ fn send_stream_head(
 
 async fn dispatch_response_stream(
     key: &BatchKey,
+    wait_ms: u64,
     mut stream: tokio::sync::mpsc::Receiver<anyhow::Result<Bytes>>,
     mut pending: HashMap<String, StreamPending>,
 ) {
@@ -1303,6 +1331,7 @@ async fn dispatch_response_stream(
                 fail_all_stream(
                     pending,
                     batch_size,
+                    wait_ms,
                     StatusCode::BAD_GATEWAY,
                     format!("response stream error: {err}"),
                 );
@@ -1324,6 +1353,7 @@ async fn dispatch_response_stream(
             fail_all_stream(
                 pending,
                 batch_size,
+                wait_ms,
                 StatusCode::BAD_GATEWAY,
                 "response stream too large".to_string(),
             );
@@ -1355,12 +1385,14 @@ async fn dispatch_response_stream(
                         error = %err,
                         "invalid ndjson record"
                     );
-                    fail_all_stream(pending, batch_size, StatusCode::BAD_GATEWAY, err);
+                    fail_all_stream(pending, batch_size, wait_ms, StatusCode::BAD_GATEWAY, err);
                     return;
                 }
             };
 
-            if let Err(msg) = dispatch_stream_record(record, &mut pending, batch_size).await {
+            if let Err(msg) =
+                dispatch_stream_record(record, &mut pending, batch_size, wait_ms).await
+            {
                 tracing::warn!(
                     event = "lambda_response_error",
                     reason = "dispatch_record",
@@ -1370,7 +1402,7 @@ async fn dispatch_response_stream(
                     error = %msg,
                     "failed to dispatch stream record"
                 );
-                fail_all_stream(pending, batch_size, StatusCode::BAD_GATEWAY, msg);
+                fail_all_stream(pending, batch_size, wait_ms, StatusCode::BAD_GATEWAY, msg);
                 return;
             }
         }
@@ -1399,12 +1431,12 @@ async fn dispatch_response_stream(
                     error = %err,
                     "invalid trailing ndjson record"
                 );
-                fail_all_stream(pending, batch_size, StatusCode::BAD_GATEWAY, err);
+                fail_all_stream(pending, batch_size, wait_ms, StatusCode::BAD_GATEWAY, err);
                 return;
             }
         };
 
-        if let Err(msg) = dispatch_stream_record(record, &mut pending, batch_size).await {
+        if let Err(msg) = dispatch_stream_record(record, &mut pending, batch_size, wait_ms).await {
             tracing::warn!(
                 event = "lambda_response_error",
                 reason = "dispatch_tail",
@@ -1414,7 +1446,7 @@ async fn dispatch_response_stream(
                 error = %msg,
                 "failed to dispatch trailing record"
             );
-            fail_all_stream(pending, batch_size, StatusCode::BAD_GATEWAY, msg);
+            fail_all_stream(pending, batch_size, wait_ms, StatusCode::BAD_GATEWAY, msg);
             return;
         }
     }
@@ -1432,6 +1464,7 @@ async fn dispatch_response_stream(
     fail_all_stream(
         pending,
         batch_size,
+        wait_ms,
         StatusCode::BAD_GATEWAY,
         "missing response record".to_string(),
     );
@@ -1455,6 +1488,7 @@ async fn dispatch_stream_record(
     record: StreamResponseRecord,
     pending: &mut HashMap<String, StreamPending>,
     batch_size: usize,
+    wait_ms: u64,
 ) -> Result<(), String> {
     match record {
         StreamResponseRecord::Legacy(record) => {
@@ -1471,6 +1505,7 @@ async fn dispatch_stream_record(
                 )
                 .map_err(|err| format!("bad response: {err}"))?;
                 insert_batch_size_header(&mut resp.headers, batch_size);
+                insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
                 if let Some(init) = entry.init.take() {
                     let _ = init.send(StreamInit::Response(resp));
                 }
@@ -1486,8 +1521,13 @@ async fn dispatch_stream_record(
                 StreamRecordType::Head => {
                     if let Some(mut entry) = pending.remove(&record.id) {
                         let status_code = record.status_code.unwrap_or(200);
-                        let keep =
-                            send_stream_head(&mut entry, batch_size, status_code, record.headers)?;
+                        let keep = send_stream_head(
+                            &mut entry,
+                            batch_size,
+                            wait_ms,
+                            status_code,
+                            record.headers,
+                        )?;
                         if keep {
                             pending.insert(record.id, entry);
                         }
@@ -1496,8 +1536,13 @@ async fn dispatch_stream_record(
                 StreamRecordType::Chunk => {
                     if let Some(mut entry) = pending.remove(&record.id) {
                         if entry.init.is_some() {
-                            let keep =
-                                send_stream_head(&mut entry, batch_size, 200, HashMap::new())?;
+                            let keep = send_stream_head(
+                                &mut entry,
+                                batch_size,
+                                wait_ms,
+                                200,
+                                HashMap::new(),
+                            )?;
                             if !keep {
                                 return Ok(());
                             }
@@ -1514,7 +1559,13 @@ async fn dispatch_stream_record(
                 StreamRecordType::End => {
                     if let Some(mut entry) = pending.remove(&record.id) {
                         if entry.init.is_some() {
-                            let _ = send_stream_head(&mut entry, batch_size, 200, HashMap::new())?;
+                            let _ = send_stream_head(
+                                &mut entry,
+                                batch_size,
+                                wait_ms,
+                                200,
+                                HashMap::new(),
+                            )?;
                         }
                         drop(entry.body);
                     }
@@ -1529,6 +1580,7 @@ async fn dispatch_stream_record(
                                 msg,
                             );
                             insert_batch_size_header(&mut resp.headers, batch_size);
+                            insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
                             let _ = init.send(StreamInit::Response(resp));
                         }
                         drop(entry.body);
@@ -1581,12 +1633,14 @@ fn decode_body_bytes(body: &str, is_base64_encoded: bool) -> anyhow::Result<Byte
 fn fail_all_buffered(
     pending: HashMap<String, oneshot::Sender<RouterResponse>>,
     batch_size: usize,
+    wait_ms: u64,
     status: StatusCode,
     msg: String,
 ) {
     for (_id, tx) in pending {
         let mut resp = RouterResponse::text(status, msg.clone());
         insert_batch_size_header(&mut resp.headers, batch_size);
+        insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
         let _ = tx.send(resp);
     }
 }
@@ -1594,6 +1648,7 @@ fn fail_all_buffered(
 fn fail_all_stream(
     pending: HashMap<String, StreamPending>,
     batch_size: usize,
+    wait_ms: u64,
     status: StatusCode,
     msg: String,
 ) {
@@ -1601,6 +1656,7 @@ fn fail_all_stream(
         if let Some(init) = entry.init.take() {
             let mut resp = RouterResponse::text(status, msg.clone());
             insert_batch_size_header(&mut resp.headers, batch_size);
+            insert_batch_wait_ms_header(&mut resp.headers, wait_ms);
             let _ = init.send(StreamInit::Response(resp));
         }
         // Dropping the sender closes the response body stream.
