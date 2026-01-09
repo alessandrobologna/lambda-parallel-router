@@ -11,6 +11,7 @@ LPR_ROUTER_RESOURCE_TYPE = "Lpr::Router::Service"
 
 EXPORT_CONFIG_BUCKET_NAME = "LprConfigBucketName"
 EXPORT_CONFIG_PUBLISHER_SERVICE_TOKEN = "LprConfigPublisherServiceToken"
+EXPORT_DEFAULT_ROUTER_IMAGE_IDENTIFIER = "LprDefaultRouterImageIdentifier"
 
 LPR_OTEL_HEADERS_ENV_VAR = "LPR_OTEL_HEADERS_JSON"
 LPR_OBSERVABILITY_VENDOR_ENV_VAR = "LPR_OBSERVABILITY_VENDOR"
@@ -161,8 +162,13 @@ def _expand_router_service(
         raise ValueError(f"{logical_id}.Properties must be an object.")
 
     if "ImageIdentifier" not in props:
-        raise ValueError(f"{logical_id}.Properties.ImageIdentifier is required.")
-    image_identifier = props["ImageIdentifier"]
+        image_identifier = _import_value(EXPORT_DEFAULT_ROUTER_IMAGE_IDENTIFIER)
+    else:
+        image_identifier = props["ImageIdentifier"]
+        if not isinstance(image_identifier, (str, dict)):
+            raise ValueError(
+                f"{logical_id}.Properties.ImageIdentifier must be a string or intrinsic function object."
+            )
 
     router_config = props.get("RouterConfig")
     if not isinstance(router_config, dict):

@@ -7,6 +7,14 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional existing S3 bucket name to use for router config/spec objects. Leave empty to create a bucket named lpr-config-<account>-<region>.
+  DefaultRouterRepositoryName:
+    Type: String
+    Default: lambda-parallel-router/router
+    Description: ECR repository name for the default router image.
+  DefaultRouterImageTag:
+    Type: String
+    Default: 0.0.0
+    Description: Default router image tag (pinned, not latest).
 
 Conditions:
   CreateConfigBucket: !Equals [!Ref UseExistingBucket, ""]
@@ -95,6 +103,12 @@ Resources:
       FunctionName: !GetAtt RouterMacroFunction.Arn
 
 Outputs:
+  DefaultRouterImageIdentifier:
+    Description: Default router image identifier (ECR URI) for the macro when a service does not provide ImageIdentifier.
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${DefaultRouterRepositoryName}:${DefaultRouterImageTag}'
+    Export:
+      Name: LprDefaultRouterImageIdentifier
+
   ConfigBucketName:
     Description: S3 bucket name where router config manifests are stored.
     Value: !If [CreateConfigBucket, !Ref ConfigBucket, !Ref UseExistingBucket]

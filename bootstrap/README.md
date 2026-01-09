@@ -6,6 +6,7 @@ The bootstrap stack deploys shared resources:
 - a shared S3 bucket for router config manifests (or uses an existing bucket)
 - a CloudFormation macro (`LprRouter`) that expands `Lpr::Router::Service` into App Runner resources
 - a custom resource handler (`Custom::LprConfigPublisher`) used by the macro to publish config manifests
+- an exported default router image identifier (`LprDefaultRouterImageIdentifier`) used when `ImageIdentifier` is omitted
 
 ## Macro
 
@@ -24,11 +25,11 @@ Router:
   Type: Lpr::Router::Service
   Properties:
     # Required
-    ImageIdentifier: <ECR image identifier>
     RouterConfig: {}
     Spec: { paths: {} }
 
     # Optional
+    ImageIdentifier: <ECR image identifier>
     ServiceName: <string>
     Port: 8080
     Environment: {}
@@ -46,7 +47,7 @@ Router:
 
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `ImageIdentifier` | String | Yes | - | ECR image identifier for the router (for example `123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:latest`). |
+| `ImageIdentifier` | String | No | `!ImportValue LprDefaultRouterImageIdentifier` | ECR image identifier for the router. If omitted, the macro uses the bootstrap export `LprDefaultRouterImageIdentifier`. |
 | `RouterConfig` | Object | Yes | - | Router settings object. Keys are PascalCase. See [RouterConfig (manifest fields)](#routerconfig-manifest-fields). |
 | `Spec` | Object | Yes | - | OpenAPI-like `paths` map. See [Spec object](#spec-object). |
 | `ServiceName` | String | No | - | Sets the App Runner service name (`AWS::AppRunner::Service.Properties.ServiceName`). |

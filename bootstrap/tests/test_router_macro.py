@@ -12,6 +12,42 @@ _SPEC.loader.exec_module(app)  # type: ignore[union-attr]
 
 
 class RouterMacroTests(unittest.TestCase):
+    def test_defaults_image_identifier_from_bootstrap_export(self) -> None:
+        event = {
+            "requestId": "req-0",
+            "fragment": {
+                "Resources": {
+                    "Router": {
+                        "Type": "Lpr::Router::Service",
+                        "Properties": {
+                            "RouterConfig": {},
+                            "Spec": {
+                                "openapi": "3.0.0",
+                                "paths": {
+                                    "/hello": {
+                                        "get": {
+                                            "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
+                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                        }
+                                    }
+                                },
+                            },
+                        },
+                    }
+                }
+            },
+        }
+
+        out = app.handler(event, context=None)
+        self.assertEqual(out["status"], "success")
+        resources = out["fragment"]["Resources"]
+        image_id = (
+            resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"][
+                "ImageIdentifier"
+            ]
+        )
+        self.assertEqual(image_id, {"Fn::ImportValue": "LprDefaultRouterImageIdentifier"})
+
     def test_expands_router_resource(self) -> None:
         event = {
             "requestId": "req-1",

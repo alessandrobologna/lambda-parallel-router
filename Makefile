@@ -8,7 +8,8 @@ ECR_REGISTRY ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 
 ROUTER_REPO_PREFIX ?= lambda-parallel-router
 ROUTER_REPO_NAME ?= $(ROUTER_REPO_PREFIX)/router
-ROUTER_IMAGE_TAG ?= latest
+ROUTER_VERSION ?= $(shell tr -d '\n' < VERSION)
+ROUTER_IMAGE_TAG ?= $(ROUTER_VERSION)
 ROUTER_IMAGE_PLATFORM ?= linux/amd64
 ROUTER_IMAGE_IDENTIFIER ?= $(ECR_REGISTRY)/$(ROUTER_REPO_NAME):$(ROUTER_IMAGE_TAG)
 
@@ -32,7 +33,7 @@ help:
 		'  make image-build          Build router container image' \
 		'  make image-push           Push router container image (auto-creates repo on first push)' \
 		'  make sam-build            sam build' \
-		'  make sam-deploy           sam deploy (uses RouterImageIdentifier parameter)' \
+		'  make sam-deploy           sam deploy (uses sam/samconfig.toml)' \
 		'  make print-vars           Show computed variables' \
 		'  make ecr-template-delete  Delete the ECR repository creation template' \
 		'' \
@@ -114,18 +115,22 @@ sam-deploy: check sam-build
 		sam deploy \
 			--stack-name "$(STACK_NAME)" \
 			--template-file "$(SAM_BUILD_TEMPLATE)" \
-			$(SAM_DEPLOY_FLAGS) \
-			--parameter-overrides RouterImageIdentifier="$(ROUTER_IMAGE_IDENTIFIER)"
+			$(SAM_DEPLOY_FLAGS)
 
 .PHONY: bootstrap-deploy
 bootstrap-deploy: check
 	@set -euo pipefail; \
 	AWS_REGION="$(AWS_REGION)" AWS_DEFAULT_REGION="$(AWS_REGION)" \
+		params=( \
+			"DefaultRouterRepositoryName=$(ROUTER_REPO_NAME)" \
+			"DefaultRouterImageTag=$(ROUTER_VERSION)" \
+		); \
+		if [[ -n "$(BOOTSTRAP_BUCKET)" ]]; then params+=("UseExistingBucket=$(BOOTSTRAP_BUCKET)"); fi; \
 		sam deploy \
 			--stack-name "$(BOOTSTRAP_STACK_NAME)" \
 			--template-file "$(BOOTSTRAP_TEMPLATE)" \
 			$(SAM_DEPLOY_FLAGS) \
-			$$(if [[ -n "$(BOOTSTRAP_BUCKET)" ]]; then echo "--parameter-overrides UseExistingBucket=$(BOOTSTRAP_BUCKET)"; fi)
+			--parameter-overrides "$${params[@]}"
 
 .PHONY: deploy
 deploy: bootstrap-deploy image-push sam-deploy
