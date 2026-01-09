@@ -113,9 +113,11 @@ sam-build:
 sam-deploy: check sam-build
 	AWS_REGION="$(AWS_REGION)" AWS_DEFAULT_REGION="$(AWS_REGION)" \
 		sam deploy \
+			--config-file sam/samconfig.toml \
 			--stack-name "$(STACK_NAME)" \
+			--region "$(AWS_REGION)" \
 			--template-file "$(SAM_BUILD_TEMPLATE)" \
-			$(SAM_DEPLOY_FLAGS)
+			--config-env default
 
 .PHONY: bootstrap-deploy
 bootstrap-deploy: check
