@@ -5,10 +5,6 @@ Transform:
 Description: lambda-parallel-router demo (App Runner + sample Lambda batch handlers)
 
 Parameters:
-  RouterImageIdentifier:
-    Type: String
-    Default: ""
-    Description: Optional ECR image identifier override for the router container. Leave empty to use the default image configured in the bootstrap stack.
   OtelTracesEndpoint:
     Type: String
     Default: https://api.honeycomb.io/v1/traces
@@ -189,7 +185,6 @@ Resources:
     Type: Lpr::Router::Service
     Properties:
       ServiceName: !Sub '${AWS::StackName}-service'
-      ImageIdentifier: !Ref RouterImageIdentifier
       Port: 8080
       Environment:
         RUST_LOG: info
@@ -307,9 +302,6 @@ Outputs:
 
   DirectHelloFunctionArn:
     Value: !GetAtt DirectHelloFunction.Arn
-
-  RouterImageIdentifier:
-    Value: !Ref RouterImageIdentifier
 
   RouterServiceUrl:
     Value: !GetAtt RouterService.ServiceUrl

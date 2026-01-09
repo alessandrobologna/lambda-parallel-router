@@ -34,9 +34,7 @@ sam deploy \
 
 The router image must already exist in ECR.
 
-By default, `RouterImageIdentifier` is empty and the macro uses the default router image configured
-in the bootstrap stack. Optionally override the image by setting `RouterImageIdentifier` to a full
-ECR image identifier.
+The router image is the default configured in the bootstrap stack.
 
 ### Recommended: `make deploy` (repo root)
 
