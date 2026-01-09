@@ -22,7 +22,7 @@ memchr = "2"
 opentelemetry = "0.31"
 opentelemetry-aws = { version = "0.19", features = ["trace"] }
 opentelemetry-http = "0.31"
-opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "trace"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-client", "reqwest-rustls", "trace"] }
 opentelemetry-semantic-conventions = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 serde = { version = "1", features = ["derive"] }
