@@ -7,11 +7,11 @@
 Run k6 load tests against the App Runner demo routes and plot results.
 
 Example:
-  uv run benchmark.py --stack lambda-parallel-router-demo --region us-east-1 \
+  uv run benchmark/benchmark.py --stack lambda-parallel-router-demo --region us-east-1 \
     --ramp-duration 3m --hold-duration 30s --stage-targets 50,100,150 --max-delay-ms 250
 
-Rebuild charts from an existing CSV:
-  uv run benchmark.py --skip-test --csv-path benchmark-results/k6-20260105-151105.csv
+Rebuild charts for an existing run directory:
+  uv run benchmark/benchmark.py --skip-test --run-dir benchmark-results/run-20260106-100439
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ DEFAULT_STAGE_TARGETS = "50,100,150"
 DEFAULT_RAMP_DURATION = "3m"
 DEFAULT_HOLD_DURATION = "0s"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "benchmark-results"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
     # Router endpoints
@@ -50,12 +51,12 @@ OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
     "direct-hello": "DirectHelloUrl",
 }
 
-DEFAULT_ENDPOINTS = (
-    "buffering-simple",
-    "buffering-dynamic",
-    "streaming-simple",
-    "streaming-dynamic",
-)
+DEFAULT_ENDPOINTS = tuple(OUTPUT_KEY_BY_ENDPOINT.keys())
+DEFAULT_REPORT = "auto"
+
+RUN_MANIFEST_NAME = "run.json"
+RUN_K6_CSV_NAME = "k6.csv"
+RUN_SUMMARY_CSV_NAME = "summary.csv"
 
 _DURATION_PART_RE = re.compile(r"(\d+)(ms|s|m|h)")
 
@@ -154,6 +155,127 @@ def should_add_hold(duration: str) -> bool:
         return False
     normalized = duration.strip().lower()
     return normalized not in {"0", "0s", "0m", "0h", "0ms"}
+
+
+_SLUG_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+
+
+def slugify(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    value = _SLUG_RE.sub("-", value)
+    value = value.strip("-")
+    return value
+
+
+def try_get_git_sha() -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+    return out or None
+
+
+def try_is_git_dirty() -> bool | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=REPO_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except Exception:
+        return None
+    return bool(out.strip())
+
+
+def try_read_router_version() -> str | None:
+    path = REPO_ROOT / "VERSION"
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except Exception:
+        return None
+
+
+def write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def read_json(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def default_run_dir_name(*, label: str | None) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if not label:
+        return f"run-{timestamp}"
+    slug = slugify(label)
+    return f"run-{timestamp}-{slug}" if slug else f"run-{timestamp}"
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if not path.is_dir():
+        raise RuntimeError(f"Not a directory: {path}")
+
+
+def choose_k6_csv_path(run_dir: Path) -> Path:
+    preferred = run_dir / RUN_K6_CSV_NAME
+    if preferred.exists():
+        return preferred
+    return find_latest_csv(run_dir)
+
+
+def write_run_manifest(
+    run_dir: Path,
+    *,
+    stack_name: str,
+    region: str | None,
+    targets: list[dict[str, str]],
+    stages: list[dict[str, object]],
+    mode: str,
+    executor: str,
+    max_delay_ms: int,
+    report: str,
+    label: str | None,
+    k6: dict[str, object],
+) -> Path:
+    manifest = {
+        "v": 1,
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "stack_name": stack_name,
+        "region": region,
+        "targets": targets,
+        "stages": stages,
+        "mode": mode,
+        "executor": executor,
+        "max_delay_ms": max_delay_ms,
+        "report": report,
+        "label": label,
+        "git": {"sha": try_get_git_sha(), "dirty": try_is_git_dirty()},
+        "router_version": try_read_router_version(),
+        "k6": k6,
+    }
+
+    path = run_dir / RUN_MANIFEST_NAME
+    write_json(path, manifest)
+    return path
+
+
+def try_load_run_manifest(run_dir: Path) -> dict[str, object] | None:
+    path = run_dir / RUN_MANIFEST_NAME
+    if not path.exists():
+        return None
+    data = read_json(path)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Invalid run manifest (expected object): {path}")
+    return data
 
 
 def run_k6_test(
@@ -289,6 +411,7 @@ def _apply_plot_theme() -> None:
         },
     )
 
+
 def _compute_stage_ends_seconds(stages: list[dict[str, object]]) -> list[float]:
     ends: list[float] = []
     total = 0.0
@@ -342,43 +465,22 @@ def plot_compare_report(
     show_stage_markers = _should_show_stage_markers(stage_ends, data_max_elapsed)
     target_unit = "rps" if executor == "ramping-arrival-rate" else "vus"
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
 
-    # Plot 1: Latency scatter over time (200 only, overlay errors)
+    # Plot 1: p50 success latency over time.
     ax = axes[0, 0]
-    max_scatter_points_per_endpoint = 50_000
-    scatter_parts: list[pd.DataFrame] = []
     for endpoint in endpoints:
-        data = latency_ok[latency_ok["endpoint"] == endpoint][
-            ["elapsed_seconds", "latency_ms", "endpoint"]
-        ]
-        if len(data) > max_scatter_points_per_endpoint:
-            data = data.sample(n=max_scatter_points_per_endpoint, random_state=42)
-        scatter_parts.append(data)
-    if scatter_parts:
-        scatter_df = pd.concat(scatter_parts, ignore_index=True)
-        if not scatter_df.empty:
-            scatter_df = scatter_df.sample(frac=1, random_state=42)
-            ax.scatter(
-                scatter_df["elapsed_seconds"],
-                scatter_df["latency_ms"],
-                alpha=0.25,
-                s=8,
-                c=scatter_df["endpoint"].map(palette),
-                edgecolors="none",
-            )
-
-    errors = latency_all[latency_all["status"] != 200][["elapsed_seconds", "latency_ms"]]
-    if not errors.empty:
-        if len(errors) > 20_000:
-            errors = errors.sample(n=20_000, random_state=42)
-        ax.scatter(
-            errors["elapsed_seconds"],
-            errors["latency_ms"],
-            alpha=0.5,
-            s=14,
-            c="crimson",
-            marker="x",
+        data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
+        if data.empty:
+            continue
+        series = data.set_index("timestamp")["latency_ms"].resample("1s").quantile(0.50)
+        resampled = series.reset_index(name="p50")
+        resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["p50"],
+            color=palette[endpoint],
+            linewidth=2,
         )
 
     if show_stage_markers:
@@ -389,46 +491,49 @@ def plot_compare_report(
         prev_target = 0
         for start, end, stage in zip(starts, stage_ends, stages, strict=False):
             end_target = int(stage.get("target", prev_target)) if stage.get("target") is not None else prev_target
-            ax.text(
-                (start + end) / 2,
-                ymax * 0.95,
-                f"{prev_target}→{end_target} {target_unit}",
-                ha="center",
-                fontsize=9,
-                color=".5",
-            )
+            if end_target != prev_target:
+                ax.text(
+                    (start + end) / 2,
+                    ymax * 0.92,
+                    f"{prev_target}→{end_target} {target_unit}",
+                    ha="center",
+                    fontsize=9,
+                    color=".5",
+                )
             prev_target = end_target
 
     ax.set_xlabel("Elapsed time (s)")
     ax.set_ylabel("Latency (ms)")
-    ax.set_title("Latency over time (scatter, 200 only)")
+    ax.set_title("Success latency p50 (1s buckets, 200 only)")
 
-    # Plot 2: Average latency (1s buckets, 200 only)
+    # Plot 2: p95 success latency over time.
     ax = axes[0, 1]
     for endpoint in endpoints:
         data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
         if data.empty:
             continue
-        resampled = data.set_index("timestamp").resample("1s")["latency_ms"].mean().reset_index()
+        series = data.set_index("timestamp")["latency_ms"].resample("1s").quantile(0.95)
+        resampled = series.reset_index(name="p95")
         resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
         ax.plot(
             resampled["elapsed_seconds"],
-            resampled["latency_ms"],
-            label=endpoint,
+            resampled["p95"],
             color=palette[endpoint],
             linewidth=2,
         )
+
     if show_stage_markers:
         for x in stage_ends[:-1]:
             ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
-    ax.set_xlabel("Elapsed time (s)")
-    ax.set_ylabel("Avg latency (ms)")
-    ax.set_title("Average latency (1s buckets, 200 only)")
 
-    # Plot 3: Box plot distribution (200 only)
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Latency (ms)")
+    ax.set_title("Success latency p95 (1s buckets, 200 only)")
+
+    # Plot 3: Success latency distribution (box plot).
     ax = axes[1, 0]
     if latency_ok.empty:
-        ax.set_title("Latency distribution (200 only)")
+        ax.set_title("Success latency distribution (200 only)")
         ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
     else:
         sns.boxplot(
@@ -447,7 +552,7 @@ def plot_compare_report(
             legend.remove()
         ax.set_xlabel("Endpoint")
         ax.set_ylabel("Latency (ms)")
-        ax.set_title("Latency distribution (200 only)")
+        ax.set_title("Success latency distribution (200 only)")
         stats_by_endpoint = []
         for endpoint in endpoints:
             vals = latency_ok[latency_ok["endpoint"] == endpoint]["latency_ms"].to_numpy()
@@ -460,44 +565,235 @@ def plot_compare_report(
                 ax.set_ylim(y_min * 0.98, y_max * 1.02)
         ax.tick_params(axis="x", rotation=20)
 
-    # Plot 4: Stats comparison (avg/p50/p95/p99, 200 only)
+    # Plot 4: Latency percentiles (heatmap, 200 only).
     ax = axes[1, 1]
-    if stats_ok.empty:
-        ax.set_title("Latency statistics (200 only)")
+    percentiles = stats_ok.reindex(endpoints)[["p50", "p95", "p99"]]
+    if percentiles.empty or percentiles.dropna(how="all").empty:
+        ax.set_title("Latency percentiles (ms, 200 only)")
         ax.text(0.5, 0.5, "No data", ha="center", va="center")
     else:
-        stats_plot = stats_ok.reset_index().melt(
-            id_vars=["endpoint"],
-            value_vars=["avg", "p50", "p95", "p99"],
-            var_name="statistic",
-            value_name="latency_ms",
-        )
-        sns.barplot(
-            data=stats_plot,
-            x="statistic",
-            y="latency_ms",
-            hue="endpoint",
-            hue_order=list(endpoints),
-            palette=palette,
+        sns.heatmap(
+            percentiles,
+            annot=True,
+            fmt=".0f",
+            cmap="Blues",
+            cbar=False,
+            linewidths=0.5,
+            linecolor=".5",
             ax=ax,
         )
-        legend = ax.get_legend()
-        if legend:
-            legend.remove()
-        ax.set_xlabel("Statistic")
-        ax.set_ylabel("Latency (ms)")
-        ax.set_title("Latency statistics (200 only)")
+        ax.set_title("Latency percentiles (ms, 200 only)")
+        ax.set_xlabel("")
+        ax.set_ylabel("")
 
     fig.suptitle(title, fontsize=14, y=1.02, color=".5")
     fig.legend(
         handles=[Patch(facecolor=palette[e], edgecolor=palette[e], label=e) for e in endpoints],
         title="Endpoint",
         loc="lower center",
-        ncol=len(endpoints),
+        ncol=min(len(endpoints), 4),
         bbox_to_anchor=(0.5, 0.01),
         frameon=False,
     )
-    fig.tight_layout(rect=[0, 0.07, 1, 0.98])
+    fig.tight_layout(rect=[0, 0.08, 1, 0.98])
+    fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_compare_error_report(
+    latency_all: pd.DataFrame,
+    *,
+    output_path: Path,
+    stages: list[dict[str, object]],
+    endpoints: list[str],
+    executor: str,
+    title: str,
+) -> None:
+    _apply_plot_theme()
+    palette = _build_palette(endpoints)
+
+    latency_all = latency_all.copy()
+    if latency_all.empty:
+        raise RuntimeError("No latency samples available")
+
+    min_ts = latency_all["timestamp"].min()
+    latency_all["elapsed_seconds"] = (latency_all["timestamp"] - min_ts).dt.total_seconds()
+    data_max_elapsed = float(latency_all["elapsed_seconds"].max())
+
+    stage_ends = _compute_stage_ends_seconds(stages)
+    show_stage_markers = _should_show_stage_markers(stage_ends, data_max_elapsed)
+    target_unit = "rps" if executor == "ramping-arrival-rate" else "vus"
+
+    def status_group(status: float | int | None) -> str:
+        try:
+            code = int(status) if status is not None else 0
+        except Exception:
+            code = 0
+        if code == 200:
+            return "200"
+        if code == 429:
+            return "429"
+        if 500 <= code < 600:
+            return "5xx"
+        if 400 <= code < 500:
+            return "4xx"
+        return "other"
+
+    groups = ["200", "429", "4xx", "5xx", "other"]
+    group_palette = {
+        "200": "#2ca02c",
+        "429": "#ff7f0e",
+        "4xx": "#9467bd",
+        "5xx": "#d62728",
+        "other": "#7f7f7f",
+    }
+
+    per_second_parts: list[pd.DataFrame] = []
+    for endpoint in endpoints:
+        data = latency_all[latency_all["endpoint"] == endpoint].copy()
+        if data.empty:
+            continue
+        data["is_error"] = data["status"].fillna(0) >= 400
+        per_second = (
+            data.set_index("timestamp")
+            .resample("1s")
+            .agg(requests=("latency_ms", "count"), errors=("is_error", "sum"))
+            .reset_index()
+        )
+        per_second["endpoint"] = endpoint
+        per_second["elapsed_seconds"] = (per_second["timestamp"] - min_ts).dt.total_seconds()
+        per_second["error_rate_pct"] = (
+            per_second["errors"] / per_second["requests"].replace(0, pd.NA)
+        ) * 100
+        per_second["error_rate_pct"] = per_second["error_rate_pct"].fillna(0)
+        per_second_parts.append(per_second)
+
+    per_second = pd.concat(per_second_parts, ignore_index=True) if per_second_parts else pd.DataFrame()
+
+    latency_all["status_group"] = latency_all["status"].apply(status_group)
+    dist = (
+        latency_all.groupby(["endpoint", "status_group"])["latency_ms"]
+        .count()
+        .unstack(fill_value=0)
+        .reindex(index=endpoints, columns=groups, fill_value=0)
+    )
+    total_requests = dist.sum(axis=1).replace(0, pd.NA)
+    rate_table = pd.DataFrame(
+        {
+            "error%": (1 - (dist["200"] / total_requests)) * 100,
+            "429%": (dist["429"] / total_requests) * 100,
+            "4xx%": (dist["4xx"] / total_requests) * 100,
+            "5xx%": (dist["5xx"] / total_requests) * 100,
+        }
+    ).fillna(0.0)
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+    # Plot 1: Error rate over time (1s buckets).
+    ax = axes[0, 0]
+    max_error_rate = 0.0
+    for endpoint in endpoints:
+        data = per_second[per_second["endpoint"] == endpoint]
+        if data.empty:
+            continue
+        max_error_rate = max(max_error_rate, float(data["error_rate_pct"].max()))
+        ax.plot(
+            data["elapsed_seconds"],
+            data["error_rate_pct"],
+            color=palette[endpoint],
+            linewidth=2,
+        )
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+        ymax = ax.get_ylim()[1]
+        starts = [0.0] + stage_ends[:-1]
+        prev_target = 0
+        for start, end, stage in zip(starts, stage_ends, stages, strict=False):
+            end_target = int(stage.get("target", prev_target)) if stage.get("target") is not None else prev_target
+            if end_target != prev_target:
+                ax.text(
+                    (start + end) / 2,
+                    ymax * 0.92,
+                    f"{prev_target}→{end_target} {target_unit}",
+                    ha="center",
+                    fontsize=9,
+                    color=".5",
+                )
+            prev_target = end_target
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Error rate (%)")
+    ax.set_title("Error rate over time (1s buckets)")
+    ax.set_ylim(0, 1.0 if max_error_rate <= 0 else min(100.0, max_error_rate * 1.1))
+
+    # Plot 2: Request rate over time (1s buckets).
+    ax = axes[0, 1]
+    for endpoint in endpoints:
+        data = per_second[per_second["endpoint"] == endpoint]
+        if data.empty:
+            continue
+        ax.plot(
+            data["elapsed_seconds"],
+            data["requests"],
+            color=palette[endpoint],
+            linewidth=2,
+        )
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Requests/s")
+    ax.set_title("Request rate over time (1s buckets)")
+
+    # Plot 3: Status distribution (stacked bar chart).
+    ax = axes[1, 0]
+    bottom = None
+    for group in groups:
+        values = dist[group].tolist() if group in dist.columns else [0] * len(endpoints)
+        ax.bar(
+            endpoints,
+            values,
+            bottom=bottom,
+            color=group_palette[group],
+            label=group,
+        )
+        bottom = values if bottom is None else [a + b for a, b in zip(bottom, values, strict=False)]
+    ax.set_xlabel("Endpoint")
+    ax.set_ylabel("Responses")
+    ax.set_title("HTTP status distribution")
+    ax.tick_params(axis="x", rotation=20)
+    ax.legend(title="Status group", frameon=False, ncol=len(groups), loc="upper center")
+
+    # Plot 4: Error rate table (heatmap).
+    ax = axes[1, 1]
+    if rate_table.empty:
+        ax.set_title("HTTP error rates (%)")
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+    else:
+        sns.heatmap(
+            rate_table.loc[endpoints],
+            annot=True,
+            fmt=".1f",
+            cmap="Reds",
+            cbar=False,
+            linewidths=0.5,
+            linecolor=".5",
+            ax=ax,
+        )
+        ax.set_title("HTTP error rates (%)")
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+
+    fig.suptitle(title, fontsize=14, y=1.02, color=".5")
+    fig.legend(
+        handles=[Patch(facecolor=palette[e], edgecolor=palette[e], label=e) for e in endpoints],
+        title="Endpoint",
+        loc="lower center",
+        ncol=min(len(endpoints), 4),
+        bbox_to_anchor=(0.5, 0.01),
+        frameon=False,
+    )
+    fig.tight_layout(rect=[0, 0.08, 1, 0.98])
     fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -644,21 +940,21 @@ def plot_route_report(
             resampled["p50"],
             label=f"p50 ({overall_p50:.1f}ms)",
             color=metric_colors[1],
-            linewidth=1.8,
+            linewidth=2,
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["p95"],
             label=f"p95 ({overall_p95:.1f}ms)",
             color=metric_colors[2],
-            linewidth=1.8,
+            linewidth=2,
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["max"],
             label=f"max ({overall_max:.1f}ms)",
             color=metric_colors[3],
-            linewidth=1.5,
+            linewidth=2,
             alpha=0.8,
         )
     if show_stage_markers:
@@ -721,6 +1017,13 @@ def plot_route_report(
     show_default=True,
 )
 @click.option(
+    "--run-dir",
+    "run_dir",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Run directory. When omitted, a new run directory is created under --output-dir.",
+)
+@click.option(
     "--csv-dir",
     "csv_dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
@@ -770,7 +1073,14 @@ def plot_route_report(
 @click.option("--arrival-vus-multiplier", type=float, default=1.0, show_default=True)
 @click.option("--arrival-max-vus-multiplier", type=float, default=2.0, show_default=True)
 @click.option("--skip-test", is_flag=True, default=False)
-@click.option("--label", default=None, help="Optional label for output filenames")
+@click.option("--label", default=None, help="Optional label for the run directory name")
+@click.option(
+    "--report",
+    type=click.Choice(["auto", "suite", "compare", "route"]),
+    default=DEFAULT_REPORT,
+    show_default=True,
+    help="Report type. 'suite' generates per-route charts plus comparison charts.",
+)
 @click.option(
     "--endpoint",
     "selected_endpoints",
@@ -781,6 +1091,7 @@ def main(
     stack_name: str,
     region: str | None,
     output_dir: Path,
+    run_dir: Path | None,
     csv_dir: Path | None,
     csv_path: Path | None,
     mode: str,
@@ -798,17 +1109,27 @@ def main(
     arrival_max_vus_multiplier: float,
     skip_test: bool,
     label: str | None,
+    report: str,
     selected_endpoints: tuple[str, ...],
 ) -> None:
     if csv_path:
         skip_test = True
+        run_dir = run_dir or csv_path.parent
 
     if csv_dir:
-        if output_dir == DEFAULT_OUTPUT_DIR:
-            output_dir = csv_dir
-        csv_dir.mkdir(parents=True, exist_ok=True)
+        skip_test = True
+        run_dir = run_dir or csv_dir
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if skip_test and run_dir is None:
+        raise SystemExit("When --skip-test is set, pass --run-dir (or --csv-path / --csv-dir)")
+
+    if not skip_test and run_dir is None:
+        run_dir = output_dir / default_run_dir_name(label=label)
+
+    assert run_dir is not None
+    ensure_dir(run_dir)
 
     if stages_json:
         try:
@@ -832,22 +1153,46 @@ def main(
     if max_delay_ms < 0:
         raise SystemExit("--max-delay-ms must be >= 0")
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    label_suffix = f"-{label}" if label else ""
-    derived_csv_path = output_dir / f"k6{label_suffix}-{timestamp}.csv"
-    chart_path = output_dir / f"benchmark{label_suffix}-{timestamp}.png"
-    stats_path = output_dir / f"summary{label_suffix}-{timestamp}.csv"
+    manifest = try_load_run_manifest(run_dir) if skip_test else None
+    if manifest:
+        manifest_stages = manifest.get("stages")
+        if isinstance(manifest_stages, list) and manifest_stages:
+            stages = manifest_stages
+        manifest_executor = manifest.get("executor")
+        if isinstance(manifest_executor, str) and manifest_executor:
+            executor = manifest_executor
+        manifest_mode = manifest.get("mode")
+        if isinstance(manifest_mode, str) and manifest_mode:
+            mode = manifest_mode
+        manifest_max_delay_ms = manifest.get("max_delay_ms")
+        if isinstance(manifest_max_delay_ms, int):
+            max_delay_ms = manifest_max_delay_ms
+        manifest_stack_name = manifest.get("stack_name")
+        if isinstance(manifest_stack_name, str) and manifest_stack_name:
+            stack_name = manifest_stack_name
+        manifest_region = manifest.get("region")
+        if isinstance(manifest_region, str) and manifest_region:
+            region = manifest_region
+
+    report_mode = report
 
     if not skip_test:
         endpoints_to_test = list(selected_endpoints) if selected_endpoints else list(DEFAULT_ENDPOINTS)
         outputs = get_stack_outputs(stack_name, region)
         targets = build_targets_from_outputs(outputs, endpoints_to_test)
         endpoint_order = [t["name"] for t in targets]
-        report_mode = "route" if len(endpoint_order) == 1 else "compare"
+        if report_mode == "auto":
+            report_mode = "route" if len(endpoint_order) == 1 else "suite"
+        if report_mode == "route" and len(endpoint_order) != 1:
+            raise SystemExit("--report route requires exactly one --endpoint")
+
+        k6_csv_path = run_dir / RUN_K6_CSV_NAME
+        if k6_csv_path.exists():
+            k6_csv_path.unlink()
 
         run_k6_test(
             targets,
-            derived_csv_path,
+            k6_csv_path,
             stages=stages,
             mode=mode,
             executor=executor,
@@ -860,39 +1205,67 @@ def main(
             arrival_vus_multiplier=arrival_vus_multiplier,
             arrival_max_vus_multiplier=arrival_max_vus_multiplier,
         )
-        csv_path = derived_csv_path
+        csv_path = k6_csv_path
+
+        write_run_manifest(
+            run_dir,
+            stack_name=stack_name,
+            region=region,
+            targets=targets,
+            stages=stages,
+            mode=mode,
+            executor=executor,
+            max_delay_ms=max_delay_ms,
+            report=report_mode,
+            label=label,
+            k6={
+                "vus": vus,
+                "arrival_time_unit": arrival_time_unit,
+                "arrival_preallocated_vus": arrival_preallocated_vus,
+                "arrival_max_vus": arrival_max_vus,
+                "arrival_vus_multiplier": arrival_vus_multiplier,
+                "arrival_max_vus_multiplier": arrival_max_vus_multiplier,
+            },
+        )
 
     if csv_path is None:
-        source_dir = csv_dir or output_dir
-        csv_path = find_latest_csv(source_dir)
+        csv_path = choose_k6_csv_path(run_dir)
 
-    if skip_test:
-        print(f"Using existing CSV: {csv_path}")
-        run_id = try_extract_run_id_from_csv_path(csv_path)
-        if run_id and not label:
-            chart_path = output_dir / f"benchmark-{run_id}.png"
-            stats_path = output_dir / f"summary-{run_id}.csv"
+    print(f"Using CSV: {csv_path}")
 
     if not csv_path.exists():
         raise SystemExit(f"CSV not found: {csv_path}")
 
     raw_df = load_k6_csv(csv_path)
     endpoints_in_csv = infer_endpoints_from_csv(raw_df)
+    if not endpoints_in_csv:
+        raise SystemExit("No endpoints found in CSV (missing endpoint tags?)")
 
     if skip_test:
-        if selected_endpoints:
-            unknown = [e for e in selected_endpoints if e not in endpoints_in_csv]
-            if unknown:
-                raise SystemExit(
-                    f"CSV does not contain endpoint(s): {', '.join(unknown)}. "
-                    f"Endpoints in CSV: {', '.join(endpoints_in_csv) if endpoints_in_csv else '(none)'}"
-                )
-            endpoint_order = list(selected_endpoints)
+        if manifest and isinstance(manifest.get("targets"), list):
+            manifest_targets = [
+                t
+                for t in manifest["targets"]
+                if isinstance(t, dict) and isinstance(t.get("name"), str)
+            ]
+            endpoint_order = [t["name"] for t in manifest_targets if t["name"] in endpoints_in_csv]
         else:
             endpoint_order = endpoints_in_csv
-        if not endpoint_order:
-            raise SystemExit("No endpoints found in CSV (missing endpoint tags?)")
-        report_mode = "route" if len(endpoint_order) == 1 else "compare"
+
+    if selected_endpoints:
+        unknown = [e for e in selected_endpoints if e not in endpoints_in_csv]
+        if unknown:
+            raise SystemExit(
+                f"CSV does not contain endpoint(s): {', '.join(unknown)}. "
+                f"Endpoints in CSV: {', '.join(endpoints_in_csv) if endpoints_in_csv else '(none)'}"
+            )
+        selection = set(selected_endpoints)
+        endpoint_order = [e for e in endpoint_order if e in selection]
+
+    if report_mode == "auto":
+        report_mode = "route" if len(endpoint_order) == 1 else "suite"
+    if report_mode == "route" and len(endpoint_order) != 1:
+        raise SystemExit("--report route requires exactly one --endpoint (or a CSV with a single endpoint)")
 
     raw_df = raw_df[raw_df["endpoint"].isin(endpoint_order)]
     latency_all = parse_k6_latencies(raw_df)
@@ -905,6 +1278,7 @@ def main(
 
     summary = error_stats.join(stats_ok, how="left")
     summary = summary.reindex(endpoint_order)
+    stats_path = run_dir / RUN_SUMMARY_CSV_NAME
     summary.to_csv(stats_path)
 
     print("\nLatency summary (ms):")
@@ -912,29 +1286,72 @@ def main(
     print(f"\nWrote CSV: {csv_path}")
     print(f"Wrote summary: {stats_path}")
 
-    title = f"{stack_name} ({report_mode})"
-    if report_mode == "route":
-        plot_route_report(
-            endpoint_order[0],
-            latency_all,
-            latency_ok,
-            output_path=chart_path,
-            stages=stages,
-            executor=executor,
-            title=title + f" - {endpoint_order[0]}",
-        )
-    else:
+    title_parts = []
+    if executor:
+        title_parts.append(executor)
+    if max_delay_ms > 0:
+        title_parts.append(f"max-delay={max_delay_ms}ms")
+    title = stack_name
+    if title_parts:
+        title += f" ({', '.join(title_parts)})"
+
+    if report_mode in {"compare", "suite"}:
+        compare_latency_path = run_dir / "compare-latency.png"
+        compare_errors_path = run_dir / "compare-errors.png"
         plot_compare_report(
             latency_all,
             latency_ok,
             stats_ok,
-            output_path=chart_path,
+            output_path=compare_latency_path,
             stages=stages,
             endpoints=endpoint_order,
             executor=executor,
             title=title,
         )
-    print(f"Wrote chart: {chart_path}")
+        plot_compare_error_report(
+            latency_all,
+            output_path=compare_errors_path,
+            stages=stages,
+            endpoints=endpoint_order,
+            executor=executor,
+            title=title,
+        )
+        print(f"Wrote chart: {compare_latency_path}")
+        print(f"Wrote chart: {compare_errors_path}")
+
+    if report_mode == "route":
+        endpoint = endpoint_order[0]
+        route_path = run_dir / f"route-{slugify(endpoint)}.png"
+        plot_route_report(
+            endpoint,
+            latency_all,
+            latency_ok,
+            output_path=route_path,
+            stages=stages,
+            executor=executor,
+            title=f"{title} - {endpoint}",
+        )
+        print(f"Wrote chart: {route_path}")
+
+    if report_mode == "suite":
+        routes_dir = run_dir / "routes"
+        routes_dir.mkdir(parents=True, exist_ok=True)
+        for endpoint in endpoint_order:
+            endpoint_all = latency_all[latency_all["endpoint"] == endpoint].copy()
+            if endpoint_all.empty:
+                continue
+            endpoint_ok = latency_ok[latency_ok["endpoint"] == endpoint].copy()
+            route_path = routes_dir / f"{slugify(endpoint)}.png"
+            plot_route_report(
+                endpoint,
+                endpoint_all,
+                endpoint_ok,
+                output_path=route_path,
+                stages=stages,
+                executor=executor,
+                title=f"{title} - {endpoint}",
+            )
+        print(f"Wrote route reports under: {routes_dir}")
 
 
 if __name__ == "__main__":

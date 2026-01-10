@@ -1,39 +1,39 @@
 # Benchmarks
 
-This folder contains a small load-test + reporting toolchain for the demo App Runner service.
+This folder contains a small load-test and reporting toolchain for the demo App Runner service.
 
 - `benchmark/loadtest.js`: k6 script that issues requests to one or more endpoints.
-- `benchmark/benchmark.py`: orchestration + report generator (runs k6, parses CSV, produces charts).
+- `benchmark/benchmark.py`: orchestration and report generator (runs k6, parses CSV, produces charts).
 
 ## Prerequisites
 
-- `uv` (used to run `benchmark.py` via inline PEP 723 deps)
+- `uv` (runs `benchmark.py` via inline PEP 723 dependencies)
 - `k6`
 - AWS credentials configured locally (the script reads CloudFormation stack outputs)
 
 ## Endpoints
 
-By default the benchmark compares these 4 router demo routes (resolved from CloudFormation outputs):
+The benchmark reads these CloudFormation outputs from the SAM stack and builds a target list:
 
 - `buffering-simple`
 - `buffering-dynamic`
 - `streaming-simple`
 - `streaming-dynamic`
-
-Additional endpoints are also available via `--endpoint`:
-
 - `buffering-adapter`
 - `streaming-adapter`
 - `streaming-adapter-sse`
 - `direct-hello` (Lambda Function URL baseline)
 
-## Run a benchmark (compare mode)
+Use `--endpoint` (repeatable) to benchmark a subset.
 
-Runs k6 and writes:
+## Run a full suite
 
-- `benchmark-results/k6-<timestamp>.csv`
-- `benchmark-results/summary-<timestamp>.csv`
-- `benchmark-results/benchmark-<timestamp>.png`
+The default report type is `--report auto`. When more than one endpoint is selected, `auto` produces a suite report:
+
+- `compare-latency.png`
+- `compare-errors.png`
+- per-endpoint reports under `routes/`
+- `summary.csv`
 
 Example:
 
@@ -46,62 +46,55 @@ uv run benchmark/benchmark.py \
   --max-delay-ms 250
 ```
 
-Notes:
+By default, the script creates a new run directory under `benchmark-results/`:
 
-- `--mode per_endpoint` (default) runs *one k6 scenario per endpoint*. Your total load is roughly multiplied by the number of endpoints.
-- `--mode batch` runs a single scenario that hits all endpoints via `http.batch()`.
+- `benchmark-results/run-YYYYMMDD-HHMMSS/`
+  - `run.json` (run metadata)
+  - `k6.csv`
+  - `summary.csv`
+  - `compare-latency.png`
+  - `compare-errors.png`
+  - `routes/*.png`
 
-## Run a single route (per-route report)
+Use `--run-dir` to control the output location.
 
-When you select exactly one endpoint, the script produces a per-route chart (status-colored scatter + error rate over time + status distribution).
+## Run a single endpoint
 
-```bash
-uv run benchmark/benchmark.py \
-  --stack lambda-parallel-router-demo \
-  --region us-east-1 \
-  --endpoint streaming-simple
-```
-
-## Run a subset of routes
-
-Use `--endpoint` multiple times:
+Select one endpoint and use `--report route` (or rely on `--report auto`):
 
 ```bash
 uv run benchmark/benchmark.py \
   --stack lambda-parallel-router-demo \
   --region us-east-1 \
-  --endpoint buffering-simple \
-  --endpoint streaming-simple
+  --endpoint streaming-simple \
+  --report route
 ```
 
 ## Regenerate charts without running k6
 
-### Use a specific CSV
-
-`--csv-path` implies `--skip-test`.
+Regenerate charts for an existing run directory:
 
 ```bash
 uv run benchmark/benchmark.py \
-  --stack lambda-parallel-router-demo \
+  --skip-test \
+  --run-dir benchmark-results/run-20260106-100439 \
+  --report suite
+```
+
+The script reads `run.json` when present. This keeps stage markers and labels consistent with the original run.
+
+To regenerate from a CSV file, pass `--csv-path` and a destination `--run-dir`:
+
+```bash
+uv run benchmark/benchmark.py \
   --skip-test \
   --csv-path benchmark-results/k6-20260106-100439.csv \
-  --endpoint streaming-simple
+  --run-dir benchmark-results/rerender \
+  --endpoint streaming-simple \
+  --report route
 ```
 
-### Use the newest CSV in a directory
+## Notes
 
-```bash
-uv run benchmark/benchmark.py \
-  --stack lambda-parallel-router-demo \
-  --skip-test \
-  --csv-dir benchmark-results \
-  --endpoint streaming-simple
-```
-
-## Common knobs
-
-- `--output-dir`: where to write `k6*.csv`, `summary*.csv`, `benchmark*.png`
-- `--label`: add a suffix to output filenames
-- `--executor`: `ramping-arrival-rate` (default) or `ramping-vus`
-- `--hold-duration`: add a hold stage between ramps (e.g. `30s`)
-- `--stages-json`: fully override stages (advanced)
+- `--mode per_endpoint` (default) runs one k6 scenario per endpoint. Total load is multiplied by the number of endpoints.
+- `--mode batch` runs a single scenario that hits all endpoints via `http.batch()`.
