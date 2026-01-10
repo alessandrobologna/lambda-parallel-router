@@ -7,8 +7,10 @@ WORKDIR /app
 # Pre-copy manifests for better layer caching.
 COPY Cargo.toml Cargo.lock ./
 COPY router/Cargo.toml router/Cargo.toml
+COPY lambda-kit/adapter-rust/Cargo.toml lambda-kit/adapter-rust/Cargo.toml
 
 COPY router router
+COPY lambda-kit/adapter-rust lambda-kit/adapter-rust
 
 RUN cargo build --release -p lpr-router
 
