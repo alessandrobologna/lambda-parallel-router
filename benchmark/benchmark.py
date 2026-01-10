@@ -1024,6 +1024,12 @@ def plot_route_report(
     help="Run directory. When omitted, a new run directory is created under --output-dir.",
 )
 @click.option(
+    "--run-name",
+    "run_name",
+    default=None,
+    help="Run directory name under --output-dir (stable, no timestamp). Ignored when --run-dir is set.",
+)
+@click.option(
     "--csv-dir",
     "csv_dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
@@ -1092,6 +1098,7 @@ def main(
     region: str | None,
     output_dir: Path,
     run_dir: Path | None,
+    run_name: str | None,
     csv_dir: Path | None,
     csv_path: Path | None,
     mode: str,
@@ -1112,18 +1119,24 @@ def main(
     report: str,
     selected_endpoints: tuple[str, ...],
 ) -> None:
+    if run_dir is not None and run_name:
+        raise SystemExit("Pass only one of --run-dir or --run-name")
+
     if csv_path:
         skip_test = True
-        run_dir = run_dir or csv_path.parent
 
     if csv_dir:
         skip_test = True
-        run_dir = run_dir or csv_dir
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if run_dir is None and run_name:
+        run_dir = output_dir / slugify(run_name)
+
     if skip_test and run_dir is None:
-        raise SystemExit("When --skip-test is set, pass --run-dir (or --csv-path / --csv-dir)")
+        raise SystemExit(
+            "When --skip-test is set, pass --run-dir (or --run-name) and provide an existing CSV via --csv-path or k6.csv."
+        )
 
     if not skip_test and run_dir is None:
         run_dir = output_dir / default_run_dir_name(label=label)
@@ -1229,7 +1242,10 @@ def main(
         )
 
     if csv_path is None:
-        csv_path = choose_k6_csv_path(run_dir)
+        if csv_dir:
+            csv_path = find_latest_csv(csv_dir)
+        else:
+            csv_path = choose_k6_csv_path(run_dir)
 
     print(f"Using CSV: {csv_path}")
 

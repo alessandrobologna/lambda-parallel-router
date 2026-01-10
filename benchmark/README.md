@@ -58,6 +58,15 @@ By default, the script creates a new run directory under `benchmark-results/`:
 
 Use `--run-dir` to control the output location.
 
+For a stable path (useful for README links), use `--run-name` or set `--run-dir` explicitly:
+
+```bash
+uv run benchmark/benchmark.py \
+  --stack lambda-parallel-router-demo \
+  --region us-east-1 \
+  --run-name readme
+```
+
 ## Run a single endpoint
 
 Select one endpoint and use `--report route` (or rely on `--report auto`):
