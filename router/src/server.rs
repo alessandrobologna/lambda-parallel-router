@@ -266,8 +266,48 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec, otel_enabled: bool) -> a
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to register SIGTERM handler");
+                return;
+            }
+        };
+
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to register SIGINT handler");
+                return;
+            }
+        };
+
+        tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!(signal = "SIGTERM", "shutdown signal received");
+            }
+            _ = sigint.recv() => {
+                tracing::info!(signal = "SIGINT", "shutdown signal received");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("shutdown signal received");
+    }
 }
 
 /// Catch-all handler for user-defined routes.
