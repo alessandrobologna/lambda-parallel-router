@@ -51,7 +51,17 @@ OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
     "direct-hello": "DirectHelloUrl",
 }
 
-DEFAULT_ENDPOINTS = tuple(OUTPUT_KEY_BY_ENDPOINT.keys())
+# The full endpoint list includes long-lived streaming routes (SSE). Those are useful for targeted
+# testing, but they distort the default suite by holding connections open and skewing capacity.
+DEFAULT_ENDPOINTS = (
+    "buffering-simple",
+    "buffering-dynamic",
+    "streaming-simple",
+    "streaming-dynamic",
+    "buffering-adapter",
+    "streaming-adapter",
+    "direct-hello",
+)
 DEFAULT_REPORT = "auto"
 
 RUN_MANIFEST_NAME = "run.json"
