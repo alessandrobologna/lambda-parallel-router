@@ -25,7 +25,8 @@ dial: small, bounded delays trade for fewer invocations and better Lambda utiliz
 ## Lambda integration modes
 
 - **Mode B (adapter, recommended)**: wrap an existing handler with a one-line adapter.
-  Node adapter lives in `lambda-kit/adapter-node/` (package name: `lpr-lambda-adapter`).
+  - Node adapter lives in `lambda-kit/adapter-node/` (package name: `lpr-lambda-adapter`).
+  - Rust adapter lives in `lambda-kit/adapter-rust/` (crate name: `lpr-lambda-adapter`, import as `lpr_lambda_adapter`).
 - **Mode C (native batch)**: handle an array of requests directly and return batch or NDJSON output.
 - **Mode A (layer/proxy)**: planned (best-effort compatibility without code changes).
 
@@ -70,6 +71,7 @@ Notes:
 
 - `router/`: Rust router (axum) with per-route microbatching.
 - `lambda-kit/adapter-node/`: Node batch adapter (Mode B).
+- `lambda-kit/adapter-rust/`: Rust batch adapter (Mode B).
 - `sam/`: App Runner + sample Lambda deployment (see `sam/README.md`).
 - `docs/`: design notes (including interleaved streaming proposal).
 

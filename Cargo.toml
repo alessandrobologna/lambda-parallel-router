@@ -1,5 +1,6 @@
 [workspace]
 members = [
   "router",
+  "lambda-kit/adapter-rust",
 ]
 resolver = "2"

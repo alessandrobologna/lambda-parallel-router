@@ -1,0 +1,16 @@
+[package]
+name = "lpr-lambda-adapter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aws_lambda_events = "1"
+base64 = "0.22"
+bytes = "1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time"] }
