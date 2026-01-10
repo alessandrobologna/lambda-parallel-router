@@ -30,6 +30,25 @@ test("batchAdapter returns v1 responses array", async () => {
   });
 });
 
+test("batchAdapter forwards response cookies", async () => {
+  const handler = batchAdapter(async () => {
+    return {
+      statusCode: 200,
+      headers: {},
+      cookies: ["a=b; Path=/; HttpOnly", "c=d; Path=/; Secure"],
+      body: "ok",
+      isBase64Encoded: false,
+    };
+  });
+
+  const out = await handler({
+    v: 1,
+    batch: [{ requestContext: { requestId: "a" } }],
+  });
+
+  assert.deepEqual(out.responses[0].cookies, ["a=b; Path=/; HttpOnly", "c=d; Path=/; Secure"]);
+});
+
 test("passes request event items to user handler", async () => {
   const handler = batchAdapter(async (evt) => {
     assert.equal(evt.requestContext.requestId, "a");
@@ -128,6 +147,7 @@ test("batchAdapterStream writes NDJSON response records", async () => {
       return {
         statusCode: 200,
         headers: {},
+        cookies: ["session=abc; Path=/; HttpOnly"],
         body: evt.requestContext.requestId,
         isBase64Encoded: false,
       };
@@ -150,6 +170,7 @@ test("batchAdapterStream writes NDJSON response records", async () => {
     assert.equal(r.v, 1);
     assert.equal(r.statusCode, 200);
     assert.equal(r.isBase64Encoded, false);
+    assert.deepEqual(r.cookies, ["session=abc; Path=/; HttpOnly"]);
   }
 });
 
@@ -182,6 +203,7 @@ test("batchAdapterStream interleaved emits head/chunk/end records", async () => 
       return {
         statusCode: 200,
         headers: { "content-type": "text/event-stream" },
+        cookies: ["session=abc; Path=/; HttpOnly"],
         body: body(),
       };
     },
@@ -209,6 +231,7 @@ test("batchAdapterStream interleaved emits head/chunk/end records", async () => 
   for (const id of ["a", "b"]) {
     const firstIdx = records.findIndex((r) => r.id === id);
     assert.equal(records[firstIdx].type, "head");
+    assert.deepEqual(records[firstIdx].cookies, ["session=abc; Path=/; HttpOnly"]);
     assert.ok(records.some((r) => r.id === id && r.type === "chunk"));
     assert.ok(records.some((r) => r.id === id && r.type === "end"));
   }

@@ -47,6 +47,8 @@ pub struct BatchResponseItem {
     #[serde(rename = "statusCode")]
     pub status_code: u16,
     pub headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cookies: Vec<String>,
     pub body: String,
     #[serde(rename = "isBase64Encoded")]
     pub is_base64_encoded: bool,
@@ -155,6 +157,7 @@ impl ResponseBody {
 pub struct HandlerResponse {
     pub status_code: u16,
     pub headers: HashMap<String, String>,
+    pub cookies: Vec<String>,
     pub body: ResponseBody,
     pub is_base64_encoded: bool,
 }
@@ -164,6 +167,7 @@ impl Default for HandlerResponse {
         Self {
             status_code: 200,
             headers: HashMap::new(),
+            cookies: Vec::new(),
             body: ResponseBody::Empty,
             is_base64_encoded: false,
         }
@@ -175,6 +179,7 @@ impl HandlerResponse {
         Self {
             status_code,
             headers: HashMap::new(),
+            cookies: Vec::new(),
             body: ResponseBody::Text(body.into()),
             is_base64_encoded: false,
         }
@@ -184,6 +189,7 @@ impl HandlerResponse {
         Self {
             status_code,
             headers: HashMap::new(),
+            cookies: Vec::new(),
             body: ResponseBody::Binary(body.into()),
             is_base64_encoded: true,
         }
@@ -207,9 +213,23 @@ impl From<ApiGatewayV2httpResponse> for HandlerResponse {
             value.status_code as u16
         };
 
+        let cookies = value
+            .cookies
+            .iter()
+            .filter_map(|c| {
+                let c = c.trim();
+                if c.is_empty() {
+                    None
+                } else {
+                    Some(c.to_string())
+                }
+            })
+            .collect::<Vec<_>>();
+
         Self {
             status_code,
             headers,
+            cookies,
             body: value
                 .body
                 .map(|b| match b {
@@ -244,6 +264,7 @@ fn error_response_item(id: String) -> BatchResponseItem {
         id,
         status_code: 500,
         headers: HashMap::from([("content-type".to_string(), "text/plain".to_string())]),
+        cookies: Vec::new(),
         body: "internal error".to_string(),
         is_base64_encoded: false,
     }
@@ -269,6 +290,20 @@ fn normalize_headers(headers: HashMap<String, String>) -> HashMap<String, String
                 return None;
             }
             Some((k, v))
+        })
+        .collect()
+}
+
+fn normalize_cookies(cookies: Vec<String>) -> Vec<String> {
+    cookies
+        .into_iter()
+        .filter_map(|c| {
+            let c = c.trim();
+            if c.is_empty() {
+                None
+            } else {
+                Some(c.to_string())
+            }
         })
         .collect()
 }
@@ -324,6 +359,7 @@ impl<H> BatchAdapter<H> {
                             resp.status_code
                         };
                         let headers = normalize_headers(resp.headers);
+                        let cookies = normalize_cookies(resp.cookies);
                         let (body, is_base64_encoded) =
                             match normalize_body(resp.body, resp.is_base64_encoded) {
                                 Ok(v) => v,
@@ -333,6 +369,7 @@ impl<H> BatchAdapter<H> {
                             id,
                             status_code,
                             headers,
+                            cookies,
                             body,
                             is_base64_encoded,
                         }
@@ -363,6 +400,8 @@ struct NdjsonRecordLegacy {
     #[serde(rename = "statusCode")]
     status_code: u16,
     headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cookies: Vec<String>,
     body: String,
     #[serde(rename = "isBase64Encoded")]
     is_base64_encoded: bool,
@@ -378,6 +417,8 @@ struct NdjsonRecordInterleaved {
     status_code: Option<u16>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cookies: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     body: Option<String>,
     #[serde(rename = "isBase64Encoded", skip_serializing_if = "Option::is_none")]
@@ -493,6 +534,7 @@ impl<H> BatchAdapterStream<H> {
                             resp.status_code
                         };
                         let headers = normalize_headers(resp.headers);
+                        let cookies = normalize_cookies(resp.cookies);
 
                         if !interleaved {
                             let record = match normalize_body(resp.body, resp.is_base64_encoded) {
@@ -501,6 +543,7 @@ impl<H> BatchAdapterStream<H> {
                                     id: request_id.clone(),
                                     status_code,
                                     headers,
+                                    cookies,
                                     body,
                                     is_base64_encoded,
                                 },
@@ -512,6 +555,7 @@ impl<H> BatchAdapterStream<H> {
                                         "content-type".to_string(),
                                         "text/plain".to_string(),
                                     )]),
+                                    cookies: Vec::new(),
                                     body: "internal error".to_string(),
                                     is_base64_encoded: false,
                                 },
@@ -526,6 +570,7 @@ impl<H> BatchAdapterStream<H> {
                             record_type: "head",
                             status_code: Some(status_code),
                             headers,
+                            cookies,
                             body: None,
                             is_base64_encoded: None,
                             message: None,
@@ -537,6 +582,7 @@ impl<H> BatchAdapterStream<H> {
                             record_type: "end",
                             status_code: None,
                             headers: HashMap::new(),
+                            cookies: Vec::new(),
                             body: None,
                             is_base64_encoded: None,
                             message: None,
@@ -550,6 +596,7 @@ impl<H> BatchAdapterStream<H> {
                                 record_type: "chunk",
                                 status_code: None,
                                 headers: HashMap::new(),
+                                cookies: Vec::new(),
                                 body: Some(body),
                                 is_base64_encoded: Some(is_b64),
                                 message: None,
@@ -589,6 +636,7 @@ impl<H> BatchAdapterStream<H> {
                                     "content-type".to_string(),
                                     "text/plain".to_string(),
                                 )]),
+                                cookies: Vec::new(),
                                 body: "internal error".to_string(),
                                 is_base64_encoded: false,
                             })])
@@ -601,6 +649,7 @@ impl<H> BatchAdapterStream<H> {
                             record_type: "error",
                             status_code: Some(500),
                             headers: HashMap::new(),
+                            cookies: Vec::new(),
                             body: None,
                             is_base64_encoded: None,
                             message: Some("internal error".to_string()),

@@ -58,6 +58,14 @@ function normalizeHeaders(headers) {
     }
     return out;
 }
+function normalizeCookies(cookies) {
+    if (!Array.isArray(cookies))
+        return [];
+    return cookies
+        .filter((c) => c != null)
+        .map((c) => String(c).trim())
+        .filter((c) => c.length > 0);
+}
 function normalizeResponseBody(body, isBase64Encoded) {
     if (body == null)
         return { body: "", isBase64Encoded: Boolean(isBase64Encoded) };
@@ -126,8 +134,18 @@ function batchAdapter(userHandler, options = {}) {
                 const userResp = await userHandler(item, context);
                 const statusCode = Number(userResp?.statusCode ?? 200);
                 const headers = normalizeHeaders(userResp?.headers);
+                const cookies = normalizeCookies(userResp?.cookies);
                 const { body, isBase64Encoded } = normalizeResponseBody(userResp?.body, userResp?.isBase64Encoded);
-                return { id, statusCode, headers, body, isBase64Encoded };
+                const record = {
+                    id,
+                    statusCode,
+                    headers,
+                    body,
+                    isBase64Encoded,
+                };
+                if (cookies.length)
+                    record.cookies = cookies;
+                return record;
             }
             catch (err) {
                 return {
@@ -166,8 +184,18 @@ function batchAdapterStream(userHandler, options = {}) {
                         const userResp = await userHandler(item, context);
                         const statusCode = Number(userResp?.statusCode ?? 200);
                         const headers = normalizeHeaders(userResp?.headers);
+                        const cookies = normalizeCookies(userResp?.cookies);
                         const { body, isBase64Encoded } = normalizeResponseBody(userResp?.body, userResp?.isBase64Encoded);
-                        record = { v: 1, id, statusCode, headers, body, isBase64Encoded };
+                        record = {
+                            v: 1,
+                            id,
+                            statusCode,
+                            headers,
+                            body,
+                            isBase64Encoded,
+                        };
+                        if (cookies.length)
+                            record.cookies = cookies;
                     }
                     catch (err) {
                         record = {
@@ -201,13 +229,17 @@ function batchAdapterStream(userHandler, options = {}) {
                 }
                 const statusCode = Number(userResp?.statusCode ?? 200);
                 const headers = normalizeHeaders(userResp?.headers);
-                await writeNdjsonLine(responseStream, {
+                const cookies = normalizeCookies(userResp?.cookies);
+                const head = {
                     v: 1,
                     id,
                     type: "head",
                     statusCode,
                     headers,
-                });
+                };
+                if (cookies.length)
+                    head.cookies = cookies;
+                await writeNdjsonLine(responseStream, head);
                 const bodySource = userResp?.body;
                 try {
                     for await (const chunk of toAsyncIterable(bodySource)) {

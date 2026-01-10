@@ -342,6 +342,8 @@ struct BatchResponseItem {
     #[serde(default)]
     headers: HashMap<String, String>,
     #[serde(default)]
+    cookies: Vec<String>,
+    #[serde(default)]
     body: String,
     #[serde(rename = "isBase64Encoded", default)]
     is_base64_encoded: bool,
@@ -362,6 +364,8 @@ struct StreamResponseRecordLegacy {
     status_code: u16,
     #[serde(default)]
     headers: HashMap<String, String>,
+    #[serde(default)]
+    cookies: Vec<String>,
     #[serde(default)]
     body: String,
     #[serde(rename = "isBase64Encoded", default)]
@@ -387,6 +391,8 @@ struct StreamResponseRecordInterleaved {
     status_code: Option<u16>,
     #[serde(default)]
     headers: HashMap<String, String>,
+    #[serde(default)]
+    cookies: Vec<String>,
     #[serde(default)]
     body: Option<String>,
     #[serde(rename = "isBase64Encoded", default)]
@@ -1236,6 +1242,7 @@ fn dispatch_buffered(
         let mut resp = match build_router_response_parts(
             item.status_code,
             item.headers,
+            item.cookies,
             item.body,
             item.is_base64_encoded,
         ) {
@@ -1285,12 +1292,15 @@ fn send_stream_head(
     wait_ms: u64,
     status_code: u16,
     headers: HashMap<String, String>,
+    cookies: Vec<String>,
 ) -> Result<bool, String> {
     if let Some(init) = entry.init.take() {
         let status =
             StatusCode::from_u16(status_code).map_err(|err| format!("bad status code: {err}"))?;
-        let headers =
+        let mut headers =
             headers_from_map(headers).map_err(|err| format!("bad response headers: {err}"))?;
+        append_cookies(&mut headers, cookies)
+            .map_err(|err| format!("bad response cookies: {err}"))?;
         if init
             .send(StreamInit::Stream(StreamHead {
                 status,
@@ -1503,6 +1513,7 @@ async fn dispatch_stream_record(
                 let mut resp = build_router_response_parts(
                     record.status_code,
                     record.headers,
+                    record.cookies,
                     record.body,
                     record.is_base64_encoded,
                 )
@@ -1532,6 +1543,7 @@ async fn dispatch_stream_record(
                             wait_ms,
                             status_code,
                             record.headers,
+                            record.cookies,
                         )?;
                         if keep {
                             pending.insert(record.id, entry);
@@ -1547,6 +1559,7 @@ async fn dispatch_stream_record(
                                 wait_ms,
                                 200,
                                 HashMap::new(),
+                                Vec::new(),
                             )?;
                             if !keep {
                                 return Ok(());
@@ -1570,6 +1583,7 @@ async fn dispatch_stream_record(
                                 wait_ms,
                                 200,
                                 HashMap::new(),
+                                Vec::new(),
                             )?;
                         }
                         drop(entry.body);
@@ -1603,12 +1617,14 @@ async fn dispatch_stream_record(
 fn build_router_response_parts(
     status_code: u16,
     headers_in: HashMap<String, String>,
+    cookies: Vec<String>,
     body: String,
     is_base64_encoded: bool,
 ) -> anyhow::Result<RouterResponse> {
     let status = StatusCode::from_u16(status_code)?;
 
-    let headers = headers_from_map(headers_in)?;
+    let mut headers = headers_from_map(headers_in)?;
+    append_cookies(&mut headers, cookies)?;
 
     let body_bytes = decode_body_bytes(&body, is_base64_encoded)?;
 
@@ -1628,6 +1644,18 @@ fn headers_from_map(headers_in: HashMap<String, String>) -> anyhow::Result<Heade
         headers.insert(name, value);
     }
     Ok(headers)
+}
+
+fn append_cookies(headers: &mut HeaderMap, cookies: Vec<String>) -> anyhow::Result<()> {
+    for cookie in cookies {
+        let cookie = cookie.trim();
+        if cookie.is_empty() {
+            continue;
+        }
+        let value = HeaderValue::from_str(cookie)?;
+        headers.append(http::header::SET_COOKIE, value);
+    }
+    Ok(())
 }
 
 fn decode_body_bytes(body: &str, is_base64_encoded: bool) -> anyhow::Result<Bytes> {
@@ -1804,6 +1832,31 @@ mod tests {
         assert_eq!(evt.raw_query_string.as_deref(), Some("x=1"));
         assert_eq!(evt.request_context.request_id.as_deref(), Some("r-1"));
         assert_eq!(evt.request_context.http.method, Method::GET);
+    }
+
+    #[test]
+    fn response_cookies_become_set_cookie_headers() {
+        let resp = build_router_response_parts(
+            200,
+            HashMap::from([("content-type".to_string(), "text/plain".to_string())]),
+            vec![
+                "a=b; Path=/; HttpOnly".to_string(),
+                "c=d; Path=/; Secure".to_string(),
+            ],
+            "ok".to_string(),
+            false,
+        )
+        .unwrap();
+
+        let cookies: Vec<String> = resp
+            .headers
+            .get_all(http::header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(cookies.len(), 2);
+        assert!(cookies[0].starts_with("a=b"));
+        assert!(cookies[1].starts_with("c=d"));
     }
 
     struct EchoInvoker {

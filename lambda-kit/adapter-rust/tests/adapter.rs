@@ -63,9 +63,41 @@ async fn batch_adapter_returns_v1_responses_array() {
             id: "a".to_string(),
             status_code: 200,
             headers: std::collections::HashMap::from([("x-id".to_string(), "a".to_string())]),
+            cookies: Vec::new(),
             body: "a".to_string(),
             is_base64_encoded: false,
         }
+    );
+}
+
+#[tokio::test]
+async fn batch_adapter_forwards_response_cookies() {
+    let adapter = batch_adapter(|_evt: ApiGatewayV2httpRequest, _ctx: &()| async move {
+        let mut resp = HandlerResponse::text(200, "ok");
+        resp.cookies = vec![
+            "a=b; Path=/; HttpOnly".to_string(),
+            "c=d; Path=/; Secure".to_string(),
+        ];
+        Ok::<_, Infallible>(resp)
+    });
+
+    let out = adapter
+        .handle(
+            BatchRequestEvent {
+                v: 1,
+                batch: vec![req("a")],
+                meta: None,
+            },
+            &(),
+        )
+        .await;
+
+    assert_eq!(
+        out.responses[0].cookies,
+        vec![
+            "a=b; Path=/; HttpOnly".to_string(),
+            "c=d; Path=/; Secure".to_string(),
+        ]
     );
 }
 
@@ -132,10 +164,12 @@ async fn batch_adapter_returns_500_for_handler_errors() {
 #[tokio::test]
 async fn batch_adapter_stream_emits_ndjson_records() {
     let adapter = batch_adapter_stream(|evt: ApiGatewayV2httpRequest, _ctx: &()| async move {
-        Ok::<_, Infallible>(HandlerResponse::text(
+        let mut resp = HandlerResponse::text(
             200,
             evt.request_context.request_id.clone().unwrap_or_default(),
-        ))
+        );
+        resp.cookies = vec!["session=abc; Path=/; HttpOnly".to_string()];
+        Ok::<_, Infallible>(resp)
     })
     .with_concurrency(2);
 
@@ -158,6 +192,7 @@ async fn batch_adapter_stream_emits_ndjson_records() {
         assert_eq!(v["v"], 1);
         assert_eq!(v["statusCode"], 200);
         assert_eq!(v["isBase64Encoded"], false);
+        assert_eq!(v["cookies"][0], "session=abc; Path=/; HttpOnly");
     }
 }
 
@@ -227,6 +262,7 @@ async fn batch_adapter_stream_interleaved_supports_streaming_body_chunks() {
         Ok::<_, Infallible>(HandlerResponse {
             status_code: 200,
             headers: std::collections::HashMap::new(),
+            cookies: Vec::new(),
             body,
             is_base64_encoded: false,
         })

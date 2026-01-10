@@ -305,6 +305,7 @@ For request bodies, the router prefers UTF-8 (`isBase64Encoded: false`) and fall
       "id": "r-uuid",
       "statusCode": 200,
       "headers": {"content-type": "application/json"},
+      "cookies": ["session=abc; Path=/; HttpOnly"],
       "body": "...base64 or utf8...",
       "isBase64Encoded": false
     }
@@ -316,7 +317,7 @@ For request bodies, the router prefers UTF-8 (`isBase64Encoded: false`) and fall
 Each line is one response record; ordering is **completion order**.
 
 ```
-{"v":1,"id":"r-2","statusCode":200,"headers":{},"body":"ok","isBase64Encoded":false}
+{"v":1,"id":"r-2","statusCode":200,"headers":{},"cookies":["session=abc; Path=/; HttpOnly"],"body":"ok","isBase64Encoded":false}
 {"v":1,"id":"r-1","statusCode":200,"headers":{},"body":"slow","isBase64Encoded":false}
 ```
 

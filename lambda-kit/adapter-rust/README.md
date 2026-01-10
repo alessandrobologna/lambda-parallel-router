@@ -77,6 +77,7 @@ async fn handler(
     Ok(HandlerResponse {
         status_code: 200,
         headers: HashMap::from([("content-type".to_string(), "text/event-stream".to_string())]),
+        cookies: Vec::new(),
         body,
         is_base64_encoded: false,
     })

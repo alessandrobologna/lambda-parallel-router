@@ -2,6 +2,7 @@ type MaybePromise<T> = T | Promise<T>;
 export type HandlerResponse = {
     statusCode?: number;
     headers?: Record<string, string | number | boolean>;
+    cookies?: string[];
     body?: unknown;
     isBase64Encoded?: boolean;
 };
