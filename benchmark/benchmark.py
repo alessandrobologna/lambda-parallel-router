@@ -925,7 +925,15 @@ def plot_route_report(
     ax = axes[1]
     if latency_ok.empty:
         ax.set_title("Success latency (200 only)")
-        ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
+        ax.text(
+            0.5,
+            0.5,
+            "No 200 responses",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color=".5",
+        )
     else:
         metric_colors = sns.color_palette("pastel", n_colors=4)
 
@@ -998,7 +1006,16 @@ def plot_route_report(
     errors = latency_all.copy()
     errors = errors[errors["status"].fillna(0).between(400, 599)]
     if errors.empty:
-        ax.text(0.5, 0.5, "No 4xx/5xx responses", ha="center", va="center")
+        ax.set_xlim(0, data_max_elapsed if data_max_elapsed > 0 else 1.0)
+        ax.text(
+            0.5,
+            0.5,
+            "No 4xx/5xx responses",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color=".5",
+        )
         ax.set_ylim(0, 1.0)
     else:
         errors["status"] = errors["status"].astype(int)
