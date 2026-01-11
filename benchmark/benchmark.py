@@ -870,7 +870,7 @@ def plot_route_report(
     groups = ["200", "429", "4xx", "5xx", "other"]
     palette = _build_status_group_palette()
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 18))
+    fig, axes = plt.subplots(3, 1, figsize=(14, 16))
 
     # Plot 1: Scatter latency over time, colored by status group.
     ax = axes[0]
@@ -985,39 +985,78 @@ def plot_route_report(
     if not latency_ok.empty:
         ax.legend(frameon=False)
 
-    # Plot 3: Error rate over time (1s buckets).
+    # Plot 3: Error rate over time (1s buckets), broken down by status code (4xx/5xx).
     ax = axes[2]
-    rate = latency_all.copy()
-    rate["is_error"] = rate["status"].fillna(0) >= 400
-    rate = (
-        rate.set_index("timestamp")
-        .resample("1s")
-        .agg(requests=("latency_ms", "count"), errors=("is_error", "sum"))
-        .reset_index()
-    )
-    if not rate.empty:
-        rate["elapsed_seconds"] = (rate["timestamp"] - min_ts).dt.total_seconds()
-        rate["error_rate_pct"] = (rate["errors"] / rate["requests"].replace(0, pd.NA)) * 100
-        rate["error_rate_pct"] = rate["error_rate_pct"].fillna(0)
-        ax.plot(rate["elapsed_seconds"], rate["error_rate_pct"], linewidth=_DEFAULT_LINE_WIDTH)
-        ymax = float(rate["error_rate_pct"].max())
-        ax.set_ylim(0, 1.0 if ymax <= 0 else min(100.0, ymax * 1.1))
-    else:
+
+    def _format_pct(pct: float) -> str:
+        if pct >= 10:
+            return f"{pct:.0f}%"
+        if pct >= 1:
+            return f"{pct:.1f}%"
+        return f"{pct:.2f}%"
+
+    errors = latency_all.copy()
+    errors = errors[errors["status"].fillna(0).between(400, 599)]
+    if errors.empty:
+        ax.text(0.5, 0.5, "No 4xx/5xx responses", ha="center", va="center")
         ax.set_ylim(0, 1.0)
+    else:
+        errors["status"] = errors["status"].astype(int)
+
+        total_per_second = latency_all.set_index("timestamp").resample("1s").size().rename("total")
+
+        counts_per_status = (
+            errors.set_index("timestamp").groupby("status")["latency_ms"].resample("1s").count()
+        )
+        counts_per_status = (
+            counts_per_status.unstack("status").fillna(0).reindex(total_per_second.index).fillna(0)
+        )
+
+        overall_total = len(latency_all)
+        overall_counts = errors["status"].value_counts().sort_values(ascending=False)
+        overall_pct = (overall_counts / overall_total) * 100
+
+        max_series = 8
+        status_codes = overall_counts.index.tolist()
+        other_codes: list[int] = []
+        if len(status_codes) > max_series:
+            status_codes, other_codes = status_codes[: max_series - 1], status_codes[max_series - 1 :]
+
+        selected = status_codes.copy()
+        overall_pct_other = 0.0
+        if other_codes:
+            counts_per_status["other"] = counts_per_status[other_codes].sum(axis=1)
+            overall_pct_other = float(overall_pct.loc[other_codes].sum())
+            selected.append("other")
+
+        per_second_rates = counts_per_status[selected].div(total_per_second.replace(0, pd.NA), axis=0) * 100
+        per_second_rates = per_second_rates.fillna(0)
+        per_second_rates["elapsed_seconds"] = (per_second_rates.index - min_ts).total_seconds()
+
+        status_palette = sns.color_palette("pastel", n_colors=max(len(selected), 3)).as_hex()
+        for i, status in enumerate(selected):
+            if status == "other":
+                label = f"other ({_format_pct(overall_pct_other)})"
+            else:
+                pct = float(overall_pct.get(status, 0.0))
+                label = f"{status} ({_format_pct(pct)})"
+            ax.plot(
+                per_second_rates["elapsed_seconds"],
+                per_second_rates[status],
+                label=label,
+                color=status_palette[i % len(status_palette)],
+                linewidth=_DEFAULT_LINE_WIDTH,
+            )
+
+        ymax = float(per_second_rates[selected].max().max())
+        ax.set_ylim(0, 1.0 if ymax <= 0 else min(100.0, ymax * 1.1))
+        ax.legend(title="Status (overall)", frameon=False, loc="upper right")
     if show_stage_markers:
         for x in stage_ends[:-1]:
             ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
     ax.set_xlabel("Elapsed time (s)")
     ax.set_ylabel("Error rate (%)")
-    ax.set_title("Error rate over time (1s buckets)")
-
-    # Plot 4: Status group counts.
-    ax = axes[3]
-    counts = latency_all["status_group"].value_counts().reindex(groups).fillna(0).astype(int)
-    ax.bar(counts.index.tolist(), counts.values.tolist(), color=[palette[g] for g in counts.index])
-    ax.set_xlabel("Status group")
-    ax.set_ylabel("Responses")
-    ax.set_title("HTTP status distribution")
+    ax.set_title("Error rate over time (1s buckets, 4xx/5xx)")
 
     fig.suptitle(title, fontsize=14, y=1.02, color=".5")
     fig.tight_layout(rect=[0, 0.03, 1, 0.98])
