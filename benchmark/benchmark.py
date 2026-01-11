@@ -450,12 +450,13 @@ def _build_palette(keys: list[str]) -> dict[str, str]:
 
 
 def _build_status_group_palette() -> dict[str, str]:
-    # Use a low-saturation palette for status group overlays. Avoid high-chroma primary colors.
-    colors = sns.color_palette("pastel", n_colors=6).as_hex()
+    # Use the HUSL system for status group overlays so each group remains
+    # visually distinguishable in scatter plots and stacked bars.
+    colors = sns.color_palette("husl", n_colors=4).as_hex()
     return {
         "200": colors[0],
         "429": colors[1],
-        "4xx": colors[4],
+        "4xx": colors[2],
         "5xx": colors[3],
         "other": "#7f7f7f",
     }
@@ -931,7 +932,7 @@ def plot_route_report(
             color=".5",
         )
     else:
-        metric_colors = sns.color_palette("pastel", n_colors=4)
+        metric_colors = sns.color_palette("husl", n_colors=4)
 
         resampled = (
             latency_ok.set_index("timestamp")
@@ -1046,7 +1047,7 @@ def plot_route_report(
         per_second_rates = per_second_rates.fillna(0)
         per_second_rates["elapsed_seconds"] = (per_second_rates.index - min_ts).total_seconds()
 
-        status_palette = sns.color_palette("pastel", n_colors=max(len(selected), 3)).as_hex()
+        status_palette = sns.color_palette("husl", n_colors=max(len(selected), 3)).as_hex()
         for i, status in enumerate(selected):
             if status == "other":
                 label = f"other ({_format_pct(overall_pct_other)})"
