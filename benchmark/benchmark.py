@@ -443,14 +443,9 @@ def _should_show_stage_markers(stage_ends: list[float], data_max_elapsed: float)
 
 def _build_palette(keys: list[str]) -> dict[str, str]:
     n = max(len(keys), 3)
-    # Use a higher-contrast palette for compare charts so multiple routes remain
+    # Use the HUSL system for categorical comparisons so routes remain
     # visually distinguishable when plotted together.
-    if n <= 10:
-        colors = sns.color_palette("colorblind", n_colors=n, desat=0.85).as_hex()
-    elif n <= 20:
-        colors = sns.color_palette("tab20", n_colors=n).as_hex()
-    else:
-        colors = sns.husl_palette(n, s=0.55, l=0.65).as_hex()
+    colors = sns.color_palette("husl", n_colors=n).as_hex()
     return {k: colors[i % len(colors)] for i, k in enumerate(keys)}
 
 
