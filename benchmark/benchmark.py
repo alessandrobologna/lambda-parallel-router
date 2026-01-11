@@ -467,6 +467,9 @@ def _build_status_group_palette() -> dict[str, str]:
     }
 
 
+_DEFAULT_LINE_WIDTH = 1.5
+
+
 def plot_compare_report(
     latency_all: pd.DataFrame,
     latency_ok: pd.DataFrame,
@@ -511,7 +514,7 @@ def plot_compare_report(
             resampled["elapsed_seconds"],
             resampled["p50"],
             color=palette[endpoint],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
         )
 
     if show_stage_markers:
@@ -550,7 +553,7 @@ def plot_compare_report(
             resampled["elapsed_seconds"],
             resampled["p95"],
             color=palette[endpoint],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
         )
 
     if show_stage_markers:
@@ -726,7 +729,7 @@ def plot_compare_error_report(
             data["elapsed_seconds"],
             data["error_rate_pct"],
             color=palette[endpoint],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
         )
     if show_stage_markers:
         for x in stage_ends[:-1]:
@@ -761,7 +764,7 @@ def plot_compare_error_report(
             data["elapsed_seconds"],
             data["requests"],
             color=palette[endpoint],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
         )
     if show_stage_markers:
         for x in stage_ends[:-1]:
@@ -952,28 +955,28 @@ def plot_route_report(
             resampled["avg"],
             label=f"avg ({overall_avg:.1f}ms)",
             color=metric_colors[0],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["p50"],
             label=f"p50 ({overall_p50:.1f}ms)",
             color=metric_colors[1],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["p95"],
             label=f"p95 ({overall_p95:.1f}ms)",
             color=metric_colors[2],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
         )
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["max"],
             label=f"max ({overall_max:.1f}ms)",
             color=metric_colors[3],
-            linewidth=2,
+            linewidth=_DEFAULT_LINE_WIDTH,
             alpha=0.8,
         )
     if show_stage_markers:
@@ -999,7 +1002,7 @@ def plot_route_report(
         rate["elapsed_seconds"] = (rate["timestamp"] - min_ts).dt.total_seconds()
         rate["error_rate_pct"] = (rate["errors"] / rate["requests"].replace(0, pd.NA)) * 100
         rate["error_rate_pct"] = rate["error_rate_pct"].fillna(0)
-        ax.plot(rate["elapsed_seconds"], rate["error_rate_pct"], linewidth=2)
+        ax.plot(rate["elapsed_seconds"], rate["error_rate_pct"], linewidth=_DEFAULT_LINE_WIDTH)
         ymax = float(rate["error_rate_pct"].max())
         ax.set_ylim(0, 1.0 if ymax <= 0 else min(100.0, ymax * 1.1))
     else:
