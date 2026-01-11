@@ -25,7 +25,15 @@ The benchmark reads these CloudFormation outputs from the SAM stack and builds a
 - `direct-hello` (Lambda Function URL baseline)
 
 Use `--endpoint` (repeatable) to benchmark a subset. If `--endpoint` is not provided, the default
-suite excludes `streaming-adapter-sse` because it holds connections open and can skew results.
+suite runs only:
+
+- `streaming-simple`
+- `streaming-dynamic`
+- `streaming-adapter`
+- `direct-hello`
+
+Buffering routes and `streaming-adapter-sse` are excluded from the default suite. They can still be
+benchmarked by passing `--endpoint` explicitly.
 
 ## Run a full suite
 

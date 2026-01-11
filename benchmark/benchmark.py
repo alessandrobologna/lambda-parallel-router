@@ -53,12 +53,12 @@ OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
 
 # The full endpoint list includes long-lived streaming routes (SSE). Those are useful for targeted
 # testing, but they distort the default suite by holding connections open and skewing capacity.
+#
+# The default suite focuses on streaming + baseline behavior. Buffering routes are still available
+# for targeted tests, but are not included by default.
 DEFAULT_ENDPOINTS = (
-    "buffering-simple",
-    "buffering-dynamic",
     "streaming-simple",
     "streaming-dynamic",
-    "buffering-adapter",
     "streaming-adapter",
     "direct-hello",
 )
