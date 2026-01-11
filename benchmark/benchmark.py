@@ -1349,6 +1349,12 @@ def main(
             )
         selection = set(selected_endpoints)
         endpoint_order = [e for e in endpoint_order if e in selection]
+    elif report_mode in {"compare", "suite"}:
+        # When regenerating charts from a CSV, default to the same endpoint set that would be used
+        # when running a fresh suite (unless the user explicitly selects endpoints).
+        default_suite = [e for e in DEFAULT_ENDPOINTS if e in endpoints_in_csv]
+        if default_suite:
+            endpoint_order = default_suite
 
     if report_mode == "auto":
         report_mode = "route" if len(endpoint_order) == 1 else "suite"
