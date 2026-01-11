@@ -524,6 +524,14 @@ def _expand_router_service(
             },
         },
         "InstanceConfiguration": instance_cfg_final,
+        "HealthCheckConfiguration": {
+            "Protocol": "HTTP",
+            "Path": "/readyz",
+            "Interval": 5,
+            "Timeout": 2,
+            "HealthyThreshold": 1,
+            "UnhealthyThreshold": 1,
+        },
     }
 
     if service_name is not None:

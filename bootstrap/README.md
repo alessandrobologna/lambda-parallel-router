@@ -65,6 +65,7 @@ Router:
 Notes:
 - `PORT` is a reserved App Runner environment variable name. It can't be set in `Environment` or `EnvironmentSecrets`.
 - If `ImageIdentifier` is omitted (or empty), the macro uses the default router image configured by the bootstrap stack.
+- The macro configures the App Runner health check to use HTTP `GET /readyz`.
 - X-Ray tracing requires application instrumentation and X-Ray permissions on the instance role.
 
 ### Return values

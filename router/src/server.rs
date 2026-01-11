@@ -6,7 +6,10 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -46,6 +49,7 @@ struct AppState {
     spec: Arc<CompiledSpec>,
     batchers: BatcherManager,
     inflight_requests: Arc<Semaphore>,
+    ready: Arc<AtomicBool>,
     max_body_bytes: usize,
     forward_headers: HeaderForwardPolicy,
     otel_enabled: bool,
@@ -217,9 +221,17 @@ fn start_request_span(
 fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(|| async { "ok" }))
+        .route("/readyz", get(readyz))
         .fallback(handle_any)
         .with_state(state)
+}
+
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    if state.ready.load(Ordering::Relaxed) {
+        "ok".into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready").into_response()
+    }
 }
 
 struct PermitStream<S> {
@@ -258,21 +270,23 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec, otel_enabled: bool) -> a
         spec: Arc::new(spec),
         batchers,
         inflight_requests: Arc::new(Semaphore::new(cfg.max_inflight_requests)),
+        ready: Arc::new(AtomicBool::new(true)),
         max_body_bytes: cfg.max_body_bytes,
         forward_headers,
         otel_enabled,
     };
 
+    let ready = state.ready.clone();
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(ready, Duration::from_secs(10)))
         .await?;
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(ready: Arc<AtomicBool>, drain_delay: Duration) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -301,12 +315,29 @@ async fn shutdown_signal() {
                 tracing::info!(signal = "SIGINT", "shutdown signal received");
             }
         }
+
+        ready.store(false, Ordering::Relaxed);
+        if !drain_delay.is_zero() {
+            tracing::info!(
+                drain_delay_ms = drain_delay.as_millis(),
+                "marking /readyz unhealthy before shutdown"
+            );
+            tokio::time::sleep(drain_delay).await;
+        }
     }
 
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!("shutdown signal received");
+        ready.store(false, Ordering::Relaxed);
+        if !drain_delay.is_zero() {
+            tracing::info!(
+                drain_delay_ms = drain_delay.as_millis(),
+                "marking /readyz unhealthy before shutdown"
+            );
+            tokio::time::sleep(drain_delay).await;
+        }
     }
 }
 
@@ -901,6 +932,7 @@ paths:
             spec: Arc::new(spec),
             batchers,
             inflight_requests: Arc::new(Semaphore::new(1024)),
+            ready: Arc::new(AtomicBool::new(true)),
             max_body_bytes,
             forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
                 .unwrap(),
@@ -938,6 +970,7 @@ paths:
             spec: Arc::new(spec),
             batchers,
             inflight_requests: Arc::new(Semaphore::new(1024)),
+            ready: Arc::new(AtomicBool::new(true)),
             max_body_bytes,
             forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
             otel_enabled: false,
@@ -957,6 +990,27 @@ paths: {}
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_works() {
+        let app = build_app(test_state(
+            br#"
+paths: {}
+"#,
+            1024,
+        ));
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1179,6 +1233,7 @@ paths:
             spec: Arc::new(spec),
             batchers,
             inflight_requests: Arc::new(Semaphore::new(1)),
+            ready: Arc::new(AtomicBool::new(true)),
             max_body_bytes: 1024,
             forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
                 .unwrap(),

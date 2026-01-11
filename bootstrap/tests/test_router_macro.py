@@ -178,6 +178,12 @@ class RouterMacroTests(unittest.TestCase):
         self.assertEqual(env_map["RUST_LOG"], "debug")
         self.assertIn("LPR_CONFIG_URI", env_map)
 
+        health = resources["Router"]["Properties"]["HealthCheckConfiguration"]
+        self.assertEqual(health["Protocol"], "HTTP")
+        self.assertEqual(health["Path"], "/readyz")
+        self.assertEqual(health["HealthyThreshold"], 1)
+        self.assertEqual(health["UnhealthyThreshold"], 1)
+
     def test_allows_instance_role_override(self) -> None:
         event = {
             "requestId": "req-2",
