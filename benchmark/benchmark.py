@@ -442,8 +442,29 @@ def _should_show_stage_markers(stage_ends: list[float], data_max_elapsed: float)
 
 
 def _build_palette(keys: list[str]) -> dict[str, str]:
-    colors = sns.color_palette("tab10", n_colors=max(len(keys), 3)).as_hex()
+    n = max(len(keys), 3)
+    # Prefer a subtle qualitative palette for category comparisons. Fall back to a generated palette
+    # when the number of categories exceeds the ColorBrewer limits.
+    if n <= 8:
+        colors = sns.color_palette("Set2", n_colors=n).as_hex()
+    elif n <= 10:
+        colors = sns.color_palette("colorblind", n_colors=n).as_hex()
+    else:
+        colors = sns.husl_palette(n, s=0.55, l=0.65).as_hex()
     return {k: colors[i % len(colors)] for i, k in enumerate(keys)}
+
+
+def _build_status_group_palette() -> dict[str, str]:
+    # Use a low-saturation palette for status group overlays. Avoid high-chroma primary colors.
+    colors = sns.color_palette("muted", n_colors=6).as_hex()
+    # muted palette order (as of seaborn): blue, orange, green, red, purple, brown
+    return {
+        "200": colors[0],
+        "429": colors[1],
+        "4xx": colors[4],
+        "5xx": colors[3],
+        "other": "#7f7f7f",
+    }
 
 
 def plot_compare_report(
@@ -650,13 +671,7 @@ def plot_compare_error_report(
         return "other"
 
     groups = ["200", "429", "4xx", "5xx", "other"]
-    group_palette = {
-        "200": "#2ca02c",
-        "429": "#ff7f0e",
-        "4xx": "#9467bd",
-        "5xx": "#d62728",
-        "other": "#7f7f7f",
-    }
+    group_palette = _build_status_group_palette()
 
     per_second_parts: list[pd.DataFrame] = []
     for endpoint in endpoints:
@@ -853,13 +868,7 @@ def plot_route_report(
 
     latency_all["status_group"] = latency_all["status"].apply(status_group)
     groups = ["200", "429", "4xx", "5xx", "other"]
-    palette = {
-        "200": "#2ca02c",
-        "429": "#ff7f0e",
-        "4xx": "#9467bd",
-        "5xx": "#d62728",
-        "other": "#7f7f7f",
-    }
+    palette = _build_status_group_palette()
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
@@ -918,7 +927,7 @@ def plot_route_report(
         ax.set_title("Success latency (200 only)")
         ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
     else:
-        metric_colors = sns.color_palette("tab10", n_colors=4)
+        metric_colors = sns.color_palette("muted", n_colors=4)
 
         resampled = (
             latency_ok.set_index("timestamp")
