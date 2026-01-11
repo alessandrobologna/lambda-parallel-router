@@ -443,21 +443,19 @@ def _should_show_stage_markers(stage_ends: list[float], data_max_elapsed: float)
 
 def _build_palette(keys: list[str]) -> dict[str, str]:
     n = max(len(keys), 3)
-    # Prefer a subtle qualitative palette for category comparisons. Fall back to a generated palette
-    # when the number of categories exceeds the ColorBrewer limits.
+    # Prefer a light, low-saturation qualitative palette for category comparisons.
     if n <= 8:
-        colors = sns.color_palette("Set2", n_colors=n).as_hex()
-    elif n <= 10:
-        colors = sns.color_palette("colorblind", n_colors=n).as_hex()
+        colors = sns.color_palette("Pastel2", n_colors=n).as_hex()
+    elif n <= 9:
+        colors = sns.color_palette("Pastel1", n_colors=n).as_hex()
     else:
-        colors = sns.husl_palette(n, s=0.55, l=0.65).as_hex()
+        colors = sns.husl_palette(n, s=0.35, l=0.80).as_hex()
     return {k: colors[i % len(colors)] for i, k in enumerate(keys)}
 
 
 def _build_status_group_palette() -> dict[str, str]:
     # Use a low-saturation palette for status group overlays. Avoid high-chroma primary colors.
-    colors = sns.color_palette("muted", n_colors=6).as_hex()
-    # muted palette order (as of seaborn): blue, orange, green, red, purple, brown
+    colors = sns.color_palette("pastel", n_colors=6).as_hex()
     return {
         "200": colors[0],
         "429": colors[1],
@@ -466,8 +464,7 @@ def _build_status_group_palette() -> dict[str, str]:
         "other": "#7f7f7f",
     }
 
-
-_DEFAULT_LINE_WIDTH = 1.5
+_DEFAULT_LINE_WIDTH = 1.0
 
 
 def plot_compare_report(
@@ -499,10 +496,10 @@ def plot_compare_report(
     show_stage_markers = _should_show_stage_markers(stage_ends, data_max_elapsed)
     target_unit = "rps" if executor == "ramping-arrival-rate" else "vus"
 
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    fig, axes = plt.subplots(4, 1, figsize=(16, 18))
 
     # Plot 1: p50 success latency over time.
-    ax = axes[0, 0]
+    ax = axes[0]
     for endpoint in endpoints:
         data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
         if data.empty:
@@ -541,7 +538,7 @@ def plot_compare_report(
     ax.set_title("Success latency p50 (1s buckets, 200 only)")
 
     # Plot 2: p95 success latency over time.
-    ax = axes[0, 1]
+    ax = axes[1]
     for endpoint in endpoints:
         data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
         if data.empty:
@@ -565,7 +562,7 @@ def plot_compare_report(
     ax.set_title("Success latency p95 (1s buckets, 200 only)")
 
     # Plot 3: Success latency distribution (box plot).
-    ax = axes[1, 0]
+    ax = axes[2]
     if latency_ok.empty:
         ax.set_title("Success latency distribution (200 only)")
         ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
@@ -600,7 +597,7 @@ def plot_compare_report(
         ax.tick_params(axis="x", rotation=20)
 
     # Plot 4: Latency percentiles (heatmap, 200 only).
-    ax = axes[1, 1]
+    ax = axes[3]
     percentiles = stats_ok.reindex(endpoints)[["p50", "p95", "p99"]]
     if percentiles.empty or percentiles.dropna(how="all").empty:
         ax.set_title("Latency percentiles (ms, 200 only)")
@@ -629,7 +626,7 @@ def plot_compare_report(
         bbox_to_anchor=(0.5, 0.01),
         frameon=False,
     )
-    fig.tight_layout(rect=[0, 0.08, 1, 0.98])
+    fig.tight_layout(rect=[0, 0.06, 1, 0.98])
     fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -715,10 +712,10 @@ def plot_compare_error_report(
         }
     ).fillna(0.0)
 
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    fig, axes = plt.subplots(4, 1, figsize=(16, 18))
 
     # Plot 1: Error rate over time (1s buckets).
-    ax = axes[0, 0]
+    ax = axes[0]
     max_error_rate = 0.0
     for endpoint in endpoints:
         data = per_second[per_second["endpoint"] == endpoint]
@@ -755,7 +752,7 @@ def plot_compare_error_report(
     ax.set_ylim(0, 1.0 if max_error_rate <= 0 else min(100.0, max_error_rate * 1.1))
 
     # Plot 2: Request rate over time (1s buckets).
-    ax = axes[0, 1]
+    ax = axes[1]
     for endpoint in endpoints:
         data = per_second[per_second["endpoint"] == endpoint]
         if data.empty:
@@ -774,7 +771,7 @@ def plot_compare_error_report(
     ax.set_title("Request rate over time (1s buckets)")
 
     # Plot 3: Status distribution (stacked bar chart).
-    ax = axes[1, 0]
+    ax = axes[2]
     bottom = None
     for group in groups:
         values = dist[group].tolist() if group in dist.columns else [0] * len(endpoints)
@@ -793,7 +790,7 @@ def plot_compare_error_report(
     ax.legend(title="Status group", frameon=False, ncol=len(groups), loc="upper center")
 
     # Plot 4: Error rate table (heatmap).
-    ax = axes[1, 1]
+    ax = axes[3]
     if rate_table.empty:
         ax.set_title("HTTP error rates (%)")
         ax.text(0.5, 0.5, "No data", ha="center", va="center")
@@ -821,7 +818,7 @@ def plot_compare_error_report(
         bbox_to_anchor=(0.5, 0.01),
         frameon=False,
     )
-    fig.tight_layout(rect=[0, 0.08, 1, 0.98])
+    fig.tight_layout(rect=[0, 0.06, 1, 0.98])
     fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -873,10 +870,10 @@ def plot_route_report(
     groups = ["200", "429", "4xx", "5xx", "other"]
     palette = _build_status_group_palette()
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(4, 1, figsize=(14, 18))
 
     # Plot 1: Scatter latency over time, colored by status group.
-    ax = axes[0, 0]
+    ax = axes[0]
     max_points_by_group = {
         "200": 50_000,
         "429": 20_000,
@@ -925,12 +922,12 @@ def plot_route_report(
     ax.legend(title="HTTP status", frameon=False, loc="upper right")
 
     # Plot 2: Success latency (1s buckets, 200 only): avg / p50 / p95 / max.
-    ax = axes[0, 1]
+    ax = axes[1]
     if latency_ok.empty:
         ax.set_title("Success latency (200 only)")
         ax.text(0.5, 0.5, "No 200 responses", ha="center", va="center")
     else:
-        metric_colors = sns.color_palette("muted", n_colors=4)
+        metric_colors = sns.color_palette("pastel", n_colors=4)
 
         resampled = (
             latency_ok.set_index("timestamp")
@@ -989,7 +986,7 @@ def plot_route_report(
         ax.legend(frameon=False)
 
     # Plot 3: Error rate over time (1s buckets).
-    ax = axes[1, 0]
+    ax = axes[2]
     rate = latency_all.copy()
     rate["is_error"] = rate["status"].fillna(0) >= 400
     rate = (
@@ -1015,7 +1012,7 @@ def plot_route_report(
     ax.set_title("Error rate over time (1s buckets)")
 
     # Plot 4: Status group counts.
-    ax = axes[1, 1]
+    ax = axes[3]
     counts = latency_all["status_group"].value_counts().reindex(groups).fillna(0).astype(int)
     ax.bar(counts.index.tolist(), counts.values.tolist(), color=[palette[g] for g in counts.index])
     ax.set_xlabel("Status group")
