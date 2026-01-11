@@ -388,7 +388,7 @@ impl<H> BatchAdapter<H> {
 
         BatchResponse {
             v: 1,
-            responses: out.into_iter().filter_map(|x| x).collect(),
+            responses: out.into_iter().flatten().collect(),
         }
     }
 }

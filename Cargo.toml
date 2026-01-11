@@ -2,5 +2,6 @@
 members = [
   "router",
   "lambda-kit/adapter-rust",
+  "lambda-kit/layer-proxy",
 ]
 resolver = "2"

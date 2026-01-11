@@ -14,6 +14,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Layer build artifacts
+/lambda-kit/layer-proxy/dist/
+
 # Python
 __pycache__/
 *.py[cod]
