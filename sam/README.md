@@ -2,7 +2,7 @@
 
 This folder contains an AWS SAM template that deploys:
 
-- Seven sample Lambda functions that implement the router batch contract:
+- Nine sample Lambda functions that implement the router batch contract:
   - buffering/simple (`/buffering/simple/{greeting}`)
   - buffering/dynamic (`/buffering/dynamic/{greeting}`)
   - streaming/simple (`/streaming/simple/{greeting}`)
@@ -10,6 +10,8 @@ This folder contains an AWS SAM template that deploys:
   - buffering/adapter (`/buffering/adapter/{greeting}`)
   - streaming/adapter (`/streaming/adapter/{greeting}`)
   - streaming/adapter SSE (`/streaming/adapter/sse`)
+  - streaming/mode-a/python (`/streaming/mode-a/python/{greeting}`)
+  - streaming/mode-a/node (`/streaming/mode-a/node/{greeting}`)
 - An App Runner service that runs the router container (ECR image)
 
 The router service definition is intentionally concise and is expanded by the `LprRouter`
@@ -73,6 +75,8 @@ The `{greeting}` path parameter can be any string. The examples below use `hello
 - Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=250`
 - Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=250`
 - Streaming adapter SSE: `GET {RouterServiceUrl}/streaming/adapter/sse?max-delay=250`
+- Mode A Python: `GET {RouterServiceUrl}/streaming/mode-a/python/hello?max-delay=250`
+- Mode A Node: `GET {RouterServiceUrl}/streaming/mode-a/node/hello?max-delay=250`
 - Direct (Lambda Function URL): `GET {DirectHelloUrl}?max-delay=250`
 
 ## Load testing (k6)

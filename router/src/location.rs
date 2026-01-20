@@ -83,8 +83,8 @@ mod tests {
     #[test]
     fn parse_file_path() {
         assert_eq!(
-            DocumentLocation::parse("examples/router.yaml").unwrap(),
-            DocumentLocation::File(PathBuf::from("examples/router.yaml"))
+            DocumentLocation::parse("examples/local/router.yaml").unwrap(),
+            DocumentLocation::File(PathBuf::from("examples/local/router.yaml"))
         );
     }
 

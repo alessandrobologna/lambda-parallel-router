@@ -9,7 +9,6 @@ region = "us-east-1"
 [default.build.parameters]
 cached = true
 parallel = true
-template_file = "sam/template.yaml"
 
 [default.deploy.parameters]
 capabilities = "CAPABILITY_IAM"
@@ -19,7 +18,6 @@ resolve_s3 = true
 s3_prefix = "lambda-parallel-router-demo"
 region = "us-east-1"
 beta_features = true
-template_file = ".aws-sam/build/template.yaml"
 parameter_overrides = "OtelHeadersSecretArn=arn:aws:secretsmanager:us-east-1:961341555982:secret:otel-header-AjUDyF"
 
 [default.sync.parameters]

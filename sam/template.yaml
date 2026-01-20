@@ -36,6 +36,18 @@ Resources:
   # ------------------------------
   # Sample Lambda functions
   # ------------------------------
+  LprRuntimeApiProxyLayerAmd64:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: x86_64
+    Properties:
+      RetentionPolicy: Retain
+      LayerName: !Sub "${AWS::StackName}-lpr-runtime-api-proxy-amd64"
+      ContentUri: ../lambda-kit/layer-proxy
+      CompatibleArchitectures:
+        - x86_64
+
   SampleBufferingSimpleHelloFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -178,6 +190,44 @@ Resources:
       Principal: "*"
       FunctionUrlAuthType: NONE
 
+  SampleStreamingModeALayerProxyPythonHelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.14
+      CodeUri: lambda/streaming-mode-a-layer-proxy-python/
+      FunctionName: !Sub '${AWS::StackName}-layer-proxy-python-hello'
+      Description: Demo handler (streaming, Mode A, layer proxy, Python).
+      Architectures:
+        - x86_64
+      Layers:
+        - !Ref LprRuntimeApiProxyLayerAmd64
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/lpr/exec-wrapper.sh
+
+  SampleStreamingModeALayerProxyNodeHelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/streaming-mode-a-layer-proxy-node/
+      FunctionName: !Sub '${AWS::StackName}-layer-proxy-node-hello'
+      Description: Demo handler (streaming, Mode A, layer proxy, Node).
+      Architectures:
+        - x86_64
+      Layers:
+        - !Ref LprRuntimeApiProxyLayerAmd64
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/lpr/exec-wrapper.sh
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - app.ts
+        Format: cjs
+        Minify: false
+        Sourcemap: false
+        Target: es2020
+
   # ------------------------------
   # Router service (expanded by the LprRouter macro)
   # ------------------------------
@@ -277,6 +327,22 @@ Resources:
                 maxBatchSize: 4
                 invokeMode: response_stream
                 timeoutMs: 8000
+          /streaming/mode-a/python/{greeting}:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingModeALayerProxyPythonHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
+          /streaming/mode-a/node/{greeting}:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingModeALayerProxyNodeHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
 
 Outputs:
   SampleBufferingSimpleHelloFunctionArn:
@@ -299,6 +365,12 @@ Outputs:
 
   SampleStreamingAdapterSseFunctionArn:
     Value: !GetAtt SampleStreamingAdapterSseFunction.Arn
+
+  SampleStreamingModeALayerProxyPythonHelloFunctionArn:
+    Value: !GetAtt SampleStreamingModeALayerProxyPythonHelloFunction.Arn
+
+  SampleStreamingModeALayerProxyNodeHelloFunctionArn:
+    Value: !GetAtt SampleStreamingModeALayerProxyNodeHelloFunction.Arn
 
   DirectHelloFunctionArn:
     Value: !GetAtt DirectHelloFunction.Arn
@@ -332,3 +404,9 @@ Outputs:
 
   StreamingAdapterSseUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/sse"
+
+  StreamingModeALayerProxyPythonHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/python/hello"
+
+  StreamingModeALayerProxyNodeHelloUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/node/hello"

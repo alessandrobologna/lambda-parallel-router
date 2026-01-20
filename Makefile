@@ -101,11 +101,11 @@ image-push: ecr-template ecr-login image-build
 
 .PHONY: sam-build
 sam-build:
-	sam build --config-file sam/samconfig.toml --config-env default
+	cd sam && sam build
 
 .PHONY: sam-deploy
 sam-deploy: sam-build
-	sam deploy --config-file sam/samconfig.toml --config-env default
+	cd sam && sam deploy
 
 .PHONY: bootstrap-deploy
 bootstrap-deploy: check

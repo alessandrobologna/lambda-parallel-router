@@ -40,7 +40,7 @@ spec. Keys follow these conventions:
 - `RouterConfig` keys: **PascalCase** (CloudFormation-friendly)
 - `x-lpr` keys: **camelCase**
 
-Example (`examples/router.yaml`):
+Example (`examples/local/router.yaml`):
 
 ```yaml
 ListenAddr: "127.0.0.1:3000"
@@ -78,11 +78,12 @@ Notes:
 ## Local dev (router)
 
 1) Create a router config manifest.
-   - `examples/router.yaml` is a starting point.
+   - `examples/local/router.yaml` is a starting point.
+   - `examples/local/README.md` describes local setup.
 2) Run:
 
 ```bash
-cargo run -p lpr-router -- --config examples/router.yaml
+cargo run -p lpr-router -- --config examples/local/router.yaml
 ```
 
 ## Deployment
