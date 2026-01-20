@@ -26,3 +26,7 @@ __pycache__/
 
 # Benchmark output
 benchmark-results/
+
+# Codex session history
+/.waylog/
+/.waylog-journal/
