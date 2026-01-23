@@ -12,6 +12,38 @@ type ApiGatewayV2Event = {
   isBase64Encoded?: boolean;
 };
 
+type DdbDeps = { client: any; GetItemCommand: any };
+
+let ddbDeps: Promise<DdbDeps> | null = null;
+
+function getDdbDeps(): Promise<DdbDeps> {
+  if (!ddbDeps) {
+    ddbDeps = import("@aws-sdk/client-dynamodb").then((mod) => ({
+      client: new mod.DynamoDBClient({}),
+      GetItemCommand: mod.GetItemCommand,
+    }));
+  }
+  return ddbDeps;
+}
+
+async function getItemPayload(pk: string): Promise<string | null> {
+  const tableName = process.env.BENCHMARK_TABLE_NAME;
+  if (!tableName) return null;
+
+  const { client, GetItemCommand } = await getDdbDeps();
+  const res = await client.send(
+    new GetItemCommand({
+      TableName: tableName,
+      Key: { pk: { S: pk } },
+      ProjectionExpression: "#payload",
+      ExpressionAttributeNames: { "#payload": "payload" },
+    }),
+  );
+
+  const payload = res?.Item?.payload?.S;
+  return typeof payload === "string" ? payload : null;
+}
+
 function sleep(ms: number): Promise<void> {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return Promise.resolve();
@@ -40,17 +72,24 @@ export const handler = batchAdapter(async (event: ApiGatewayV2Event) => {
   const delayMs = maxDelayMs ? Math.floor(Math.random() * (maxDelayMs + 1)) : 0;
   await sleep(delayMs);
 
+  const itemKey = event?.pathParameters?.id ?? event?.pathParameters?.greeting ?? "";
+  const greeting = itemKey;
+  const payload = itemKey ? await getItemPayload(itemKey) : null;
+
   const out = {
     ok: true,
     id: event?.requestContext?.requestId ?? "",
     method: event?.requestContext?.http?.method ?? "",
-    greeting: event?.pathParameters?.greeting ?? "",
+    greeting,
     path: event?.rawPath ?? "",
     routeKey: event?.routeKey ?? event?.requestContext?.routeKey ?? "",
     query: event?.queryStringParameters ?? {},
     pathParameters: event?.pathParameters ?? {},
     maxDelayMs,
     delayMs,
+    itemKey,
+    itemFound: payload != null,
+    payload,
     bodyUtf8: decodeBody(event),
   };
 

@@ -53,6 +53,7 @@ struct AppState {
     max_body_bytes: usize,
     forward_headers: HeaderForwardPolicy,
     otel_enabled: bool,
+    batch_size_header: Option<http::HeaderName>,
 }
 
 #[derive(Clone)]
@@ -274,6 +275,7 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec, otel_enabled: bool) -> a
         max_body_bytes: cfg.max_body_bytes,
         forward_headers,
         otel_enabled,
+        batch_size_header: batch_size_header_from_env()?,
     };
 
     let ready = state.ready.clone();
@@ -284,6 +286,22 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec, otel_enabled: bool) -> a
         .with_graceful_shutdown(shutdown_signal(ready, Duration::from_secs(10)))
         .await?;
     Ok(())
+}
+
+fn batch_size_header_from_env() -> anyhow::Result<Option<http::HeaderName>> {
+    let enabled = match std::env::var("LPR_INCLUDE_BATCH_SIZE_HEADER") {
+        Ok(v) => {
+            let v = v.trim();
+            !v.is_empty() && !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")
+        }
+        Err(_) => false,
+    };
+
+    if enabled {
+        Ok(Some(http::HeaderName::from_static("x-lpr-batch-size")))
+    } else {
+        Ok(None)
+    }
 }
 
 async fn shutdown_signal(ready: Arc<AtomicBool>, drain_delay: Duration) {
@@ -644,6 +662,12 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
     let mut res = res;
     res.extensions_mut().remove::<RouterResponseMeta>();
 
+    if let (Some(meta), Some(header_name)) = (meta.as_ref(), state.batch_size_header.as_ref()) {
+        if let Ok(value) = http::HeaderValue::from_str(&meta.batch_size.to_string()) {
+            res.headers_mut().insert(header_name.clone(), value);
+        }
+    }
+
     if let Some(cx) = request_cx {
         if let Some(meta) = meta {
             let batch_size = i64::try_from(meta.batch_size).unwrap_or(i64::MAX);
@@ -802,6 +826,36 @@ paths:
         assert_eq!(get_attr("lpr.invoke.mode").unwrap().as_str(), "buffered");
     }
 
+    #[tokio::test]
+    async fn batch_size_header_is_set_when_enabled() {
+        let mut state = test_state(
+            br#"
+paths:
+  /hello/{id}:
+    get:
+      x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
+      x-lpr: { maxWaitMs: 0, maxBatchSize: 4, timeoutMs: 1000 }
+"#,
+            1024,
+        );
+        state.batch_size_header = Some(http::HeaderName::from_static("x-lpr-batch-size"));
+        let app = build_app(state);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/hello/123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get("x-lpr-batch-size").unwrap(), "1");
+    }
+
     struct TestInvoker;
 
     #[async_trait]
@@ -937,6 +991,7 @@ paths:
             forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
                 .unwrap(),
             otel_enabled: false,
+            batch_size_header: None,
         }
     }
 
@@ -974,6 +1029,7 @@ paths:
             max_body_bytes,
             forward_headers: HeaderForwardPolicy::try_from_cfg(&forward_headers).unwrap(),
             otel_enabled: false,
+            batch_size_header: None,
         })
     }
 
@@ -1229,16 +1285,17 @@ paths:
             },
         );
 
-        let app = build_app(AppState {
-            spec: Arc::new(spec),
-            batchers,
-            inflight_requests: Arc::new(Semaphore::new(1)),
-            ready: Arc::new(AtomicBool::new(true)),
-            max_body_bytes: 1024,
-            forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
-                .unwrap(),
-            otel_enabled: false,
-        });
+	        let app = build_app(AppState {
+	            spec: Arc::new(spec),
+	            batchers,
+	            inflight_requests: Arc::new(Semaphore::new(1)),
+	            ready: Arc::new(AtomicBool::new(true)),
+	            max_body_bytes: 1024,
+	            forward_headers: HeaderForwardPolicy::try_from_cfg(&ForwardHeadersConfig::default())
+	                .unwrap(),
+	            otel_enabled: false,
+	            batch_size_header: None,
+	        });
 
         let app1 = app.clone();
         let request1 = tokio::spawn(async move {

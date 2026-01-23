@@ -1,14 +1,14 @@
 #!/usr/bin/env -S uv run
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["boto3>=1.40", "click>=8.1", "matplotlib>=3.8", "pandas>=2.2", "seaborn>=0.13"]
+# dependencies = ["boto3>=1.40", "click>=8.1", "Faker>=25", "matplotlib>=3.8", "pandas>=2.2", "seaborn>=0.13"]
 # ///
 """
 Run k6 load tests against the App Runner demo routes and plot results.
 
 Example:
   uv run benchmark/benchmark.py --stack lambda-parallel-router-demo --region us-east-1 \
-    --ramp-duration 3m --hold-duration 30s --stage-targets 50,100,150 --max-delay-ms 250
+    --ramp-duration 3m --hold-duration 30s --stage-targets 50,100,150 --max-delay-ms 0
 
 Rebuild charts for an existing run directory:
   uv run benchmark/benchmark.py --skip-test --run-dir benchmark-results/run-20260106-100439
@@ -19,14 +19,39 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import sys
+import time
+import warnings
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 import boto3
 import click
+
+# In some environments (e.g. sandboxes), the default user cache dirs are not writable.
+# Ensure Matplotlib + Fontconfig can create caches by defaulting to a temp directory.
+_cache_root = os.environ.get("XDG_CACHE_HOME")
+if not _cache_root:
+    _cache_root_path = Path(tempfile.gettempdir()) / "lpr-benchmark-cache"
+    _cache_root_path.mkdir(parents=True, exist_ok=True)
+    os.environ["XDG_CACHE_HOME"] = str(_cache_root_path)
+
+_mpl_config_dir = os.environ.get("MPLCONFIGDIR")
+if not _mpl_config_dir:
+    _mpl_config_path = Path(os.environ["XDG_CACHE_HOME"]) / "matplotlib"
+    _mpl_config_path.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(_mpl_config_path)
+
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from faker import Faker
 from matplotlib.cbook import boxplot_stats
 from matplotlib.patches import Patch
 
@@ -43,13 +68,29 @@ OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
     "buffering-dynamic": "BufferingDynamicHelloUrl",
     "streaming-simple": "StreamingSimpleHelloUrl",
     "streaming-dynamic": "StreamingDynamicHelloUrl",
+    # Router endpoints (DynamoDB workload)
+    "buffering-simple-item": "BufferingSimpleItemUrl",
+    "buffering-dynamic-item": "BufferingDynamicItemUrl",
+    "streaming-simple-item": "StreamingSimpleItemUrl",
+    "streaming-dynamic-item": "StreamingDynamicItemUrl",
     # Adapter examples
     "buffering-adapter": "BufferingAdapterHelloUrl",
     "streaming-adapter": "StreamingAdapterHelloUrl",
     "streaming-adapter-sse": "StreamingAdapterSseUrl",
+    # Adapter examples (DynamoDB workload)
+    "buffering-adapter-item": "BufferingAdapterItemUrl",
+    "streaming-adapter-item": "StreamingAdapterItemUrl",
+    # Mode A (Runtime API proxy via layer/exec wrapper)
+    "streaming-mode-a-node": "StreamingModeALayerProxyNodeHelloUrl",
+    # Mode A (DynamoDB workload)
+    "streaming-mode-a-python-item": "StreamingModeALayerProxyPythonItemUrl",
+    "streaming-mode-a-node-item": "StreamingModeALayerProxyNodeItemUrl",
     # Direct (Function URL) endpoint for baseline comparison
     "direct-hello": "DirectHelloUrl",
+    "direct-item": "DirectItemUrl",
 }
+
+BENCHMARK_TABLE_OUTPUT_KEY = "BenchmarkItemsTableName"
 
 # The full endpoint list includes long-lived streaming routes (SSE). Those are useful for targeted
 # testing, but they distort the default suite by holding connections open and skewing capacity.
@@ -57,10 +98,11 @@ OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
 # The default suite focuses on streaming + baseline behavior. Buffering routes are still available
 # for targeted tests, but are not included by default.
 DEFAULT_ENDPOINTS = (
-    "streaming-simple",
-    "streaming-dynamic",
-    "streaming-adapter",
-    "direct-hello",
+    "streaming-simple-item",
+    "streaming-dynamic-item",
+    "streaming-adapter-item",
+    "streaming-mode-a-node-item",
+    "direct-item",
 )
 DEFAULT_REPORT = "auto"
 
@@ -296,6 +338,7 @@ def run_k6_test(
     mode: str,
     executor: str,
     max_delay_ms: int,
+    keyspace_size: int,
     ramp_duration: str,
     vus: int,
     arrival_time_unit: str,
@@ -310,6 +353,7 @@ def run_k6_test(
     env["MODE"] = mode
     env["EXECUTOR"] = executor
     env["MAX_DELAY_MS"] = str(max_delay_ms)
+    env["KEYSPACE_SIZE"] = str(keyspace_size)
     env["DURATION"] = ramp_duration
     env["VUS"] = str(vus)
     env["ARRIVAL_TIME_UNIT"] = arrival_time_unit
@@ -328,18 +372,117 @@ def run_k6_test(
         str(Path(__file__).with_name("loadtest.js")),
     ]
 
-    print(f"Running: {' '.join(cmd)}")
-    print(f"  MODE={mode} EXECUTOR={executor}")
-    print(f"  STAGES={json.dumps(stages)}")
-    print(f"  MAX_DELAY_MS={max_delay_ms}")
+    print(f"Running: {' '.join(cmd)}", flush=True)
+    print(f"  MODE={mode} EXECUTOR={executor}", flush=True)
+    print(f"  STAGES={json.dumps(stages)}", flush=True)
+    print(f"  MAX_DELAY_MS={max_delay_ms}", flush=True)
     for target in targets:
-        print(f"  TARGET={target['name']} ({target['url']})")
+        print(f"  TARGET={target['name']} ({target['url']})", flush=True)
 
+    sys.stdout.flush()
     result = subprocess.run(cmd, env=env)
     if result.returncode != 0 and result.returncode != 99:
         raise RuntimeError(f"k6 failed with return code {result.returncode}")
     if result.returncode == 99:
-        print("Warning: k6 thresholds were crossed (test still completed)")
+        print("Warning: k6 thresholds were crossed (test still completed)", flush=True)
+
+
+def seed_benchmark_table(
+    table_name: str,
+    *,
+    region: str | None,
+    keyspace_size: int,
+    ttl_hours: int,
+    payload_bytes: int,
+) -> None:
+    if keyspace_size <= 0:
+        raise ValueError("keyspace_size must be > 0")
+    if ttl_hours <= 0:
+        raise ValueError("ttl_hours must be > 0")
+    if payload_bytes < 0:
+        raise ValueError("payload_bytes must be >= 0")
+
+    fake = Faker()
+    expires_at = int(time.time()) + ttl_hours * 3600
+
+    dynamodb = boto3.resource("dynamodb", region_name=region) if region else boto3.resource("dynamodb")
+    table = dynamodb.Table(table_name)
+
+    def build_payload(pk: str) -> str:
+        payload_obj: dict[str, object] = {
+            "v": 1,
+            "pk": pk,
+            "name": fake.name(),
+            "email": fake.email(),
+            "message": fake.sentence(nb_words=12),
+            "generatedAt": int(time.time()),
+        }
+        raw = json.dumps(payload_obj, separators=(",", ":"))
+        if payload_bytes > 0 and len(raw) < payload_bytes:
+            payload_obj["pad"] = "x" * (payload_bytes - len(raw))
+            raw = json.dumps(payload_obj, separators=(",", ":"))
+        return raw
+
+    started = time.time()
+    with table.batch_writer(overwrite_by_pkeys=["pk"]) as batch:
+        for i in range(keyspace_size):
+            pk = str(i)
+            batch.put_item(Item={"pk": pk, "payload": build_payload(pk), "expiresAt": expires_at})
+
+        # Keep an easy manual test key for default demo URLs.
+        batch.put_item(Item={"pk": "hello", "payload": build_payload("hello"), "expiresAt": expires_at})
+
+    elapsed = time.time() - started
+    print(
+        f"Seeded DynamoDB table {table_name!r}: {keyspace_size} numeric keys + 'hello' (ttl={ttl_hours}h, payload_bytes={payload_bytes}) in {elapsed:.2f}s",
+        flush=True,
+    )
+
+
+def with_query_param(url: str, key: str, value: str) -> str:
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query[key] = value
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def warmup_targets(targets: list[dict[str, str]]) -> None:
+    if not targets:
+        return
+
+    print("Warming up endpoints (best-effort)...", flush=True)
+    for target in targets:
+        name = target.get("name", "")
+        url = target.get("url", "")
+        if not url:
+            continue
+
+        # Avoid blocking on SSE routes (they're long-lived streams by design).
+        if "sse" in name:
+            print(f"  Warmup {name}: skipped (SSE)", flush=True)
+            continue
+
+        warm_url = with_query_param(url, "max-delay", "0")
+        started = time.time()
+        try:
+            req = Request(warm_url, method="GET", headers={"user-agent": "lpr-benchmark-warmup"})
+            with urlopen(req, timeout=15) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                resp.read(1)
+            elapsed_ms = (time.time() - started) * 1000.0
+            print(f"  Warmup {name}: {status} in {elapsed_ms:.0f}ms", flush=True)
+        except HTTPError as exc:
+            elapsed_ms = (time.time() - started) * 1000.0
+            print(f"  Warmup {name}: HTTP {exc.code} in {elapsed_ms:.0f}ms", flush=True)
+        except URLError as exc:
+            elapsed_ms = (time.time() - started) * 1000.0
+            print(f"  Warmup {name}: url error ({exc.reason}) in {elapsed_ms:.0f}ms", flush=True)
+        except Exception as exc:
+            elapsed_ms = (time.time() - started) * 1000.0
+            print(
+                f"  Warmup {name}: error ({type(exc).__name__}) in {elapsed_ms:.0f}ms: {exc}",
+                flush=True,
+            )
 
 
 def load_k6_csv(csv_path: Path) -> pd.DataFrame:
@@ -359,6 +502,16 @@ def parse_k6_latencies(df: pd.DataFrame) -> pd.DataFrame:
     return lat[["timestamp", "endpoint", "latency_ms", "status"]]
 
 
+def parse_k6_batch_sizes(df: pd.DataFrame) -> pd.DataFrame:
+    batch = df[df["metric_name"] == "lpr_batch_size"].copy()
+    if batch.empty:
+        return batch.assign(timestamp=pd.NaT, batch_size=pd.NA)[["timestamp", "endpoint", "batch_size"]].iloc[0:0]
+    batch["timestamp"] = pd.to_datetime(batch["timestamp"], unit="s", utc=True)
+    batch["batch_size"] = pd.to_numeric(batch["metric_value"], errors="coerce")
+    batch = batch.dropna(subset=["batch_size"])
+    return batch[["timestamp", "endpoint", "batch_size"]]
+
+
 def calculate_stats(df: pd.DataFrame) -> pd.DataFrame:
     stats = df.groupby("endpoint")["latency_ms"].agg(
         count="count",
@@ -371,6 +524,38 @@ def calculate_stats(df: pd.DataFrame) -> pd.DataFrame:
         p99=lambda x: x.quantile(0.99),
     )
     return stats.round(2)
+
+
+def calculate_batch_size_stats(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(
+            columns=["batch_count", "batch_avg", "batch_min", "batch_max", "batch_p50", "batch_p90", "batch_p95", "batch_p99"]
+        )
+
+    stats = df.groupby("endpoint")["batch_size"].agg(
+        batch_count="count",
+        batch_avg="mean",
+        batch_min="min",
+        batch_max="max",
+        batch_p50=lambda x: x.quantile(0.50),
+        batch_p90=lambda x: x.quantile(0.90),
+        batch_p95=lambda x: x.quantile(0.95),
+        batch_p99=lambda x: x.quantile(0.99),
+    )
+    return stats.round(2)
+
+
+def estimate_lambda_invocations(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(dtype="float64", name="est_lambda_invocations")
+
+    safe = df.copy()
+    safe = safe[pd.to_numeric(safe["batch_size"], errors="coerce").fillna(0).gt(0)]
+    if safe.empty:
+        return pd.Series(dtype="float64", name="est_lambda_invocations")
+
+    safe["invocation_units"] = 1.0 / safe["batch_size"].astype(float)
+    return safe.groupby("endpoint")["invocation_units"].sum().rename("est_lambda_invocations")
 
 
 def calculate_error_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -422,6 +607,19 @@ def _apply_plot_theme() -> None:
     )
 
 
+def _safe_tight_layout(fig: matplotlib.figure.Figure, **kwargs: object) -> None:
+    # Matplotlib emits a noisy UserWarning when it can't compute a tight layout for
+    # a figure that has lots of labels / legends. Since we already save with
+    # bbox_inches="tight", keep the best-effort layout but silence the warning.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Tight layout not applied.*",
+            category=UserWarning,
+        )
+        fig.tight_layout(**kwargs)
+
+
 def _compute_stage_ends_seconds(stages: list[dict[str, object]]) -> list[float]:
     ends: list[float] = []
     total = 0.0
@@ -462,12 +660,59 @@ def _build_status_group_palette() -> dict[str, str]:
     }
 
 _DEFAULT_LINE_WIDTH = 1.0
+_COST_SMOOTH_WINDOW = "5s"
+_YLIM_CLIP_QUANTILE = 0.995
+
+
+def _add_subplot_note(ax: matplotlib.axes.Axes, note: str) -> None:
+    if not note:
+        return
+    ax.text(
+        0.01,
+        1.02,
+        note,
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=9,
+        color=".5",
+    )
+
+
+def _apply_quantile_y_clip(
+    ax: matplotlib.axes.Axes,
+    values: pd.Series | list[float] | list[int],
+    *,
+    quantile: float,
+    unit: str,
+    min_y: float = 0.0,
+    pad_fraction: float = 0.08,
+) -> str | None:
+    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    if series.empty:
+        return None
+
+    q = float(quantile)
+    if not (0 < q < 1):
+        raise ValueError(f"quantile must be between 0 and 1 (exclusive), got {quantile!r}")
+
+    clip_top = float(series.quantile(q))
+    max_val = float(series.max())
+    if not (clip_top > 0):
+        return None
+    if clip_top >= max_val:
+        return None
+
+    clipped = int((series > clip_top).sum())
+    ax.set_ylim(min_y, clip_top * (1.0 + pad_fraction))
+    return f"y clipped at p{q * 100:.1f}={clip_top:.0f}{unit} (clipped {clipped}, max {max_val:.0f}{unit})"
 
 
 def plot_compare_report(
     latency_all: pd.DataFrame,
     latency_ok: pd.DataFrame,
     stats_ok: pd.DataFrame,
+    batch_sizes_all: pd.DataFrame | None,
     *,
     output_path: Path,
     stages: list[dict[str, object]],
@@ -494,26 +739,29 @@ def plot_compare_report(
     target_unit = "rps" if executor == "ramping-arrival-rate" else "vus"
 
     fig, axes = plt.subplots(4, 1, figsize=(16, 18))
+    endpoint_handles = [Patch(facecolor=palette[e], edgecolor=palette[e], label=e) for e in endpoints]
 
-    # Plot 1: p50 success latency over time.
-    ax = axes[0]
-    for endpoint in endpoints:
-        data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
-        if data.empty:
-            continue
-        series = data.set_index("timestamp")["latency_ms"].resample("1s").quantile(0.50)
-        resampled = series.reset_index(name="p50")
-        resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
-        ax.plot(
-            resampled["elapsed_seconds"],
-            resampled["p50"],
-            color=palette[endpoint],
-            linewidth=_DEFAULT_LINE_WIDTH,
+    def add_endpoint_legend(ax: matplotlib.axes.Axes) -> None:
+        if not endpoint_handles:
+            return
+        ax.legend(
+            handles=endpoint_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.25),
+            ncol=min(len(endpoints), 6),
+            frameon=False,
+            handlelength=1.2,
+            columnspacing=1.0,
+            handletextpad=0.4,
+            borderaxespad=0.0,
         )
 
-    if show_stage_markers:
+    def add_stage_markers_and_labels(ax: matplotlib.axes.Axes, *, y_factor: float = 0.92) -> None:
+        if not show_stage_markers:
+            return
         for x in stage_ends[:-1]:
             ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+
         ymax = ax.get_ylim()[1]
         starts = [0.0] + stage_ends[:-1]
         prev_target = 0
@@ -522,7 +770,7 @@ def plot_compare_report(
             if end_target != prev_target:
                 ax.text(
                     (start + end) / 2,
-                    ymax * 0.92,
+                    ymax * y_factor,
                     f"{prev_target}→{end_target} {target_unit}",
                     ha="center",
                     fontsize=9,
@@ -530,12 +778,42 @@ def plot_compare_report(
                 )
             prev_target = end_target
 
+    # Plot 1: p50 success latency over time.
+    ax = axes[0]
+    plotted_values: list[float] = []
+    for endpoint in endpoints:
+        data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
+        if data.empty:
+            continue
+        series = data.set_index("timestamp")["latency_ms"].resample("1s").quantile(0.50)
+        resampled = series.reset_index(name="p50")
+        resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
+        plotted_values.extend(resampled["p50"].dropna().astype(float).tolist())
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["p50"],
+            color=palette[endpoint],
+            linewidth=_DEFAULT_LINE_WIDTH,
+        )
+
+    clip_note = _apply_quantile_y_clip(
+        ax,
+        plotted_values,
+        quantile=_YLIM_CLIP_QUANTILE,
+        unit="ms",
+    )
+    if clip_note:
+        _add_subplot_note(ax, f"p50 {clip_note}")
+    add_stage_markers_and_labels(ax)
+
     ax.set_xlabel("Elapsed time (s)")
     ax.set_ylabel("Latency (ms)")
     ax.set_title("Success latency p50 (1s buckets, 200 only)")
+    add_endpoint_legend(ax)
 
     # Plot 2: p95 success latency over time.
     ax = axes[1]
+    plotted_values = []
     for endpoint in endpoints:
         data = latency_ok[latency_ok["endpoint"] == endpoint].sort_values("timestamp")
         if data.empty:
@@ -543,6 +821,7 @@ def plot_compare_report(
         series = data.set_index("timestamp")["latency_ms"].resample("1s").quantile(0.95)
         resampled = series.reset_index(name="p95")
         resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
+        plotted_values.extend(resampled["p95"].dropna().astype(float).tolist())
         ax.plot(
             resampled["elapsed_seconds"],
             resampled["p95"],
@@ -550,13 +829,20 @@ def plot_compare_report(
             linewidth=_DEFAULT_LINE_WIDTH,
         )
 
-    if show_stage_markers:
-        for x in stage_ends[:-1]:
-            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+    clip_note = _apply_quantile_y_clip(
+        ax,
+        plotted_values,
+        quantile=_YLIM_CLIP_QUANTILE,
+        unit="ms",
+    )
+    if clip_note:
+        _add_subplot_note(ax, f"p95 {clip_note}")
+    add_stage_markers_and_labels(ax)
 
     ax.set_xlabel("Elapsed time (s)")
     ax.set_ylabel("Latency (ms)")
     ax.set_title("Success latency p95 (1s buckets, 200 only)")
+    add_endpoint_legend(ax)
 
     # Plot 3: Success latency distribution (box plot).
     ax = axes[2]
@@ -593,37 +879,60 @@ def plot_compare_report(
                 ax.set_ylim(y_min * 0.98, y_max * 1.02)
         ax.tick_params(axis="x", rotation=20)
 
-    # Plot 4: Latency percentiles (heatmap, 200 only).
+    # Plot 4: Estimated cost over time (1s buckets, % of direct).
     ax = axes[3]
-    percentiles = stats_ok.reindex(endpoints)[["p50", "p95", "p99"]]
-    if percentiles.empty or percentiles.dropna(how="all").empty:
-        ax.set_title("Latency percentiles (ms, 200 only)")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center")
-    else:
-        sns.heatmap(
-            percentiles,
-            annot=True,
-            fmt=".0f",
-            cmap="Blues",
-            cbar=False,
-            linewidths=0.5,
-            linecolor=".5",
-            ax=ax,
+    if batch_sizes_all is None or batch_sizes_all.empty:
+        ax.set_xlim(0, data_max_elapsed if data_max_elapsed > 0 else 1.0)
+        ax.text(
+            0.5,
+            0.5,
+            "No batch size samples (lpr_batch_size).\nEnable LPR_INCLUDE_BATCH_SIZE_HEADER on the router and rerun.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color=".5",
         )
-        ax.set_title("Latency percentiles (ms, 200 only)")
-        ax.set_xlabel("")
-        ax.set_ylabel("")
+        ax.set_ylim(0, 120.0)
+    else:
+        plotted = False
+        for endpoint in endpoints:
+            data = batch_sizes_all[batch_sizes_all["endpoint"] == endpoint].copy()
+            if data.empty:
+                continue
+            data = data[pd.to_numeric(data["batch_size"], errors="coerce").fillna(0).gt(0)]
+            if data.empty:
+                continue
+            data = data.sort_values("timestamp")
+            data["cost_pct"] = 100.0 / data["batch_size"].astype(float)
+            series = data.set_index("timestamp")["cost_pct"].resample("1s").mean()
+            series = series.rolling(_COST_SMOOTH_WINDOW, min_periods=1, center=True).mean()
+            resampled = series.reset_index(name="cost_pct")
+            resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
+            ax.plot(
+                resampled["elapsed_seconds"],
+                resampled["cost_pct"],
+                color=palette[endpoint],
+                linewidth=_DEFAULT_LINE_WIDTH,
+            )
+            plotted = True
+
+        if not plotted:
+            ax.set_xlim(0, data_max_elapsed if data_max_elapsed > 0 else 1.0)
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, color=".5")
+            ax.set_ylim(0, 120.0)
+        else:
+            ax.axhline(100.0, color="gray", linestyle="--", linewidth=_DEFAULT_LINE_WIDTH, alpha=0.7)
+            ymax = ax.get_ylim()[1]
+            ax.set_ylim(0, max(120.0, ymax))
+
+    add_stage_markers_and_labels(ax)
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Cost (% of direct)")
+    ax.set_title("Estimated cost (1s buckets, % of direct)")
+    add_endpoint_legend(ax)
 
     fig.suptitle(title, fontsize=14, y=1.02, color=".5")
-    fig.legend(
-        handles=[Patch(facecolor=palette[e], edgecolor=palette[e], label=e) for e in endpoints],
-        title="Endpoint",
-        loc="lower center",
-        ncol=min(len(endpoints), 4),
-        bbox_to_anchor=(0.5, 0.01),
-        frameon=False,
-    )
-    fig.tight_layout(rect=[0, 0.06, 1, 0.98])
+    _safe_tight_layout(fig, rect=[0, 0.03, 1, 0.98], h_pad=3.0)
     fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -632,6 +941,7 @@ def plot_route_report(
     endpoint: str,
     latency_all: pd.DataFrame,
     latency_ok: pd.DataFrame,
+    batch_sizes: pd.DataFrame | None,
     *,
     output_path: Path,
     stages: list[dict[str, object]],
@@ -651,6 +961,10 @@ def plot_route_report(
     latency_ok = latency_ok.copy()
     if not latency_ok.empty:
         latency_ok["elapsed_seconds"] = (latency_ok["timestamp"] - min_ts).dt.total_seconds()
+
+    batch_sizes_local = None if batch_sizes is None else batch_sizes.copy()
+    if batch_sizes_local is not None and not batch_sizes_local.empty:
+        batch_sizes_local["elapsed_seconds"] = (batch_sizes_local["timestamp"] - min_ts).dt.total_seconds()
 
     stage_ends = _compute_stage_ends_seconds(stages)
     show_stage_markers = _should_show_stage_markers(stage_ends, data_max_elapsed)
@@ -675,7 +989,7 @@ def plot_route_report(
     groups = ["200", "429", "4xx", "5xx", "other"]
     palette = _build_status_group_palette()
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 16))
+    fig, axes = plt.subplots(4, 1, figsize=(14, 20))
 
     # Plot 1: Scatter latency over time, colored by status group.
     ax = axes[0]
@@ -704,6 +1018,14 @@ def plot_route_report(
             edgecolors="none",
             label=group,
         )
+    clip_note = _apply_quantile_y_clip(
+        ax,
+        latency_all["latency_ms"].tolist(),
+        quantile=_YLIM_CLIP_QUANTILE,
+        unit="ms",
+    )
+    if clip_note:
+        _add_subplot_note(ax, f"scatter {clip_note}")
     if show_stage_markers:
         for x in stage_ends[:-1]:
             ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
@@ -740,8 +1062,6 @@ def plot_route_report(
             color=".5",
         )
     else:
-        metric_colors = sns.color_palette("husl", n_colors=4)
-
         resampled = (
             latency_ok.set_index("timestamp")
             .resample("1s")["latency_ms"]
@@ -760,35 +1080,31 @@ def plot_route_report(
         overall_p95 = float(latency_ok["latency_ms"].quantile(0.95))
         overall_max = float(latency_ok["latency_ms"].max())
 
-        ax.plot(
-            resampled["elapsed_seconds"],
-            resampled["avg"],
-            label=f"avg ({overall_avg:.1f}ms)",
-            color=metric_colors[0],
-            linewidth=_DEFAULT_LINE_WIDTH,
+        metric_colors = sns.color_palette("husl", n_colors=3).as_hex()
+        metric_styles = [
+            ("avg", overall_avg, metric_colors[0], 1.0),
+            ("p50", overall_p50, metric_colors[1], 1.0),
+            ("p95", overall_p95, metric_colors[2], 0.8),
+            ("max", overall_max, metric_colors[2], 0.6),
+        ]
+
+        for metric, overall, color, alpha in metric_styles:
+            ax.plot(
+                resampled["elapsed_seconds"],
+                resampled[metric],
+                label=f"{metric} ({overall:.1f}ms)",
+                color=color,
+                alpha=alpha,
+                linewidth=_DEFAULT_LINE_WIDTH,
+            )
+        clip_note = _apply_quantile_y_clip(
+            ax,
+            latency_ok["latency_ms"].tolist(),
+            quantile=_YLIM_CLIP_QUANTILE,
+            unit="ms",
         )
-        ax.plot(
-            resampled["elapsed_seconds"],
-            resampled["p50"],
-            label=f"p50 ({overall_p50:.1f}ms)",
-            color=metric_colors[1],
-            linewidth=_DEFAULT_LINE_WIDTH,
-        )
-        ax.plot(
-            resampled["elapsed_seconds"],
-            resampled["p95"],
-            label=f"p95 ({overall_p95:.1f}ms)",
-            color=metric_colors[2],
-            linewidth=_DEFAULT_LINE_WIDTH,
-        )
-        ax.plot(
-            resampled["elapsed_seconds"],
-            resampled["max"],
-            label=f"max ({overall_max:.1f}ms)",
-            color=metric_colors[3],
-            linewidth=_DEFAULT_LINE_WIDTH,
-            alpha=0.8,
-        )
+        if clip_note:
+            _add_subplot_note(ax, f"success {clip_note}")
     if show_stage_markers:
         for x in stage_ends[:-1]:
             ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
@@ -880,8 +1196,57 @@ def plot_route_report(
     ax.set_ylabel("Error rate (%)")
     ax.set_title("Error rate over time (1s buckets, 4xx/5xx)")
 
+    # Plot 4: Batch size (10s buckets).
+    ax = axes[3]
+    if batch_sizes_local is None or batch_sizes_local.empty:
+        ax.set_xlim(0, data_max_elapsed if data_max_elapsed > 0 else 1.0)
+        ax.text(
+            0.5,
+            0.5,
+            "No batch size samples (lpr_batch_size).\nEnable LPR_INCLUDE_BATCH_SIZE_HEADER on the router and rerun.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color=".5",
+        )
+        ax.set_ylim(0, 1.0)
+    else:
+        metric_colors = sns.color_palette("husl", n_colors=3).as_hex()
+
+        resampled = (
+            batch_sizes_local.set_index("timestamp")
+            .resample("10s")["batch_size"]
+            .agg(
+                avg="mean",
+            )
+            .reset_index()
+        )
+        resampled["elapsed_seconds"] = (resampled["timestamp"] - min_ts).dt.total_seconds()
+
+        overall_avg = float(batch_sizes_local["batch_size"].mean())
+
+        ax.plot(
+            resampled["elapsed_seconds"],
+            resampled["avg"],
+            label=f"avg ({overall_avg:.2f})",
+            color=metric_colors[2],
+            linewidth=_DEFAULT_LINE_WIDTH,
+        )
+        ymax = float(resampled["avg"].max())
+        ax.set_ylim(0, max(1.0, ymax * 1.15))
+
+    if show_stage_markers:
+        for x in stage_ends[:-1]:
+            ax.axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Batch size")
+    ax.set_title("Batch size avg (10s buckets)")
+    if batch_sizes_local is not None and not batch_sizes_local.empty:
+        ax.legend(frameon=False)
+
     fig.suptitle(title, fontsize=14, y=1.02, color=".5")
-    fig.tight_layout(rect=[0, 0.03, 1, 0.98])
+    _safe_tight_layout(fig, rect=[0, 0.03, 1, 0.98])
     fig.savefig(output_path, transparent=True, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -951,7 +1316,17 @@ def plot_route_report(
 )
 @click.option("--stage-targets", default=DEFAULT_STAGE_TARGETS, show_default=True)
 @click.option("--stages-json", default=None, help="Override with full JSON stages array")
-@click.option("--max-delay-ms", type=int, default=250, show_default=True)
+@click.option("--max-delay-ms", type=int, default=0, show_default=True)
+@click.option("--seed-ddb/--no-seed-ddb", default=True, show_default=True)
+@click.option("--keyspace-size", type=int, default=1000, show_default=True)
+@click.option("--seed-ttl-hours", type=int, default=24, show_default=True)
+@click.option("--seed-payload-bytes", type=int, default=256, show_default=True)
+@click.option(
+    "--warmup/--no-warmup",
+    default=True,
+    show_default=True,
+    help="Send one request to each endpoint before running k6 (reduces cold-start skew in short runs).",
+)
 @click.option("--vus", type=int, default=50, show_default=True)
 @click.option("--arrival-time-unit", default="1s", show_default=True)
 @click.option("--arrival-preallocated-vus", type=int, default=0, show_default=True)
@@ -988,6 +1363,11 @@ def main(
     stage_targets: str,
     stages_json: str | None,
     max_delay_ms: int,
+    seed_ddb: bool,
+    keyspace_size: int,
+    seed_ttl_hours: int,
+    seed_payload_bytes: int,
+    warmup: bool,
     vus: int,
     arrival_time_unit: str,
     arrival_preallocated_vus: int,
@@ -1072,6 +1452,19 @@ def main(
     if not skip_test:
         endpoints_to_test = list(selected_endpoints) if selected_endpoints else list(DEFAULT_ENDPOINTS)
         outputs = get_stack_outputs(stack_name, region)
+        if seed_ddb:
+            table_name = outputs.get(BENCHMARK_TABLE_OUTPUT_KEY)
+            if not table_name:
+                raise RuntimeError(
+                    f"Missing stack output {BENCHMARK_TABLE_OUTPUT_KEY!r}. Deploy the latest SAM template."
+                )
+            seed_benchmark_table(
+                table_name,
+                region=region,
+                keyspace_size=keyspace_size,
+                ttl_hours=seed_ttl_hours,
+                payload_bytes=seed_payload_bytes,
+            )
         targets = build_targets_from_outputs(outputs, endpoints_to_test)
         endpoint_order = [t["name"] for t in targets]
         if report_mode == "auto":
@@ -1083,6 +1476,9 @@ def main(
         if k6_csv_path.exists():
             k6_csv_path.unlink()
 
+        if warmup:
+            warmup_targets(targets)
+
         run_k6_test(
             targets,
             k6_csv_path,
@@ -1090,6 +1486,7 @@ def main(
             mode=mode,
             executor=executor,
             max_delay_ms=max_delay_ms,
+            keyspace_size=keyspace_size,
             ramp_duration=ramp_duration,
             vus=vus,
             arrival_time_unit=arrival_time_unit,
@@ -1174,16 +1571,43 @@ def main(
     if latency_all.empty:
         raise SystemExit("No latency data found in CSV")
 
+    batch_sizes_all = parse_k6_batch_sizes(raw_df)
+
     error_stats = calculate_error_stats(raw_df)
     latency_ok = latency_all[latency_all["status"] == 200].copy()
     stats_ok = calculate_stats(latency_ok).rename(columns={"count": "ok_count"})
 
-    summary = error_stats.join(stats_ok, how="left")
+    batch_stats = calculate_batch_size_stats(batch_sizes_all)
+    invocations_est = estimate_lambda_invocations(batch_sizes_all)
+
+    summary = error_stats.join(stats_ok, how="left").join(batch_stats, how="left").join(invocations_est, how="left")
+    if "est_lambda_invocations" in summary.columns:
+        summary["est_invocations_per_request"] = summary["est_lambda_invocations"] / summary["requests"]
+        summary["est_effective_batch_size"] = summary["requests"] / summary["est_lambda_invocations"]
+        summary["est_cost_pct_of_direct"] = float("nan")
+
+        direct_candidates = [e for e in endpoint_order if e.startswith("direct-")]
+        baseline_direct = None
+        for candidate in ("direct-item", "direct-hello"):
+            if candidate in direct_candidates:
+                baseline_direct = candidate
+                break
+        if baseline_direct is None and direct_candidates:
+            baseline_direct = direct_candidates[0]
+
+        if baseline_direct is not None and baseline_direct in summary.index:
+            baseline_value = summary.loc[baseline_direct, "est_invocations_per_request"]
+            try:
+                baseline_cost = float(baseline_value)
+            except Exception:
+                baseline_cost = 0.0
+            if baseline_cost > 0:
+                summary["est_cost_pct_of_direct"] = 100.0 * summary["est_invocations_per_request"] / baseline_cost
     summary = summary.reindex(endpoint_order)
     stats_path = run_dir / RUN_SUMMARY_CSV_NAME
     summary.to_csv(stats_path)
 
-    print("\nLatency summary (ms):")
+    print("\nSummary:")
     print(summary.to_string())
     print(f"\nWrote CSV: {csv_path}")
     print(f"Wrote summary: {stats_path}")
@@ -1203,6 +1627,7 @@ def main(
             latency_all,
             latency_ok,
             stats_ok,
+            batch_sizes_all,
             output_path=compare_latency_path,
             stages=stages,
             endpoints=endpoint_order,
@@ -1218,6 +1643,7 @@ def main(
             endpoint,
             latency_all,
             latency_ok,
+            batch_sizes_all[batch_sizes_all["endpoint"] == endpoint].copy(),
             output_path=route_path,
             stages=stages,
             executor=executor,
@@ -1233,11 +1659,13 @@ def main(
             if endpoint_all.empty:
                 continue
             endpoint_ok = latency_ok[latency_ok["endpoint"] == endpoint].copy()
+            endpoint_batch = batch_sizes_all[batch_sizes_all["endpoint"] == endpoint].copy()
             route_path = routes_dir / f"{slugify(endpoint)}.png"
             plot_route_report(
                 endpoint,
                 endpoint_all,
                 endpoint_ok,
+                endpoint_batch,
                 output_path=route_path,
                 stages=stages,
                 executor=executor,

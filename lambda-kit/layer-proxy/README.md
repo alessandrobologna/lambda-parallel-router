@@ -35,3 +35,11 @@ Then configure the function to use the exec wrapper:
 ```bash
 AWS_LAMBDA_EXEC_WRAPPER=/opt/lpr/exec-wrapper.sh
 ```
+
+Optionally set the runtime worker concurrency (recommended: match your route `maxBatchSize`):
+
+```bash
+LPR_MAX_CONCURRENCY=4
+```
+
+Note: as of `python:3.14.v32`, the Python managed runtime crashes when `AWS_LAMBDA_MAX_CONCURRENCY` is set to `>1`.

@@ -74,6 +74,36 @@ impl RuntimeApiClient {
         Ok(StatusCode::from_u16(resp.status().as_u16())?)
     }
 
+    pub async fn forward_request(
+        &self,
+        method: Method,
+        path_and_query: &str,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> anyhow::Result<(StatusCode, HeaderMap, Bytes)> {
+        let url = format!("{}{}", self.base_url, path_and_query);
+        let mut req = self.http.request(method, url);
+
+        for (k, v) in headers.iter() {
+            let name = k.as_str();
+            if name.eq_ignore_ascii_case("host")
+                || name.eq_ignore_ascii_case("connection")
+                || name.eq_ignore_ascii_case("content-length")
+                || name.eq_ignore_ascii_case("transfer-encoding")
+            {
+                continue;
+            }
+
+            req = req.header(k, v);
+        }
+
+        let resp = req.body(body).send().await?;
+        let status = StatusCode::from_u16(resp.status().as_u16())?;
+        let headers = resp.headers().clone();
+        let body = resp.bytes().await?;
+        Ok((status, headers, body))
+    }
+
     pub fn start_streaming_response(
         &self,
         request_id: String,

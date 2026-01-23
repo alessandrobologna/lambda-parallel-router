@@ -15,6 +15,38 @@ type FunctionUrlResponse = {
   isBase64Encoded?: boolean;
 };
 
+type DdbDeps = { client: any; GetItemCommand: any };
+
+let ddbDeps: Promise<DdbDeps> | null = null;
+
+function getDdbDeps(): Promise<DdbDeps> {
+  if (!ddbDeps) {
+    ddbDeps = import("@aws-sdk/client-dynamodb").then((mod) => ({
+      client: new mod.DynamoDBClient({}),
+      GetItemCommand: mod.GetItemCommand,
+    }));
+  }
+  return ddbDeps;
+}
+
+async function getItemPayload(pk: string): Promise<string | null> {
+  const tableName = process.env.BENCHMARK_TABLE_NAME;
+  if (!tableName) return null;
+
+  const { client, GetItemCommand } = await getDdbDeps();
+  const res = await client.send(
+    new GetItemCommand({
+      TableName: tableName,
+      Key: { pk: { S: pk } },
+      ProjectionExpression: "#payload",
+      ExpressionAttributeNames: { "#payload": "payload" },
+    }),
+  );
+
+  const payload = res?.Item?.payload?.S;
+  return typeof payload === "string" ? payload : null;
+}
+
 function sleep(ms: number): Promise<void> {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return Promise.resolve();
@@ -35,16 +67,25 @@ function parseDelayMs(event: FunctionUrlEvent): number {
   return Math.min(Math.floor(n), MAX_DELAY_MS);
 }
 
+function parseItemKey(event: FunctionUrlEvent): string {
+  const rawPath = typeof event?.rawPath === "string" ? event.rawPath : "";
+  const parts = rawPath.split("/").filter((p) => p.length > 0);
+  const last = parts.length > 0 ? parts[parts.length - 1] : "";
+  return last || "hello";
+}
+
 export async function handler(event: FunctionUrlEvent): Promise<FunctionUrlResponse> {
   const requestId = event?.requestContext?.requestId ?? "";
   const method = event?.requestContext?.http?.method ?? "";
   const path = event?.rawPath ?? "";
+  const itemKey = parseItemKey(event);
 
   const maxDelayMs = parseDelayMs(event);
   const delayMs = maxDelayMs ? Math.floor(Math.random() * (maxDelayMs + 1)) : 0;
   await sleep(delayMs);
 
   const bodyBuf = decodeBody(event);
+  const payload = await getItemPayload(itemKey);
 
   const out = {
     ok: true,
@@ -54,6 +95,9 @@ export async function handler(event: FunctionUrlEvent): Promise<FunctionUrlRespo
     query: event?.queryStringParameters ?? {},
     maxDelayMs,
     delayMs,
+    itemKey,
+    itemFound: payload != null,
+    payload,
     bodyUtf8: bodyBuf.toString("utf8"),
   };
 
@@ -64,4 +108,3 @@ export async function handler(event: FunctionUrlEvent): Promise<FunctionUrlRespo
     isBase64Encoded: false,
   };
 }
-

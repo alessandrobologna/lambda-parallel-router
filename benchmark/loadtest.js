@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import exec from 'k6/execution';
+import { Trend } from 'k6/metrics';
 
 const MODE = __ENV.MODE || 'per_endpoint';
 const EXECUTOR = __ENV.EXECUTOR || 'ramping-arrival-rate';
@@ -14,6 +15,10 @@ const ARRIVAL_MAX_VUS = parseInt(__ENV.ARRIVAL_MAX_VUS || '0', 10);
 const ARRIVAL_VUS_MULTIPLIER = parseFloat(__ENV.ARRIVAL_VUS_MULTIPLIER || '1');
 const ARRIVAL_MAX_VUS_MULTIPLIER = parseFloat(__ENV.ARRIVAL_MAX_VUS_MULTIPLIER || '2');
 const MAX_DELAY_MS = parseInt(__ENV.MAX_DELAY_MS || '0', 10);
+const KEYSPACE_SIZE = parseInt(__ENV.KEYSPACE_SIZE || '1000', 10);
+const BATCH_SIZE_HEADER = (__ENV.BATCH_SIZE_HEADER || 'x-lpr-batch-size').trim();
+
+const batchSizeTrend = new Trend('lpr_batch_size');
 
 if (!TARGETS_JSON) {
   throw new Error('Missing TARGETS JSON. Provide via env TARGETS.');
@@ -80,7 +85,7 @@ function parseStages() {
 
 const TARGETS = parseTargets();
 const STAGES = parseStages();
-const PEAK_STAGE_TARGET = Math.max(...STAGES.map((stage) => stage.target));
+const PEAK_STAGE_TARGET = STAGES.reduce((max, stage) => Math.max(max, stage.target), 0);
 
 function resolveArrivalVUs() {
   const base = Math.max(1, Math.ceil(PEAK_STAGE_TARGET * ARRIVAL_VUS_MULTIPLIER));
@@ -97,6 +102,60 @@ function withMaxDelay(url) {
   }
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}max-delay=${MAX_DELAY_MS}`;
+}
+
+function randomItemId() {
+  const n = Number(KEYSPACE_SIZE);
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  return String(Math.floor(Math.random() * n));
+}
+
+function withRandomItemId(url, endpointName) {
+  const id = randomItemId();
+  const qIndex = url.indexOf('?');
+  const base = qIndex === -1 ? url : url.slice(0, qIndex);
+  const query = qIndex === -1 ? '' : url.slice(qIndex);
+
+  if (endpointName === 'direct-hello') {
+    if (base.endsWith('/')) {
+      return `${base}${id}${query}`;
+    }
+    return `${base}/${id}${query}`;
+  }
+
+  if (base.endsWith('/hello')) {
+    return `${base.slice(0, -'/hello'.length)}/${id}${query}`;
+  }
+
+  return `${base}${query}`;
+}
+
+function canonicalHeaderName(name) {
+  return name
+    .toLowerCase()
+    .split('-')
+    .filter((part) => part.length > 0)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join('-');
+}
+
+function getHeader(res, name) {
+  if (!name) return undefined;
+  const candidates = [name, name.toLowerCase(), canonicalHeaderName(name)];
+  for (const key of candidates) {
+    const val = res.headers[key];
+    if (val !== undefined) return val;
+  }
+  return undefined;
+}
+
+function parseBatchSize(res) {
+  const raw = getHeader(res, BATCH_SIZE_HEADER);
+  if (raw == null) return 1;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const n = parseInt(String(value), 10);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  return n;
 }
 
 const thresholds = {};
@@ -137,12 +196,11 @@ export const options = (() => {
         };
       }
     }
-    return { ...base, scenarios };
+    return Object.assign({}, base, { scenarios });
   }
 
   if (EXECUTOR === 'ramping-arrival-rate') {
-    return {
-      ...base,
+    return Object.assign({}, base, {
       scenarios: {
         batch: {
           executor: 'ramping-arrival-rate',
@@ -154,11 +212,10 @@ export const options = (() => {
           exec: 'hitBatch',
         },
       },
-    };
+    });
   }
 
-  return {
-    ...base,
+  return Object.assign({}, base, {
     scenarios: {
       batch: {
         executor: 'ramping-vus',
@@ -166,7 +223,7 @@ export const options = (() => {
         exec: 'hitBatch',
       },
     },
-  };
+  });
 })();
 
 export function hitTarget() {
@@ -176,13 +233,15 @@ export function hitTarget() {
     throw new Error(`Unknown scenario '${scenarioName}' (no matching target)`);
   }
 
-  const res = http.get(withMaxDelay(t.url), {
+  const res = http.get(withRandomItemId(withMaxDelay(t.url), t.name), {
     tags: { endpoint: t.name, name: t.name },
   });
 
   check(res, {
     [`${t.name}: status is 200`]: (r) => r.status === 200,
   });
+
+  batchSizeTrend.add(parseBatchSize(res), { endpoint: t.name, name: t.name });
 
   if (EXECUTOR !== 'ramping-arrival-rate') {
     sleep(0.1);
@@ -193,7 +252,7 @@ export function hitBatch() {
   const responses = http.batch(
     TARGETS.map((t) => ({
       method: 'GET',
-      url: withMaxDelay(t.url),
+      url: withRandomItemId(withMaxDelay(t.url), t.name),
       params: { tags: { endpoint: t.name, name: t.name } },
     })),
   );
@@ -203,6 +262,8 @@ export function hitBatch() {
     check(responses[i], {
       [`${name}: status is 200`]: (r) => r.status === 200,
     });
+
+    batchSizeTrend.add(parseBatchSize(responses[i]), { endpoint: name, name });
   }
 
   if (EXECUTOR !== 'ramping-arrival-rate') {

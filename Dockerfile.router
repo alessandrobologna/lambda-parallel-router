@@ -8,9 +8,11 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY router/Cargo.toml router/Cargo.toml
 COPY lambda-kit/adapter-rust/Cargo.toml lambda-kit/adapter-rust/Cargo.toml
+COPY lambda-kit/layer-proxy/Cargo.toml lambda-kit/layer-proxy/Cargo.toml
 
 COPY router router
 COPY lambda-kit/adapter-rust lambda-kit/adapter-rust
+COPY lambda-kit/layer-proxy lambda-kit/layer-proxy
 
 RUN cargo build --release -p lpr-router
 

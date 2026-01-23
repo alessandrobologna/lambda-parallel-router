@@ -11,26 +11,63 @@ This folder contains a small load-test and reporting toolchain for the demo App 
 - `k6`
 - AWS credentials configured locally (the script reads CloudFormation stack outputs)
 
+## Workload
+
+The default demo Lambdas read `?max-delay=` and can optionally sleep, but the benchmark defaults to `--max-delay-ms 0`.
+
+For a more realistic workload, the SAM stack also creates a small on-demand DynamoDB table. When `--seed-ddb` is enabled
+(default), `benchmark.py` seeds the table with `--keyspace-size` items and the k6 script hits random item IDs by replacing
+the trailing `/hello` segment with an integer key (to avoid hot keys).
+
+`benchmark.py` also does a best-effort warmup pass (one request per endpoint) before running k6. This avoids cold-start
+skew in short runs like smoke tests. Disable with `--no-warmup` if you want to measure cold starts.
+
+## Batch size header (cost estimation)
+
+When the router is started with `LPR_INCLUDE_BATCH_SIZE_HEADER=1`, it adds a response header:
+
+- `x-lpr-batch-size: <n>`
+
+The k6 script records this per-request value as a custom metric (`lpr_batch_size`) so the benchmark summary can estimate:
+
+- effective batch size (`requests / est_lambda_invocations`)
+- estimated Lambda invocation count (`sum(1 / batch_size)`; for direct endpoints the batch size is treated as `1`)
+- estimated cost (`est_cost_pct_of_direct`): `est_invocations_per_request` relative to the selected `direct-*` endpoint (100% baseline)
+
 ## Endpoints
 
 The benchmark reads these CloudFormation outputs from the SAM stack and builds a target list:
 
-- `buffering-simple`
-- `buffering-dynamic`
-- `streaming-simple`
-- `streaming-dynamic`
-- `buffering-adapter`
-- `streaming-adapter`
+- `buffering-simple` (legacy)
+- `buffering-dynamic` (legacy)
+- `streaming-simple` (legacy)
+- `streaming-dynamic` (legacy)
+- `buffering-adapter` (legacy)
+- `streaming-adapter` (legacy)
+- `streaming-mode-a-node` (legacy, Mode A, layer proxy, TypeScript)
 - `streaming-adapter-sse` (optional, excluded from the default suite)
-- `direct-hello` (Lambda Function URL baseline)
+- `direct-hello` (legacy, Lambda Function URL baseline)
+
+DynamoDB workload routes (recommended):
+
+- `buffering-simple-item`
+- `buffering-dynamic-item`
+- `streaming-simple-item`
+- `streaming-dynamic-item`
+- `buffering-adapter-item`
+- `streaming-adapter-item`
+- `streaming-mode-a-node-item`
+- `streaming-mode-a-python-item`
+- `direct-item`
 
 Use `--endpoint` (repeatable) to benchmark a subset. If `--endpoint` is not provided, the default
 suite runs only:
 
-- `streaming-simple`
-- `streaming-dynamic`
-- `streaming-adapter`
-- `direct-hello`
+- `streaming-simple-item`
+- `streaming-dynamic-item`
+- `streaming-adapter-item`
+- `streaming-mode-a-node-item`
+- `direct-item`
 
 Buffering routes and `streaming-adapter-sse` are excluded from the default suite. They can still be
 benchmarked by passing `--endpoint` explicitly.
@@ -40,7 +77,6 @@ benchmarked by passing `--endpoint` explicitly.
 The default report type is `--report auto`. When more than one endpoint is selected, `auto` produces a suite report:
 
 - `compare-latency.png`
-- `compare-errors.png`
 - per-endpoint reports under `routes/`
 - `summary.csv`
 
@@ -52,7 +88,7 @@ uv run benchmark/benchmark.py \
   --region us-east-1 \
   --duration 3m \
   --stage-targets 50,100,150 \
-  --max-delay-ms 250
+  --max-delay-ms 0
 ```
 
 By default, the script creates a new run directory under `benchmark-results/`:
@@ -62,7 +98,6 @@ By default, the script creates a new run directory under `benchmark-results/`:
   - `k6.csv`
   - `summary.csv`
   - `compare-latency.png`
-  - `compare-errors.png`
   - `routes/*.png`
 
 Use `--run-dir` to control the output location.
@@ -116,3 +151,18 @@ uv run benchmark/benchmark.py \
 
 - `--mode per_endpoint` (default) runs one k6 scenario per endpoint. Total load is multiplied by the number of endpoints.
 - `--mode batch` runs a single scenario that hits all endpoints via `http.batch()`.
+
+## Smoke test
+
+For a quick health check (not a statistically meaningful benchmark), run a single-stage test at low load:
+
+```bash
+uv run benchmark/benchmark.py \
+  --stack lambda-parallel-router-demo \
+  --region us-east-1 \
+  --run-name smoke \
+  --duration 5s \
+  --stage-targets 1 \
+  --executor ramping-vus \
+  --max-delay-ms 0
+```

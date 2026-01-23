@@ -36,6 +36,21 @@ Resources:
   # ------------------------------
   # Sample Lambda functions
   # ------------------------------
+  BenchmarkItemsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-benchmark-items"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
   LprRuntimeApiProxyLayerAmd64:
     Type: AWS::Serverless::LayerVersion
     Metadata:
@@ -54,11 +69,19 @@ Resources:
       CodeUri: lambda/buffering-simple/
       FunctionName: !Sub '${AWS::StackName}-buffering-simple-hello'
       Description: Demo batch handler (buffered, simple).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -70,11 +93,19 @@ Resources:
       CodeUri: lambda/buffering-dynamic/
       FunctionName: !Sub '${AWS::StackName}-buffering-dynamic-hello'
       Description: Demo batch handler (buffered, dynamic).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -86,11 +117,19 @@ Resources:
       CodeUri: lambda/streaming-simple/
       FunctionName: !Sub '${AWS::StackName}-streaming-simple-hello'
       Description: Demo batch handler (streaming, simple).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -102,11 +141,19 @@ Resources:
       CodeUri: lambda/streaming-dynamic/
       FunctionName: !Sub '${AWS::StackName}-streaming-dynamic-hello'
       Description: Demo batch handler (streaming, dynamic).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -118,11 +165,19 @@ Resources:
       CodeUri: lambda/buffering-adapter/
       FunctionName: !Sub '${AWS::StackName}-buffering-adapter-hello'
       Description: Demo batch handler (buffered, adapter).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -134,11 +189,19 @@ Resources:
       CodeUri: lambda/streaming-adapter/
       FunctionName: !Sub '${AWS::StackName}-streaming-adapter-hello'
       Description: Demo batch handler (streaming, adapter).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -150,11 +213,19 @@ Resources:
       CodeUri: lambda/streaming-adapter-sse/
       FunctionName: !Sub '${AWS::StackName}-streaming-adapter-sse'
       Description: Demo batch handler (streaming, adapter, SSE).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -166,11 +237,19 @@ Resources:
       CodeUri: lambda/direct-hello/
       FunctionName: !Sub '${AWS::StackName}-direct-hello'
       Description: Demo handler exposed via a Lambda Function URL (direct invoke).
+      Environment:
+        Variables:
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -204,6 +283,11 @@ Resources:
       Environment:
         Variables:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/lpr/exec-wrapper.sh
+          LPR_MAX_CONCURRENCY: "4"
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
 
   SampleStreamingModeALayerProxyNodeHelloFunction:
     Type: AWS::Serverless::Function
@@ -218,11 +302,17 @@ Resources:
       Environment:
         Variables:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/lpr/exec-wrapper.sh
+          BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref BenchmarkItemsTable
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints:
           - app.ts
+        External:
+          - "@aws-sdk/*"
         Format: cjs
         Minify: false
         Sourcemap: false
@@ -238,6 +328,7 @@ Resources:
       Port: 8080
       Environment:
         RUST_LOG: info
+        LPR_INCLUDE_BATCH_SIZE_HEADER: "1"
       InstanceConfiguration:
         Cpu: "1 vCPU"
         Memory: "2 GB"
@@ -267,7 +358,29 @@ Resources:
                 maxBatchSize: 4
                 invokeMode: buffered
                 timeoutMs: 8000
+          /buffering/simple/item/{id}:
+            get:
+              x-target-lambda: !GetAtt SampleBufferingSimpleHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: buffered
+                timeoutMs: 8000
           /buffering/dynamic/{greeting}:
+            get:
+              x-target-lambda: !GetAtt SampleBufferingDynamicHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 100
+                maxBatchSize: 16
+                invokeMode: buffered
+                timeoutMs: 8000
+                dynamicWait:
+                  minWaitMs: 1
+                  targetRps: 50
+                  steepness: 0.05
+                  samplingIntervalMs: 100
+                  smoothingSamples: 5
+          /buffering/dynamic/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleBufferingDynamicHelloFunction.Arn
               x-lpr:
@@ -289,7 +402,29 @@ Resources:
                 maxBatchSize: 4
                 invokeMode: response_stream
                 timeoutMs: 8000
+          /streaming/simple/item/{id}:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingSimpleHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
           /streaming/dynamic/{greeting}:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingDynamicHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 100
+                maxBatchSize: 16
+                invokeMode: response_stream
+                timeoutMs: 8000
+                dynamicWait:
+                  minWaitMs: 1
+                  targetRps: 50
+                  steepness: 0.05
+                  samplingIntervalMs: 100
+                  smoothingSamples: 5
+          /streaming/dynamic/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingDynamicHelloFunction.Arn
               x-lpr:
@@ -311,7 +446,23 @@ Resources:
                 maxBatchSize: 4
                 invokeMode: buffered
                 timeoutMs: 8000
+          /buffering/adapter/item/{id}:
+            get:
+              x-target-lambda: !GetAtt SampleBufferingAdapterHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: buffered
+                timeoutMs: 8000
           /streaming/adapter/{greeting}:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingAdapterHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
+          /streaming/adapter/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingAdapterHelloFunction.Arn
               x-lpr:
@@ -335,7 +486,23 @@ Resources:
                 maxBatchSize: 4
                 invokeMode: response_stream
                 timeoutMs: 8000
+          /streaming/mode-a/python/item/{id}:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingModeALayerProxyPythonHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
           /streaming/mode-a/node/{greeting}:
+            get:
+              x-target-lambda: !GetAtt SampleStreamingModeALayerProxyNodeHelloFunction.Arn
+              x-lpr:
+                maxWaitMs: 25
+                maxBatchSize: 4
+                invokeMode: response_stream
+                timeoutMs: 8000
+          /streaming/mode-a/node/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingModeALayerProxyNodeHelloFunction.Arn
               x-lpr:
@@ -345,6 +512,9 @@ Resources:
                 timeoutMs: 8000
 
 Outputs:
+  BenchmarkItemsTableName:
+    Value: !Ref BenchmarkItemsTable
+
   SampleBufferingSimpleHelloFunctionArn:
     Value: !GetAtt SampleBufferingSimpleHelloFunction.Arn
 
@@ -384,23 +554,44 @@ Outputs:
   DirectHelloUrl:
     Value: !GetAtt DirectHelloFunctionUrl.FunctionUrl
 
+  DirectItemUrl:
+    Value: !Sub "${DirectHelloFunctionUrl.FunctionUrl}item/hello"
+
   BufferingSimpleHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/buffering/simple/hello"
+
+  BufferingSimpleItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/simple/item/hello"
 
   BufferingDynamicHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/buffering/dynamic/hello"
 
+  BufferingDynamicItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/dynamic/item/hello"
+
   StreamingSimpleHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/streaming/simple/hello"
+
+  StreamingSimpleItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/simple/item/hello"
 
   StreamingDynamicHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/streaming/dynamic/hello"
 
+  StreamingDynamicItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/dynamic/item/hello"
+
   BufferingAdapterHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/buffering/adapter/hello"
 
+  BufferingAdapterItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/adapter/item/hello"
+
   StreamingAdapterHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/hello"
+
+  StreamingAdapterItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/item/hello"
 
   StreamingAdapterSseUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/sse"
@@ -408,5 +599,11 @@ Outputs:
   StreamingModeALayerProxyPythonHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/python/hello"
 
+  StreamingModeALayerProxyPythonItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/python/item/hello"
+
   StreamingModeALayerProxyNodeHelloUrl:
     Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/node/hello"
+
+  StreamingModeALayerProxyNodeItemUrl:
+    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/node/item/hello"

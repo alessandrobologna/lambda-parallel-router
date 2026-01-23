@@ -74,6 +74,12 @@ async fn mode_a_splits_batch_and_streams_ndjson_in_completion_order() {
                 .await
                 .unwrap();
             assert_eq!(next.status(), reqwest::StatusCode::OK);
+            assert!(
+                next.headers()
+                    .get("Lambda-Runtime-Function-Response-Mode")
+                    .is_none(),
+                "virtual invocations must not advertise response streaming"
+            );
 
             let id = next
                 .headers()
@@ -174,6 +180,10 @@ async fn upstream_next(State(state): State<UpstreamState>) -> Response<Body> {
     headers.insert(
         "Lambda-Runtime-Aws-Request-Id",
         HeaderValue::from_static("outer-1"),
+    );
+    headers.insert(
+        "Lambda-Runtime-Function-Response-Mode",
+        HeaderValue::from_static("streaming"),
     );
 
     let mut res = Response::new(Body::from(body.to_string()));

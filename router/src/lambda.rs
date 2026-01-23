@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 
 use crate::spec::InvokeMode;
 
@@ -100,14 +101,17 @@ impl LambdaInvoker for AwsLambdaInvoker {
 
                 tokio::spawn(async move {
                     let mut stream = stream;
+                    let mut can_send = true;
                     loop {
                         let event = match stream.recv().await {
                             Ok(Some(e)) => e,
                             Ok(None) => break,
                             Err(err) => {
-                                let _ = tx
-                                    .send(Err(anyhow::anyhow!("event stream recv: {err}")))
-                                    .await;
+                                if can_send {
+                                    let _ = tx
+                                        .send(Err(anyhow::anyhow!("event stream recv: {err}")))
+                                        .await;
+                                }
                                 break;
                             }
                         };
@@ -116,12 +120,17 @@ impl LambdaInvoker for AwsLambdaInvoker {
                             aws_sdk_lambda::types::InvokeWithResponseStreamResponseEvent::PayloadChunk(
                                 chunk,
                             ) => {
+                                if !can_send {
+                                    continue;
+                                }
                                 let Some(payload) = chunk.payload() else {
                                     continue;
                                 };
                                 let bytes = Bytes::copy_from_slice(payload.as_ref());
                                 if tx.send(Ok(bytes)).await.is_err() {
-                                    break;
+                                    // Downstream no longer needs the response body. Keep draining the
+                                    // upstream event stream to avoid locally resetting the HTTP/2 stream.
+                                    can_send = false;
                                 }
                             }
                             aws_sdk_lambda::types::InvokeWithResponseStreamResponseEvent::InvokeComplete(
@@ -129,12 +138,24 @@ impl LambdaInvoker for AwsLambdaInvoker {
                             ) => {
                                 if let Some(code) = complete.error_code() {
                                     let details = complete.error_details().unwrap_or_default();
-                                    let _ = tx
-                                        .send(Err(anyhow::anyhow!(
-                                            "lambda stream error ({code}): {details}"
-                                        )))
-                                        .await;
+                                    if can_send {
+                                        let _ = tx
+                                            .send(Err(anyhow::anyhow!(
+                                                "lambda stream error ({code}): {details}"
+                                            )))
+                                            .await;
+                                    }
                                 }
+
+                                // Best-effort: drain to EOF so the underlying HTTP stream can close
+                                // cleanly. Dropping the event stream without draining results in a
+                                // local reset (RST_STREAM), which can accumulate and trigger
+                                // `h2::proto::streams::streams` warnings like:
+                                // "locally-reset streams reached limit (1024)".
+                                let _ = timeout(Duration::from_secs(1), async {
+                                    while let Ok(Some(_)) = stream.recv().await {}
+                                })
+                                .await;
                                 break;
                             }
                             _ => {}

@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::body::Body;
+use axum::body::{to_bytes, Body};
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
 use bytes::Bytes;
@@ -16,6 +16,7 @@ use crate::runtime_api::RuntimeApiClient;
 use crate::state::{ActiveInvocation, LprBatchInvocation, PassThroughInvocation, ProxyState};
 
 const NDJSON_CONTENT_TYPE: &str = "application/x-ndjson";
+const MAX_FORWARD_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -62,6 +63,7 @@ pub fn router(upstream: RuntimeApiClient) -> Router {
             "/2018-06-01/runtime/invocation/{id}/error",
             post(handle_error),
         )
+        .fallback(handle_fallback)
         .with_state(app_state)
 }
 
@@ -84,10 +86,34 @@ async fn handle_next(State(state): State<AppState>) -> Result<Response<Body>, St
 
             match fetched {
                 Ok(next) => {
-                    let headers = sanitize_next_headers(&next.headers);
-                    if let Some(virtuals) =
-                        parse_outer_lpr_batch(&next.body).map_err(|_| StatusCode::BAD_GATEWAY)?
-                    {
+                    let response_mode = next
+                        .headers
+                        .get("Lambda-Runtime-Function-Response-Mode")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("buffered");
+                    tracing::info!(
+                        outer_request_id = %next.request_id,
+                        response_mode = %response_mode,
+                        body_len = next.body.len(),
+                        "fetched upstream invocation"
+                    );
+
+                    let mut headers = sanitize_next_headers(&next.headers);
+                    let parsed = parse_outer_lpr_batch(&next.body).map_err(|err| {
+                        tracing::error!(error = %err, outer_request_id = %next.request_id, "failed to parse outer batch envelope");
+                        StatusCode::BAD_GATEWAY
+                    })?;
+                    if let Some(virtuals) = parsed {
+                        tracing::info!(
+                            outer_request_id = %next.request_id,
+                            virtual_invocations = virtuals.len(),
+                            "parsed LPR batch invocation"
+                        );
+                        // The outer invocation is response-streaming, but each virtual invocation
+                        // must be treated as a normal (buffered) runtime invocation. Propagating
+                        // the streaming response mode header would cause managed runtimes (e.g.
+                        // Node) to expect streamifyResponse semantics and can wedge the runtime.
+                        headers.remove("Lambda-Runtime-Function-Response-Mode");
                         let (tx, join) = state
                             .upstream
                             .start_streaming_response(next.request_id.clone(), NDJSON_CONTENT_TYPE);
@@ -100,6 +126,7 @@ async fn handle_next(State(state): State<AppState>) -> Result<Response<Body>, St
                             stream_join: Some(join),
                         });
                     } else {
+                        tracing::info!(outer_request_id = %next.request_id, "using passthrough invocation");
                         inner.active = ActiveInvocation::PassThrough(PassThroughInvocation {
                             request_id: next.request_id,
                             headers: next.headers,
@@ -121,6 +148,40 @@ async fn handle_next(State(state): State<AppState>) -> Result<Response<Body>, St
 
         state.proxy.notify.notified().await;
     }
+}
+
+async fn handle_fallback(
+    State(state): State<AppState>,
+    req: Request<Body>,
+) -> Result<Response<Body>, StatusCode> {
+    let method = req.method().clone();
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|v| v.as_str())
+        .unwrap_or_else(|| req.uri().path())
+        .to_string();
+    let headers = req.headers().clone();
+    let body = to_bytes(req.into_body(), MAX_FORWARD_BODY_BYTES)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+
+    tracing::debug!(method = %method, path = %path_and_query, "forwarding runtime api request");
+
+    let (status, headers, body) = state
+        .upstream
+        .forward_request(method, &path_and_query, headers, body)
+        .await
+        .map_err(|err| {
+            tracing::error!(error = %err, path = %path_and_query, "upstream proxy failed");
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let headers = sanitize_next_headers(&headers);
+    let mut res = Response::new(Body::from(body));
+    *res.status_mut() = status;
+    *res.headers_mut() = headers;
+    Ok(res)
 }
 
 async fn try_take_next(state: &AppState) -> Result<Option<Response<Body>>, StatusCode> {

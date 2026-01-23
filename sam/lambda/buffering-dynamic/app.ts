@@ -29,6 +29,38 @@ type BatchResponse = {
   }>;
 };
 
+type DdbDeps = { client: any; GetItemCommand: any };
+
+let ddbDeps: Promise<DdbDeps> | null = null;
+
+function getDdbDeps(): Promise<DdbDeps> {
+  if (!ddbDeps) {
+    ddbDeps = import("@aws-sdk/client-dynamodb").then((mod) => ({
+      client: new mod.DynamoDBClient({}),
+      GetItemCommand: mod.GetItemCommand,
+    }));
+  }
+  return ddbDeps;
+}
+
+async function getItemPayload(pk: string): Promise<string | null> {
+  const tableName = process.env.BENCHMARK_TABLE_NAME;
+  if (!tableName) return null;
+
+  const { client, GetItemCommand } = await getDdbDeps();
+  const res = await client.send(
+    new GetItemCommand({
+      TableName: tableName,
+      Key: { pk: { S: pk } },
+      ProjectionExpression: "#payload",
+      ExpressionAttributeNames: { "#payload": "payload" },
+    }),
+  );
+
+  const payload = res?.Item?.payload?.S;
+  return typeof payload === "string" ? payload : null;
+}
+
 function decodeBody(item: BatchItem): Buffer {
   const body = typeof item?.body === "string" ? item.body : "";
   const isB64 = Boolean(item?.isBase64Encoded);
@@ -67,10 +99,14 @@ export async function handler(event: BatchEvent): Promise<BatchResponse> {
       const delayMs = maxDelayMs ? Math.floor(Math.random() * (maxDelayMs + 1)) : 0;
       await sleep(delayMs);
 
+      const itemKey = item?.pathParameters?.id ?? item?.pathParameters?.greeting ?? "";
+      const greeting = itemKey;
+      const payload = itemKey ? await getItemPayload(itemKey) : null;
+
       const out = {
         ok: true,
         id,
-        greeting: item?.pathParameters?.greeting ?? "",
+        greeting,
         method: item?.requestContext?.http?.method ?? item?.httpMethod ?? item?.method ?? "",
         path: item?.rawPath ?? item?.path ?? "",
         routeKey: item?.routeKey ?? item?.requestContext?.routeKey ?? "",
@@ -78,6 +114,9 @@ export async function handler(event: BatchEvent): Promise<BatchResponse> {
         pathParameters: item?.pathParameters ?? {},
         maxDelayMs,
         delayMs,
+        itemKey,
+        itemFound: payload != null,
+        payload,
         bodyUtf8: bodyBuf.toString("utf8"),
       };
 

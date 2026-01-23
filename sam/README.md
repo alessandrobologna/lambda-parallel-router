@@ -66,18 +66,26 @@ Notes:
 
 ## Try it
 
-The `{greeting}` path parameter can be any string. The examples below use `hello`.
+The legacy routes use `{greeting}`. For DynamoDB-backed testing, prefer the `/item/{id}` routes.
 
-- Buffering simple: `GET {RouterServiceUrl}/buffering/simple/hello?max-delay=250`
-- Buffering dynamic: `GET {RouterServiceUrl}/buffering/dynamic/hello?max-delay=250`
-- Streaming simple: `GET {RouterServiceUrl}/streaming/simple/hello?max-delay=250`
-- Streaming dynamic: `GET {RouterServiceUrl}/streaming/dynamic/hello?max-delay=250`
-- Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=250`
-- Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=250`
-- Streaming adapter SSE: `GET {RouterServiceUrl}/streaming/adapter/sse?max-delay=250`
-- Mode A Python: `GET {RouterServiceUrl}/streaming/mode-a/python/hello?max-delay=250`
-- Mode A Node: `GET {RouterServiceUrl}/streaming/mode-a/node/hello?max-delay=250`
-- Direct (Lambda Function URL): `GET {DirectHelloUrl}?max-delay=250`
+- Buffering simple: `GET {RouterServiceUrl}/buffering/simple/hello?max-delay=0`
+- Buffering dynamic: `GET {RouterServiceUrl}/buffering/dynamic/hello?max-delay=0`
+- Streaming simple: `GET {RouterServiceUrl}/streaming/simple/hello?max-delay=0`
+- Streaming dynamic: `GET {RouterServiceUrl}/streaming/dynamic/hello?max-delay=0`
+- Buffering adapter: `GET {RouterServiceUrl}/buffering/adapter/hello?max-delay=0`
+- Streaming adapter: `GET {RouterServiceUrl}/streaming/adapter/hello?max-delay=0`
+- Streaming adapter SSE: `GET {RouterServiceUrl}/streaming/adapter/sse?max-delay=0`
+- Mode A Python: `GET {RouterServiceUrl}/streaming/mode-a/python/hello?max-delay=0`
+- Mode A Node: `GET {RouterServiceUrl}/streaming/mode-a/node/hello?max-delay=0`
+- Direct (Lambda Function URL): `GET {DirectHelloUrl}hello?max-delay=0`
+
+For load testing, use a numeric item id (e.g. `0..999`) to hit different DynamoDB keys:
+
+- `GET {RouterServiceUrl}/streaming/simple/item/42?max-delay=0`
+- `GET {RouterServiceUrl}/streaming/dynamic/item/42?max-delay=0`
+- `GET {RouterServiceUrl}/streaming/adapter/item/42?max-delay=0`
+- `GET {RouterServiceUrl}/streaming/mode-a/node/item/42?max-delay=0`
+- `GET {DirectHelloUrl}item/42?max-delay=0`
 
 ## Load testing (k6)
 
@@ -97,7 +105,11 @@ uv run benchmark/benchmark.py \
   --ramp-duration 3m \
   --hold-duration 30s \
   --stage-targets 50,100,150 \
-  --max-delay-ms 250
+  --max-delay-ms 0
 ```
 
 Outputs are written to `benchmark-results/` (CSV + summary + charts).
+
+Note: The demo router service enables `LPR_INCLUDE_BATCH_SIZE_HEADER=1`, which adds the `x-lpr-batch-size`
+response header. The k6 script records it as `lpr_batch_size` so the benchmark can estimate how many
+Lambda invocations were used per endpoint.

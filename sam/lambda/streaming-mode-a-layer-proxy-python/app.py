@@ -1,10 +1,17 @@
 import base64
 import json
+import os
 import random
 import time
 from typing import Any
 
+import boto3
+
 MAX_DELAY_MS = 10_000
+
+_BENCHMARK_TABLE_NAME = os.environ.get("BENCHMARK_TABLE_NAME") or ""
+_DDB = boto3.resource("dynamodb")
+_BENCHMARK_TABLE = _DDB.Table(_BENCHMARK_TABLE_NAME) if _BENCHMARK_TABLE_NAME else None
 
 
 def _parse_delay_ms(event: dict[str, Any]) -> int:
@@ -38,6 +45,18 @@ def _decode_body_utf8(event: dict[str, Any]) -> str:
     return raw_body
 
 
+def _get_item_payload(pk: str) -> str | None:
+    if not pk or _BENCHMARK_TABLE is None:
+        return None
+    try:
+        res = _BENCHMARK_TABLE.get_item(Key={"pk": pk})
+    except Exception:
+        return None
+    item = res.get("Item") or {}
+    payload = item.get("payload")
+    return payload if isinstance(payload, str) else None
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     request_context = event.get("requestContext") or {}
     if not isinstance(request_context, dict):
@@ -59,12 +78,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     method = http.get("method") or ""
     path = event.get("rawPath") or ""
     route_key = event.get("routeKey") or request_context.get("routeKey") or ""
-    greeting = path_parameters.get("greeting") or ""
+    item_key = path_parameters.get("id") or path_parameters.get("greeting") or ""
+    greeting = item_key
 
     max_delay_ms = _parse_delay_ms(event)
     delay_ms = random.randint(0, max_delay_ms) if max_delay_ms else 0
     if delay_ms:
         time.sleep(delay_ms / 1000.0)
+
+    payload = _get_item_payload(str(item_key))
 
     out = {
         "ok": True,
@@ -77,6 +99,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "pathParameters": path_parameters,
         "maxDelayMs": max_delay_ms,
         "delayMs": delay_ms,
+        "itemKey": item_key,
+        "itemFound": payload is not None,
+        "payload": payload,
         "bodyUtf8": _decode_body_utf8(event),
     }
 
