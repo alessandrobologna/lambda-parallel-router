@@ -1,8 +1,9 @@
 # lambda-parallel-router
 
 A long-running HTTP router that **micro-batches** requests per route for a few milliseconds and
-invokes AWS Lambda with a **single batched payload**. It provides a configurable **latency ↔ cost**
+invokes AWS Lambda with a **single batched payload**. It provides a configurable **latency vs cost**
 dial: small, bounded delays trade for fewer invocations and better Lambda utilization under load.
+These numbers are illustrative. Actual costs will depend on traffic patterns and configuration.
 
 ## What it does
 
@@ -18,17 +19,17 @@ dial: small, bounded delays trade for fewer invocations and better Lambda utiliz
 - **Streaming (NDJSON)**: Lambda is invoked with `InvokeWithResponseStream` and emits NDJSON records.
   The router dispatches each record as soon as it arrives (record-level streaming, not interleaved
   chunk streaming).
-- **Interleaved streaming (NDJSON framing)**: see `docs/INTERLEAVED_STREAMING_NDJSON.md` for the
-  chunk-level framing used by the interleaved adapter option, which lets Lambda choose the
-  client-facing protocol (e.g., SSE).
+- **Interleaved streaming (NDJSON framing, experimental)**: uses head, chunk, and end records so
+  Lambda can choose the client-facing protocol (for example SSE). See
+  [docs/architecture.md](docs/architecture.md) for a summary of the framing.
 
 ## Lambda integration modes
 
 - **Mode B (adapter, recommended)**: wrap an existing handler with a one-line adapter.
-  - Node adapter lives in `lambda-kit/adapter-node/` (package name: `lpr-lambda-adapter`).
-  - Rust adapter lives in `lambda-kit/adapter-rust/` (crate name: `lpr-lambda-adapter`, import as `lpr_lambda_adapter`).
+  - Node adapter lives in [`lambda-kit/adapter-node/`](lambda-kit/adapter-node/) (package name: `lpr-lambda-adapter`).
+  - Rust adapter lives in [`lambda-kit/adapter-rust/`](lambda-kit/adapter-rust/) (crate name: `lpr-lambda-adapter`, import as `lpr_lambda_adapter`).
 - **Mode C (native batch)**: handle an array of requests directly and return batch or NDJSON output.
-- **Mode A (layer/proxy)**: planned (best-effort compatibility without code changes).
+- **Mode A (layer proxy, experimental)**: use a Lambda Layer and exec wrapper to virtualize invocations without handler changes.
 
 ## Configuration
 
@@ -40,7 +41,7 @@ spec. Keys follow these conventions:
 - `RouterConfig` keys: **PascalCase** (CloudFormation-friendly)
 - `x-lpr` keys: **camelCase**
 
-Example (`examples/local/router.yaml`):
+Example ([`examples/local/router.yaml`](examples/local/router.yaml)):
 
 ```yaml
 ListenAddr: "127.0.0.1:3000"
@@ -69,17 +70,17 @@ Notes:
 
 ## Repository layout
 
-- `router/`: Rust router (axum) with per-route microbatching.
-- `lambda-kit/adapter-node/`: Node batch adapter (Mode B).
-- `lambda-kit/adapter-rust/`: Rust batch adapter (Mode B).
-- `sam/`: App Runner + sample Lambda deployment (see `sam/README.md`).
-- `docs/`: design notes (including interleaved streaming proposal).
+- [`router/`](router/): Rust router (axum) with per-route microbatching.
+- [`lambda-kit/adapter-node/`](lambda-kit/adapter-node/): Node batch adapter (Mode B).
+- [`lambda-kit/adapter-rust/`](lambda-kit/adapter-rust/): Rust batch adapter (Mode B).
+- [`sam/`](sam/): App Runner + sample Lambda deployment (see [sam/README.md](sam/README.md)).
+- [`docs/`](docs/): documentation (overview, architecture, integrations, best practices).
 
 ## Local dev (router)
 
 1) Create a router config manifest.
-   - `examples/local/router.yaml` is a starting point.
-   - `examples/local/README.md` describes local setup.
+   - [`examples/local/router.yaml`](examples/local/router.yaml) is a starting point.
+   - [`examples/local/README.md`](examples/local/README.md) describes local setup.
 2) Run:
 
 ```bash
@@ -88,13 +89,18 @@ cargo run -p lpr-router -- --config examples/local/router.yaml
 
 ## Deployment
 
-See `sam/README.md` for App Runner + sample Lambda setup and Makefile-based deployment.
+See [sam/README.md](sam/README.md) for App Runner + sample Lambda setup and Makefile-based deployment.
 
-## Design docs
+## Documentation
 
-- `http_microbatch_router_for_lambda_project_spec_draft.md`
-- `IMPLEMENTATION_PLAN.md`
-- `docs/INTERLEAVED_STREAMING_NDJSON.md`
+- [docs/overview.md](docs/overview.md) (project summary)
+- [docs/quickstart.md](docs/quickstart.md) (guided first run)
+- [docs/architecture.md](docs/architecture.md) (system design and contracts)
+- [docs/integrations.md](docs/integrations.md) (adapters, layer proxy, native batch)
+- [docs/best-practices.md](docs/best-practices.md) (tuning and operations)
+- [docs/interleaved-streaming.md](docs/interleaved-streaming.md) (interleaved NDJSON framing)
+- [sam/README.md](sam/README.md) (demo deployment)
+- [benchmark/README.md](benchmark/README.md) (benchmarking workflow)
 
 ## Status
 
