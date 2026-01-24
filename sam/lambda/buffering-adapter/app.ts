@@ -1,4 +1,4 @@
-const { batchAdapter } = require("../../../lambda-kit/adapter-node/index.js");
+import { batchAdapter } from "../../../lambda-kit/adapter-node/src/index";
 
 const MAX_DELAY_MS = 10_000;
 

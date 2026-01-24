@@ -13,6 +13,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+/lambda-kit/adapter-node/dist/
 
 # Layer build artifacts
 /lambda-kit/layer-proxy/dist/

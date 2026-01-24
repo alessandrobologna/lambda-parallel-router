@@ -1,4 +1,4 @@
-const { batchAdapterStream } = require("../../../lambda-kit/adapter-node/index.js");
+import { batchAdapterStream } from "../../../lambda-kit/adapter-node/src/index";
 
 declare const awslambda: any;
 
