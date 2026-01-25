@@ -1,0 +1,172 @@
+name: release-sar
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version (defaults to tag or VERSION file)"
+        required: false
+        type: string
+      publish_image:
+        description: "Build and push router image"
+        required: false
+        default: "true"
+        type: string
+      publish_sar:
+        description: "Publish SAR application version"
+        required: false
+        default: "true"
+        type: string
+      sar_visibility:
+        description: "SAR app visibility: public or private"
+        required: false
+        default: "public"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  PUBLIC_ECR_REGION: us-east-1
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(cat VERSION)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install build tooling
+        if: ${{ inputs.publish_sar != 'false' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq zig
+          cargo install cargo-lambda --locked
+          python -m pip install --upgrade pip pyyaml
+
+      - name: Setup SAM CLI
+        if: ${{ inputs.publish_sar != 'false' }}
+        uses: aws-actions/setup-sam@v2
+
+      - name: Build and push router image (public ECR)
+        if: ${{ inputs.publish_image != 'false' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PUBLIC_ECR_ALIAS: ${{ secrets.PUBLIC_ECR_ALIAS }}
+          PUBLIC_ECR_REPO: ${{ secrets.PUBLIC_ECR_REPO }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PUBLIC_ECR_ALIAS}" || -z "${PUBLIC_ECR_REPO}" ]]; then
+            echo "Missing PUBLIC_ECR_ALIAS or PUBLIC_ECR_REPO secret" >&2
+            exit 1
+          fi
+          IMAGE_URI="public.ecr.aws/${PUBLIC_ECR_ALIAS}/${PUBLIC_ECR_REPO}:${VERSION}"
+
+          aws ecr-public describe-repositories --repository-names "${PUBLIC_ECR_REPO}" --region "${PUBLIC_ECR_REGION}" >/dev/null 2>&1 \
+            || aws ecr-public create-repository --repository-name "${PUBLIC_ECR_REPO}" --region "${PUBLIC_ECR_REGION}" >/dev/null
+
+          aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
+            | docker login --username AWS --password-stdin public.ecr.aws
+
+          docker build -f Dockerfile.router -t "${IMAGE_URI}" .
+          docker push "${IMAGE_URI}"
+
+          echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
+
+      - name: Render bootstrap template for SAR release
+        if: ${{ inputs.publish_sar != 'false' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          IMAGE_URI: ${{ env.IMAGE_URI }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${IMAGE_URI:-}" ]]; then
+            echo "IMAGE_URI is required for SAR release (enable publish_image or set IMAGE_URI)" >&2
+            exit 1
+          fi
+          python - <<'PY'
+import os, yaml
+from pathlib import Path
+
+template = Path("bootstrap/template.yaml")
+data = yaml.safe_load(template.read_text())
+params = data.setdefault("Parameters", {})
+param = params.setdefault("DefaultRouterImageIdentifier", {})
+param["Default"] = os.environ["IMAGE_URI"]
+Path("bootstrap/template.release.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+print("Wrote bootstrap/template.release.yaml with DefaultRouterImageIdentifier =", os.environ["IMAGE_URI"])
+PY
+
+      - name: Build bootstrap app
+        if: ${{ inputs.publish_sar != 'false' }}
+        run: sam build --template bootstrap/template.release.yaml
+
+      - name: Package bootstrap app
+        if: ${{ inputs.publish_sar != 'false' }}
+        env:
+          SAR_ARTIFACTS_BUCKET: ${{ secrets.SAR_ARTIFACTS_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SAR_ARTIFACTS_BUCKET}" ]]; then
+            echo "Missing SAR_ARTIFACTS_BUCKET secret" >&2
+            exit 1
+          fi
+          sam package \
+            --template-file .aws-sam/build/template.yaml \
+            --s3-bucket "${SAR_ARTIFACTS_BUCKET}" \
+            --output-template-file packaged.yaml
+          aws s3 cp packaged.yaml "s3://${SAR_ARTIFACTS_BUCKET}/sar/${{ steps.version.outputs.version }}/template.yaml"
+          echo "PACKAGED_TEMPLATE_URL=s3://${SAR_ARTIFACTS_BUCKET}/sar/${{ steps.version.outputs.version }}/template.yaml" >> "$GITHUB_ENV"
+
+      - name: Publish SAR application version
+        if: ${{ inputs.publish_sar != 'false' }}
+        env:
+          SAR_APPLICATION_ID: ${{ secrets.SAR_APPLICATION_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SAR_APPLICATION_ID}" ]]; then
+            echo "Missing SAR_APPLICATION_ID secret" >&2
+            exit 1
+          fi
+          aws serverlessrepo create-application-version \
+            --application-id "${SAR_APPLICATION_ID}" \
+            --semantic-version "${{ steps.version.outputs.version }}" \
+            --template-url "${PACKAGED_TEMPLATE_URL}"
+
+      - name: Set SAR visibility (optional)
+        if: ${{ inputs.publish_sar != 'false' && inputs.sar_visibility == 'public' }}
+        env:
+          SAR_APPLICATION_ID: ${{ secrets.SAR_APPLICATION_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SAR_APPLICATION_ID}" ]]; then
+            echo "Missing SAR_APPLICATION_ID secret" >&2
+            exit 1
+          fi
+          aws serverlessrepo put-application-policy \
+            --application-id "${SAR_APPLICATION_ID}" \
+            --statements "[{\"Actions\":[\"serverlessrepo:GetApplication\",\"serverlessrepo:CreateCloudFormationTemplate\",\"serverlessrepo:GetCloudFormationTemplate\",\"serverlessrepo:ListApplicationVersions\"],\"Principals\":[\"*\"],\"StatementId\":\"public-read\"}]"

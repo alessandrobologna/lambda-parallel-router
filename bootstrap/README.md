@@ -423,6 +423,16 @@ sam deploy \
   --parameter-overrides UseExistingBucket=my-existing-bucket
 ```
 
+Override the default router image identifier (for example, to point to a public ECR image):
+
+```bash
+sam deploy \
+  --template-file bootstrap/template.yaml \
+  --stack-name lpr-bootstrap \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides DefaultRouterImageIdentifier=public.ecr.aws/your-alias/lambda-parallel-router/router:1.2.3
+```
+
 ## Outputs
 
 - `ConfigBucketName`: bucket where router config manifests are stored.

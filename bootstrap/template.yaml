@@ -15,9 +15,14 @@ Parameters:
     Type: String
     Default: 0.0.0
     Description: Default router image tag (pinned, not latest).
+  DefaultRouterImageIdentifier:
+    Type: String
+    Default: ""
+    Description: Optional full router image identifier (overrides repository + tag when set).
 
 Conditions:
   CreateConfigBucket: !Equals [!Ref UseExistingBucket, ""]
+  HasDefaultRouterImageIdentifier: !Not [!Equals [!Ref DefaultRouterImageIdentifier, ""]]
 
 Resources:
   ConfigBucket:
@@ -121,7 +126,10 @@ Resources:
         - AWSLambdaBasicExecutionRole
       Environment:
         Variables:
-          LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${DefaultRouterRepositoryName}:${DefaultRouterImageTag}'
+          LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER: !If
+            - HasDefaultRouterImageIdentifier
+            - !Ref DefaultRouterImageIdentifier
+            - !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${DefaultRouterRepositoryName}:${DefaultRouterImageTag}'
 
   RouterMacro:
     Type: AWS::CloudFormation::Macro

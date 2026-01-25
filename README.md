@@ -99,6 +99,7 @@ See [sam/README.md](sam/README.md) for App Runner + sample Lambda setup and Make
 - [docs/integrations.md](docs/integrations.md) (adapters, layer proxy, native batch)
 - [docs/best-practices.md](docs/best-practices.md) (tuning and operations)
 - [docs/interleaved-streaming.md](docs/interleaved-streaming.md) (interleaved NDJSON framing)
+- [docs/release.md](docs/release.md) (release workflow / SAR publishing)
 - [sam/README.md](sam/README.md) (demo deployment)
 - [benchmark/README.md](benchmark/README.md) (benchmarking workflow)
 
