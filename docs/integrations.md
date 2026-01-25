@@ -159,6 +159,8 @@ Use a native batch handler for full control. The handler receives `event.batch` 
 
 Use the layer proxy when handler code cannot change. The proxy splits one outer batch invocation into multiple virtual runtime invocations.
 
+If you deploy the bootstrap stack, it outputs `LayerAmd64Arn` and `LayerArm64Arn` for the proxy layer.
+
 **Enable the layer proxy**
 
 ```bash
@@ -177,4 +179,4 @@ LPR_MAX_CONCURRENCY=4
 - Mode A assumes API Gateway HTTP API v2 request shapes.
 - The proxy uses `requestContext.requestId` as the per-item id. Duplicate ids in a batch are rejected.
 
-Layer proxy build and publish steps live in [lambda-kit/layer-proxy/README.md](../lambda-kit/layer-proxy/README.md).
+Layer proxy build and publish steps live in [bootstrap/layer-proxy/README.md](../bootstrap/layer-proxy/README.md).

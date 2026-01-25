@@ -84,6 +84,30 @@ Resources:
         Variables:
           LPR_DEFAULT_BUCKET: !If [CreateConfigBucket, !Ref ConfigBucket, !Ref UseExistingBucket]
 
+  LprRuntimeApiProxyLayerArm64:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: arm64
+    Properties:
+      RetentionPolicy: Retain
+      LayerName: !Sub "${AWS::StackName}-lpr-runtime-api-proxy-arm64"
+      ContentUri: layer-proxy
+      CompatibleArchitectures:
+        - arm64
+
+  LprRuntimeApiProxyLayerAmd64:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: x86_64
+    Properties:
+      RetentionPolicy: Retain
+      LayerName: !Sub "${AWS::StackName}-lpr-runtime-api-proxy-amd64"
+      ContentUri: layer-proxy
+      CompatibleArchitectures:
+        - x86_64
+
   RouterMacroFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -121,3 +145,11 @@ Outputs:
   RouterMacroName:
     Description: CloudFormation macro name to add to the Transform section.
     Value: LprRouter
+
+  LayerArm64Arn:
+    Description: ARN of the arm64 runtime API proxy layer.
+    Value: !Ref LprRuntimeApiProxyLayerArm64
+
+  LayerAmd64Arn:
+    Description: ARN of the amd64 runtime API proxy layer.
+    Value: !Ref LprRuntimeApiProxyLayerAmd64

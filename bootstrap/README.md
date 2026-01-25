@@ -7,6 +7,7 @@ The bootstrap stack deploys shared resources:
 - a CloudFormation macro (`LprRouter`) that expands `Lpr::Router::Service` into App Runner resources
 - a custom resource handler (`Custom::LprConfigPublisher`) used by the macro to publish config manifests
 - a default router image identifier configured on the macro function and used when `ImageIdentifier` is empty or omitted
+- the Mode A Runtime API proxy layer (arm64 + amd64) for layer proxy integrations
 
 ## Macro
 
@@ -426,3 +427,5 @@ sam deploy \
 
 - `ConfigBucketName`: bucket where router config manifests are stored.
 - `ConfigPublisherServiceToken`: Lambda ARN to use as the `ServiceToken` for a `Custom::LprConfigPublisher` resource.
+- `LayerArm64Arn`: ARN of the arm64 runtime API proxy layer.
+- `LayerAmd64Arn`: ARN of the amd64 runtime API proxy layer.

@@ -59,7 +59,7 @@ Resources:
     Properties:
       RetentionPolicy: Retain
       LayerName: !Sub "${AWS::StackName}-lpr-runtime-api-proxy-amd64"
-      ContentUri: ../lambda-kit/layer-proxy
+      ContentUri: ../bootstrap/layer-proxy
       CompatibleArchitectures:
         - x86_64
 

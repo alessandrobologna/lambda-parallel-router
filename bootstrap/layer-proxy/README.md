@@ -19,14 +19,14 @@ The layer contents map to `/opt` in Lambda.
 Build:
 
 ```bash
-cd lambda-kit/layer-proxy
+cd bootstrap
 sam build --template template.yaml
 ```
 
 Publish:
 
 ```bash
-cd lambda-kit/layer-proxy
+cd bootstrap
 sam deploy --guided
 ```
 

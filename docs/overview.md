@@ -35,7 +35,7 @@ The router groups requests by route and batch key, invokes Lambda once per batch
 - Spec compiler ([`router/src/spec.rs`](../router/src/spec.rs)). Parses OpenAPI-like route config.
 - Lambda kit ([`lambda-kit/`](../lambda-kit/)).
   - Adapters ([`adapter-node`](../lambda-kit/adapter-node/), [`adapter-rust`](../lambda-kit/adapter-rust/)).
-  - Layer proxy ([`layer-proxy`](../lambda-kit/layer-proxy/)). Runtime API proxy and exec wrapper.
+  - Layer proxy ([`bootstrap/layer-proxy`](../bootstrap/layer-proxy/)). Runtime API proxy and exec wrapper.
 - Demo stack ([`sam/`](../sam/)). App Runner service, sample Lambdas, and routes.
 - Benchmark tooling ([`benchmark/`](../benchmark/)). k6 load test and report generation.
 
