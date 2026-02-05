@@ -1,16 +1,16 @@
 # Local example
 
-This directory contains a router config manifest for running the router locally and invoking AWS Lambda.
+This directory contains a gateway config manifest for running the gateway locally and invoking AWS Lambda.
 
 ## Prerequisites
 
 - Rust toolchain (`cargo`)
 - AWS credentials that can invoke the target Lambda function
-- A Lambda function that implements the router contract (buffered or streaming)
+- A Lambda function that implements the gateway contract (buffered or streaming)
 
 ## Configure
 
-Edit `examples/local/router.yaml`.
+Edit `examples/local/gateway.yaml`.
 
 Update these fields:
 
@@ -30,7 +30,7 @@ Spec:
 ## Run
 
 ```bash
-cargo run -p lpr-router -- --config examples/local/router.yaml
+cargo run -p smug-gateway -- --config examples/local/gateway.yaml
 ```
 
 ## Try it

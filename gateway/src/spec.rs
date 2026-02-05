@@ -1,6 +1,6 @@
 //! OpenAPI-ish routing spec parsing and matching.
 //!
-//! The router uses a lightweight subset of OpenAPI (`paths` + HTTP methods) and relies on vendor
+//! The gateway uses a lightweight subset of OpenAPI (`paths` + HTTP methods) and relies on vendor
 //! extensions to define Lambda targets and microbatching behavior.
 
 use std::collections::{BTreeMap, HashMap};
@@ -46,7 +46,7 @@ fn default_dynamic_smoothing_samples() -> usize {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-/// How the router invokes Lambda for an operation.
+/// How the gateway invokes Lambda for an operation.
 #[serde(rename_all = "snake_case")]
 pub enum InvokeMode {
     /// Synchronous `Invoke` returning a single buffered payload.
@@ -64,7 +64,7 @@ impl Default for InvokeMode {
 #[derive(Debug, Clone, Deserialize)]
 /// Dynamic batching window configuration.
 ///
-/// When set, the router computes a per-batch flush window in `[min_wait_ms, max_wait_ms]` based on
+/// When set, the gateway computes a per-batch flush window in `[min_wait_ms, max_wait_ms]` based on
 /// the request rate for the current batch key.
 #[serde(rename_all = "camelCase")]
 pub struct DynamicWaitConfig {
@@ -102,9 +102,9 @@ pub struct DynamicWaitConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-/// `x-lpr` vendor extension (per operation).
+/// `x-smug` vendor extension (per operation).
 #[serde(rename_all = "camelCase")]
-pub struct LprOperationConfig {
+pub struct SmugOperationConfig {
     /// Maximum time (in milliseconds) to wait before flushing a batch.
     #[serde(deserialize_with = "crate::serde_ext::de_u64_or_string")]
     pub max_wait_ms: u64,
@@ -115,7 +115,7 @@ pub struct LprOperationConfig {
     #[serde(default)]
     /// Optional additional batch key dimensions (e.g. `header:x-tenant-id`).
     ///
-    /// The router always partitions batches by `(target_lambda, method, route_template)`.
+    /// The gateway always partitions batches by `(target_lambda, method, route_template)`.
     /// This list allows adding extra per-request dimensions to avoid mixing requests whose
     /// semantics differ (e.g. multi-tenant traffic).
     pub key: Vec<String>,
@@ -155,9 +155,9 @@ pub struct Operation {
     /// Lambda function ARN.
     pub target_lambda: String,
 
-    #[serde(rename = "x-lpr")]
-    /// Router-specific operation configuration.
-    pub lpr: LprOperationConfig,
+    #[serde(rename = "x-smug")]
+    /// Gateway-specific operation configuration.
+    pub smug: SmugOperationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -186,7 +186,7 @@ pub struct OpenApiLikeSpec {
 }
 
 #[derive(Debug, Clone)]
-/// Fully resolved per-operation configuration used by the router at runtime.
+/// Fully resolved per-operation configuration used by the gateway at runtime.
 pub struct OperationConfig {
     pub route_template: String,
     pub method: Method,
@@ -239,7 +239,7 @@ impl CompiledSpec {
 
     /// Match an `(HTTP method, path)` pair.
     ///
-    /// The router uses this to decide which Lambda to invoke, and which batching settings to apply.
+    /// The gateway uses this to decide which Lambda to invoke, and which batching settings to apply.
     pub fn match_request<'a>(&'a self, method: &Method, path: &str) -> RouteMatch<'a> {
         let Ok(matched) = self.router.at(path) else {
             return RouteMatch::NotFound;
@@ -347,43 +347,43 @@ fn add_op(
         );
     }
 
-    if op.lpr.max_batch_size == 0 {
-        anyhow::bail!("x-lpr.maxBatchSize must be > 0 for {method} {route_template}");
+    if op.smug.max_batch_size == 0 {
+        anyhow::bail!("x-smug.maxBatchSize must be > 0 for {method} {route_template}");
     }
 
-    let key = parse_batch_key_dimensions(&op.lpr.key)
-        .map_err(|err| anyhow::anyhow!("invalid x-lpr.key for {method} {route_template}: {err}"))?;
+    let key = parse_batch_key_dimensions(&op.smug.key)
+        .map_err(|err| anyhow::anyhow!("invalid x-smug.key for {method} {route_template}: {err}"))?;
 
-    let timeout_ms = op.lpr.timeout_ms.unwrap_or(default_timeout_ms);
+    let timeout_ms = op.smug.timeout_ms.unwrap_or(default_timeout_ms);
 
-    if let Some(dynamic) = &op.lpr.dynamic_wait {
-        if dynamic.min_wait_ms > op.lpr.max_wait_ms {
+    if let Some(dynamic) = &op.smug.dynamic_wait {
+        if dynamic.min_wait_ms > op.smug.max_wait_ms {
             anyhow::bail!(
-                "x-lpr.dynamicWait.minWaitMs must be <= x-lpr.maxWaitMs for {method} {route_template}"
+                "x-smug.dynamicWait.minWaitMs must be <= x-smug.maxWaitMs for {method} {route_template}"
             );
         }
 
         if dynamic.sampling_interval_ms == 0 {
             anyhow::bail!(
-                "x-lpr.dynamicWait.samplingIntervalMs must be > 0 for {method} {route_template}"
+                "x-smug.dynamicWait.samplingIntervalMs must be > 0 for {method} {route_template}"
             );
         }
 
         if dynamic.smoothing_samples == 0 {
             anyhow::bail!(
-                "x-lpr.dynamicWait.smoothingSamples must be > 0 for {method} {route_template}"
+                "x-smug.dynamicWait.smoothingSamples must be > 0 for {method} {route_template}"
             );
         }
 
         if !dynamic.target_rps.is_finite() || dynamic.target_rps < 0.0 {
             anyhow::bail!(
-                "x-lpr.dynamicWait.targetRps must be a finite non-negative number for {method} {route_template}"
+                "x-smug.dynamicWait.targetRps must be a finite non-negative number for {method} {route_template}"
             );
         }
 
         if !dynamic.steepness.is_finite() || dynamic.steepness <= 0.0 {
             anyhow::bail!(
-                "x-lpr.dynamicWait.steepness must be a finite number > 0 for {method} {route_template}"
+                "x-smug.dynamicWait.steepness must be a finite number > 0 for {method} {route_template}"
             );
         }
     }
@@ -395,12 +395,12 @@ fn add_op(
             method,
             operation_id: op.operation_id,
             target_lambda: op.target_lambda,
-            max_wait_ms: op.lpr.max_wait_ms,
-            max_batch_size: op.lpr.max_batch_size,
+            max_wait_ms: op.smug.max_wait_ms,
+            max_batch_size: op.smug.max_batch_size,
             key,
             timeout_ms,
-            invoke_mode: op.lpr.invoke_mode,
-            dynamic_wait: op.lpr.dynamic_wait,
+            invoke_mode: op.smug.invoke_mode,
+            dynamic_wait: op.smug.dynamic_wait,
         },
     );
     Ok(())
@@ -417,7 +417,7 @@ fn parse_batch_key_dimensions(raw: &[String]) -> anyhow::Result<Vec<BatchKeyDime
             anyhow::bail!("empty key entry");
         }
 
-        // The spec draft examples sometimes include `method`/`route` explicitly, but the router
+        // The spec draft examples sometimes include `method`/`route` explicitly, but the gateway
         // always keys by these fields anyway.
         let lowered = entry.to_ascii_lowercase();
         if lowered == "method"
@@ -524,7 +524,7 @@ paths:
     get:
       operationId: getItem
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 10
         maxBatchSize: 16
         timeoutMs: 2000
@@ -560,10 +560,10 @@ paths:
   /x:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
+      x-smug: { maxWaitMs: 1, maxBatchSize: 1 }
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
+      x-smug: { maxWaitMs: 1, maxBatchSize: 1 }
 "#;
         let spec = CompiledSpec::from_yaml_bytes(yaml, 1000).unwrap();
         let RouteMatch::MethodNotAllowed { allowed } = spec.match_request(&Method::PUT, "/x")
@@ -602,7 +602,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 1, maxBatchSize: 0 }
+      x-smug: { maxWaitMs: 1, maxBatchSize: 0 }
 "#;
         assert!(CompiledSpec::from_yaml_bytes(yaml, 1000).is_err());
     }
@@ -614,7 +614,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 1
         maxBatchSize: 1
 "#;
@@ -632,7 +632,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 1
         maxBatchSize: 1
         key:
@@ -658,7 +658,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 1
         maxBatchSize: 1
         key: ["not-supported"]
@@ -673,7 +673,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 1
         maxBatchSize: 1
         key: ["header:x-tenant-id", "header:X-Tenant-Id"]
@@ -688,7 +688,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 1
         maxBatchSize: 1
         key:
@@ -711,7 +711,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 1
         maxBatchSize: 1
         key: ["query:version", "query:version"]
@@ -726,7 +726,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: "25"
         maxBatchSize: "4"
         timeoutMs: "123"
@@ -747,7 +747,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 100
         maxBatchSize: 2
         dynamicWait:
@@ -777,7 +777,7 @@ paths:
   /x:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr:
+      x-smug:
         maxWaitMs: 10
         maxBatchSize: 2
         dynamicWait:

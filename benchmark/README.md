@@ -24,11 +24,11 @@ skew in short runs like smoke tests. Disable with `--no-warmup` if you want to m
 
 ## Batch size header (cost estimation)
 
-When the router is started with `LPR_INCLUDE_BATCH_SIZE_HEADER=1`, it adds a response header:
+When the gateway is started with `SMUG_INCLUDE_BATCH_SIZE_HEADER=1`, it adds a response header:
 
-- `x-lpr-batch-size: <n>`
+- `x-smug-batch-size: <n>`
 
-The k6 script records this per-request value as a custom metric (`lpr_batch_size`) so the benchmark summary can estimate:
+The k6 script records this per-request value as a custom metric (`smug_batch_size`) so the benchmark summary can estimate:
 
 - effective batch size (`requests / est_lambda_invocations`)
 - estimated Lambda invocation count (`sum(1 / batch_size)`; for direct endpoints the batch size is treated as `1`)
@@ -84,7 +84,7 @@ Example:
 
 ```bash
 uv run benchmark/benchmark.py \
-  --stack lambda-parallel-router-demo \
+  --stack simple-multiplexer-gateway-demo \
   --region us-east-1 \
   --duration 3m \
   --stage-targets 50,100,150 \
@@ -106,7 +106,7 @@ For a stable path (useful for README links), use `--run-name` or set `--run-dir`
 
 ```bash
 uv run benchmark/benchmark.py \
-  --stack lambda-parallel-router-demo \
+  --stack simple-multiplexer-gateway-demo \
   --region us-east-1 \
   --run-name readme
 ```
@@ -117,7 +117,7 @@ Select one endpoint and use `--report route` (or rely on `--report auto`):
 
 ```bash
 uv run benchmark/benchmark.py \
-  --stack lambda-parallel-router-demo \
+  --stack simple-multiplexer-gateway-demo \
   --region us-east-1 \
   --endpoint streaming-simple \
   --report route
@@ -158,7 +158,7 @@ For a quick health check (not a statistically meaningful benchmark), run a singl
 
 ```bash
 uv run benchmark/benchmark.py \
-  --stack lambda-parallel-router-demo \
+  --stack simple-multiplexer-gateway-demo \
   --region us-east-1 \
   --run-name smoke \
   --duration 5s \

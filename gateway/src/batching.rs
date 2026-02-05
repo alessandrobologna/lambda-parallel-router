@@ -25,21 +25,21 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Metadata about the batch that produced a particular per-request response.
-pub struct RouterResponseMeta {
+pub struct GatewayResponseMeta {
     pub batch_size: usize,
     pub batch_wait_ms: u64,
 }
 
 #[derive(Debug, Clone)]
 /// HTTP response returned to the original client.
-pub struct RouterResponse {
+pub struct GatewayResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
-    pub meta: Option<RouterResponseMeta>,
+    pub meta: Option<GatewayResponseMeta>,
 }
 
-impl RouterResponse {
+impl GatewayResponse {
     /// Convenience constructor for a plain text response (no default content-type is set).
     pub fn text(status: StatusCode, body: impl Into<String>) -> Self {
         Self {
@@ -51,7 +51,7 @@ impl RouterResponse {
     }
 }
 
-impl axum::response::IntoResponse for RouterResponse {
+impl axum::response::IntoResponse for GatewayResponse {
     fn into_response(self) -> axum::response::Response {
         let mut res = axum::response::Response::new(axum::body::Body::from(self.body));
         *res.status_mut() = self.status;
@@ -65,7 +65,7 @@ impl axum::response::IntoResponse for RouterResponse {
 
 #[derive(Debug)]
 pub(crate) enum ResponseSink {
-    Buffered(oneshot::Sender<RouterResponse>),
+    Buffered(oneshot::Sender<GatewayResponse>),
     Stream(StreamSender),
 }
 
@@ -77,7 +77,7 @@ pub(crate) struct StreamSender {
 
 #[derive(Debug)]
 pub(crate) enum StreamInit {
-    Response(RouterResponse),
+    Response(GatewayResponse),
     Stream(StreamHead),
 }
 
@@ -85,13 +85,13 @@ pub(crate) enum StreamInit {
 pub(crate) struct StreamHead {
     pub(crate) status: StatusCode,
     pub(crate) headers: HeaderMap,
-    pub(crate) meta: RouterResponseMeta,
+    pub(crate) meta: GatewayResponseMeta,
 }
 
 #[derive(Debug)]
 /// A single HTTP request waiting to be included in a batch.
 pub struct PendingRequest {
-    /// Router-generated request identifier (unique within the batch).
+    /// Gateway-generated request identifier (unique within the batch).
     pub id: String,
     pub method: Method,
     pub path: String,
@@ -114,7 +114,7 @@ pub struct BatchingConfig {
     pub max_inflight_invocations: usize,
     /// Maximum number of queued invocation jobs waiting to be executed.
     ///
-    /// When full, the router rejects new batches with 429 to avoid unbounded memory growth.
+    /// When full, the gateway rejects new batches with 429 to avoid unbounded memory growth.
     pub max_pending_invocations: usize,
     /// Per-batch-key queue depth.
     pub max_queue_depth_per_key: usize,
@@ -271,7 +271,7 @@ struct BatcherRuntime {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchItem {
-    /// Router-generated request identifier (used for correlating batch responses).
+    /// Gateway-generated request identifier (used for correlating batch responses).
     ///
     /// This is serialized into the request event as `requestContext.requestId`.
     #[serde(skip_serializing)]
@@ -614,7 +614,7 @@ enum InvocationJob {
         wait_ms: u64,
         estimated_rps: Option<f64>,
         payload: Bytes,
-        pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+        pending: HashMap<String, oneshot::Sender<GatewayResponse>>,
     },
     Stream {
         key: BatchKey,
@@ -653,7 +653,7 @@ async fn invocation_dispatcher(
         let permit = match inflight.clone().acquire_owned().await {
             Ok(p) => p,
             Err(_) => {
-                job.fail(StatusCode::BAD_GATEWAY, "router shutting down".to_string());
+                job.fail(StatusCode::BAD_GATEWAY, "gateway shutting down".to_string());
                 continue;
             }
         };
@@ -814,7 +814,7 @@ async fn flush_batch(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let mut pending_buffered: HashMap<String, oneshot::Sender<RouterResponse>> = HashMap::new();
+    let mut pending_buffered: HashMap<String, oneshot::Sender<GatewayResponse>> = HashMap::new();
     let mut pending_stream: HashMap<String, StreamPending> = HashMap::new();
     let mut batch_items = Vec::with_capacity(batch.len());
     for req in batch {
@@ -941,11 +941,11 @@ async fn flush_batch(
                             );
                             job.fail(
                                 StatusCode::TOO_MANY_REQUESTS,
-                                "router overloaded".to_string(),
+                                "gateway overloaded".to_string(),
                             );
                         }
                         Err(mpsc::error::TrySendError::Closed(job)) => {
-                            job.fail(StatusCode::BAD_GATEWAY, "router shutting down".to_string());
+                            job.fail(StatusCode::BAD_GATEWAY, "gateway shutting down".to_string());
                         }
                     }
                 }
@@ -1018,11 +1018,11 @@ async fn flush_batch(
                             );
                             job.fail(
                                 StatusCode::TOO_MANY_REQUESTS,
-                                "router overloaded".to_string(),
+                                "gateway overloaded".to_string(),
                             );
                         }
                         Err(mpsc::error::TrySendError::Closed(job)) => {
-                            job.fail(StatusCode::BAD_GATEWAY, "router shutting down".to_string());
+                            job.fail(StatusCode::BAD_GATEWAY, "gateway shutting down".to_string());
                         }
                     }
                 }
@@ -1153,7 +1153,7 @@ fn build_payload_bytes(
 
     #[derive(Serialize)]
     struct BatchMetaBorrowed<'a> {
-        router: &'static str,
+        gateway: &'static str,
         route: &'a str,
         #[serde(rename = "receivedAtMs")]
         received_at_ms: u64,
@@ -1162,7 +1162,7 @@ fn build_payload_bytes(
     let event = BatchEventBorrowed {
         v: 1,
         meta: BatchMetaBorrowed {
-            router: "lambda-parallel-router",
+        gateway: "simple-multiplexer-gateway",
             route: &key.route,
             received_at_ms,
         },
@@ -1189,7 +1189,7 @@ fn dispatch_buffered(
     key: &BatchKey,
     wait_ms: u64,
     resp_bytes: Bytes,
-    mut pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+    mut pending: HashMap<String, oneshot::Sender<GatewayResponse>>,
 ) {
     let batch_size = pending.len();
     let parsed: BatchResponse = match serde_json::from_slice(&resp_bytes) {
@@ -1239,7 +1239,7 @@ fn dispatch_buffered(
         let Some(tx) = pending.remove(&item.id) else {
             continue;
         };
-        let mut resp = match build_router_response_parts(
+        let mut resp = match build_gateway_response_parts(
             item.status_code,
             item.headers,
             item.cookies,
@@ -1257,10 +1257,10 @@ fn dispatch_buffered(
                     error = %err,
                     "bad buffered response record"
                 );
-                RouterResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
+                GatewayResponse::text(StatusCode::BAD_GATEWAY, format!("bad response: {err}"))
             }
         };
-        resp.meta = Some(RouterResponseMeta {
+        resp.meta = Some(GatewayResponseMeta {
             batch_size,
             batch_wait_ms: wait_ms,
         });
@@ -1305,7 +1305,7 @@ fn send_stream_head(
             .send(StreamInit::Stream(StreamHead {
                 status,
                 headers,
-                meta: RouterResponseMeta {
+                meta: GatewayResponseMeta {
                     batch_size,
                     batch_wait_ms: wait_ms,
                 },
@@ -1510,7 +1510,7 @@ async fn dispatch_stream_record(
             }
 
             if let Some(mut entry) = pending.remove(&record.id) {
-                let mut resp = build_router_response_parts(
+                let mut resp = build_gateway_response_parts(
                     record.status_code,
                     record.headers,
                     record.cookies,
@@ -1518,7 +1518,7 @@ async fn dispatch_stream_record(
                     record.is_base64_encoded,
                 )
                 .map_err(|err| format!("bad response: {err}"))?;
-                resp.meta = Some(RouterResponseMeta {
+                resp.meta = Some(GatewayResponseMeta {
                     batch_size,
                     batch_wait_ms: wait_ms,
                 });
@@ -1594,11 +1594,11 @@ async fn dispatch_stream_record(
                         if let Some(init) = entry.init.take() {
                             let status = record.status_code.unwrap_or(502);
                             let msg = record.message.unwrap_or_else(|| "error".to_string());
-                            let mut resp = RouterResponse::text(
+                            let mut resp = GatewayResponse::text(
                                 StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                                 msg,
                             );
-                            resp.meta = Some(RouterResponseMeta {
+                            resp.meta = Some(GatewayResponseMeta {
                                 batch_size,
                                 batch_wait_ms: wait_ms,
                             });
@@ -1614,13 +1614,13 @@ async fn dispatch_stream_record(
     Ok(())
 }
 
-fn build_router_response_parts(
+fn build_gateway_response_parts(
     status_code: u16,
     headers_in: HashMap<String, String>,
     cookies: Vec<String>,
     body: String,
     is_base64_encoded: bool,
-) -> anyhow::Result<RouterResponse> {
+) -> anyhow::Result<GatewayResponse> {
     let status = StatusCode::from_u16(status_code)?;
 
     let mut headers = headers_from_map(headers_in)?;
@@ -1628,7 +1628,7 @@ fn build_router_response_parts(
 
     let body_bytes = decode_body_bytes(&body, is_base64_encoded)?;
 
-    Ok(RouterResponse {
+    Ok(GatewayResponse {
         status,
         headers,
         body: body_bytes,
@@ -1667,15 +1667,15 @@ fn decode_body_bytes(body: &str, is_base64_encoded: bool) -> anyhow::Result<Byte
 }
 
 fn fail_all_buffered(
-    pending: HashMap<String, oneshot::Sender<RouterResponse>>,
+    pending: HashMap<String, oneshot::Sender<GatewayResponse>>,
     batch_size: usize,
     wait_ms: u64,
     status: StatusCode,
     msg: String,
 ) {
     for (_id, tx) in pending {
-        let mut resp = RouterResponse::text(status, msg.clone());
-        resp.meta = Some(RouterResponseMeta {
+        let mut resp = GatewayResponse::text(status, msg.clone());
+        resp.meta = Some(GatewayResponseMeta {
             batch_size,
             batch_wait_ms: wait_ms,
         });
@@ -1692,8 +1692,8 @@ fn fail_all_stream(
 ) {
     for (_id, mut entry) in pending {
         if let Some(init) = entry.init.take() {
-            let mut resp = RouterResponse::text(status, msg.clone());
-            resp.meta = Some(RouterResponseMeta {
+            let mut resp = GatewayResponse::text(status, msg.clone());
+            resp.meta = Some(GatewayResponseMeta {
                 batch_size,
                 batch_wait_ms: wait_ms,
             });
@@ -1713,14 +1713,14 @@ mod tests {
     use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn pending(id: &str) -> (PendingRequest, oneshot::Receiver<RouterResponse>) {
+    fn pending(id: &str) -> (PendingRequest, oneshot::Receiver<GatewayResponse>) {
         pending_with_body(id, Bytes::new())
     }
 
     fn pending_with_body(
         id: &str,
         body: Bytes,
-    ) -> (PendingRequest, oneshot::Receiver<RouterResponse>) {
+    ) -> (PendingRequest, oneshot::Receiver<GatewayResponse>) {
         let (tx, rx) = oneshot::channel();
         (
             PendingRequest {
@@ -1836,7 +1836,7 @@ mod tests {
 
     #[test]
     fn response_cookies_become_set_cookie_headers() {
-        let resp = build_router_response_parts(
+        let resp = build_gateway_response_parts(
             200,
             HashMap::from([("content-type".to_string(), "text/plain".to_string())]),
             vec![

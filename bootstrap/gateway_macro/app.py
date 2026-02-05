@@ -8,14 +8,14 @@ from typing import Any, Dict, Mapping, MutableMapping, Optional
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-LPR_ROUTER_RESOURCE_TYPE = "Lpr::Router::Service"
+SMUG_GATEWAY_RESOURCE_TYPE = "Smug::Gateway::Service"
 
-EXPORT_CONFIG_BUCKET_NAME = "LprConfigBucketName"
-EXPORT_CONFIG_PUBLISHER_SERVICE_TOKEN = "LprConfigPublisherServiceToken"
+EXPORT_CONFIG_BUCKET_NAME = "SmugConfigBucketName"
+EXPORT_CONFIG_PUBLISHER_SERVICE_TOKEN = "SmugConfigPublisherServiceToken"
 
-LPR_OTEL_HEADERS_ENV_VAR = "LPR_OTEL_HEADERS_JSON"
-LPR_OBSERVABILITY_VENDOR_ENV_VAR = "LPR_OBSERVABILITY_VENDOR"
-LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER_ENV_VAR = "LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"
+SMUG_OTEL_HEADERS_ENV_VAR = "SMUG_OTEL_HEADERS_JSON"
+SMUG_OBSERVABILITY_VENDOR_ENV_VAR = "SMUG_OBSERVABILITY_VENDOR"
+SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER_ENV_VAR = "SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER"
 
 
 def _as_env_kv_list(env: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -51,7 +51,7 @@ def _as_env_secret_kv_list(env: Mapping[str, Any]) -> list[dict[str, Any]]:
 def _default_prefix_for(logical_id: str) -> Any:
     # Note: macro transforms can't take parameters via the Transform section, so we rely
     # on fixed exports and deterministic defaults.
-    return {"Fn::Sub": f"lpr/${{AWS::StackName}}/{logical_id}/"}
+    return {"Fn::Sub": f"smug/${{AWS::StackName}}/{logical_id}/"}
 
 
 def _import_value(name: str) -> dict[str, Any]:
@@ -68,11 +68,11 @@ def _get_att(logical_id: str, attr: str) -> dict[str, Any]:
     return {"Fn::GetAtt": [logical_id, attr]}
 
 
-def _read_default_router_image_identifier() -> str:
-    image = os.environ.get(LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER_ENV_VAR, "").strip()
+def _read_default_gateway_image_identifier() -> str:
+    image = os.environ.get(SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER_ENV_VAR, "").strip()
     if not image:
         raise ValueError(
-            f"Macro is missing environment variable {LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER_ENV_VAR}."
+            f"Macro is missing environment variable {SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER_ENV_VAR}."
         )
     return image
 
@@ -162,7 +162,7 @@ def _split_secret_arns(values: list[Any]) -> tuple[list[Any], list[Any]]:
     return secrets, params
 
 
-def _expand_router_service(
+def _expand_gateway_service(
     *,
     resources: MutableMapping[str, Any],
     logical_id: str,
@@ -176,27 +176,27 @@ def _expand_router_service(
 
     image_identifier: Any = props.get("ImageIdentifier")
     if image_identifier is None or (isinstance(image_identifier, str) and not image_identifier.strip()):
-        image_identifier = _read_default_router_image_identifier()
+        image_identifier = _read_default_gateway_image_identifier()
     elif isinstance(image_identifier, dict) and list(image_identifier.keys()) == ["Ref"]:
         param_name = image_identifier["Ref"]
         if isinstance(param_name, str) and param_name:
             raw_value = template_parameter_values.get(param_name)
             if isinstance(raw_value, str) and raw_value == "":
-                image_identifier = _read_default_router_image_identifier()
+                image_identifier = _read_default_gateway_image_identifier()
             elif raw_value is None:
                 # `templateParameterValues` may omit parameters that used their template defaults.
                 param_def = template_parameters.get(param_name)
                 if isinstance(param_def, dict) and param_def.get("Default") == "":
-                    image_identifier = _read_default_router_image_identifier()
+                    image_identifier = _read_default_gateway_image_identifier()
 
     if not isinstance(image_identifier, (str, dict)):
         raise ValueError(
             f"{logical_id}.Properties.ImageIdentifier must be a string or intrinsic function object."
         )
 
-    router_config = props.get("RouterConfig")
-    if not isinstance(router_config, dict):
-        raise ValueError(f"{logical_id}.Properties.RouterConfig is required and must be an object.")
+    gateway_config = props.get("GatewayConfig")
+    if not isinstance(gateway_config, dict):
+        raise ValueError(f"{logical_id}.Properties.GatewayConfig is required and must be an object.")
 
     spec = props.get("Spec")
     if not isinstance(spec, dict):
@@ -311,13 +311,13 @@ def _expand_router_service(
     effective_env_secrets = dict(env_secrets)
     if otel_headers_secret_arn is not None:
         if (
-            LPR_OTEL_HEADERS_ENV_VAR in effective_env_secrets
-            and not _intrinsic_equal(effective_env_secrets[LPR_OTEL_HEADERS_ENV_VAR], otel_headers_secret_arn)
+            SMUG_OTEL_HEADERS_ENV_VAR in effective_env_secrets
+            and not _intrinsic_equal(effective_env_secrets[SMUG_OTEL_HEADERS_ENV_VAR], otel_headers_secret_arn)
         ):
             raise ValueError(
-                f"{logical_id}.Properties.EnvironmentSecrets already defines {LPR_OTEL_HEADERS_ENV_VAR}, which conflicts with OpentelemetryConfiguration.HeadersSecretArn."
+                f"{logical_id}.Properties.EnvironmentSecrets already defines {SMUG_OTEL_HEADERS_ENV_VAR}, which conflicts with OpentelemetryConfiguration.HeadersSecretArn."
             )
-        effective_env_secrets.setdefault(LPR_OTEL_HEADERS_ENV_VAR, otel_headers_secret_arn)
+        effective_env_secrets.setdefault(SMUG_OTEL_HEADERS_ENV_VAR, otel_headers_secret_arn)
 
     instance_role_arn = props.get("InstanceRoleArn")
     if instance_cfg and "InstanceRoleArn" in instance_cfg:
@@ -331,43 +331,43 @@ def _expand_router_service(
 
     service_name = props.get("ServiceName")
 
-    lpr_ecr_role_id = f"{logical_id}LprEcrAccessRole"
-    lpr_instance_role_id = f"{logical_id}LprInstanceRole"
-    lpr_publisher_id = f"{logical_id}LprConfigPublisher"
-    lpr_autoscaling_id = f"{logical_id}LprAutoScaling"
-    lpr_observability_id = f"{logical_id}LprObservability"
+    smug_ecr_role_id = f"{logical_id}SmugEcrAccessRole"
+    smug_instance_role_id = f"{logical_id}SmugInstanceRole"
+    smug_publisher_id = f"{logical_id}SmugConfigPublisher"
+    smug_autoscaling_id = f"{logical_id}SmugAutoScaling"
+    smug_observability_id = f"{logical_id}SmugObservability"
 
-    for rid in (lpr_ecr_role_id, lpr_instance_role_id, lpr_publisher_id):
+    for rid in (smug_ecr_role_id, smug_instance_role_id, smug_publisher_id):
         _ensure_no_collision(resources, rid)
 
     if auto_scaling_cfg is not None:
-        _ensure_no_collision(resources, lpr_autoscaling_id)
-        resources[lpr_autoscaling_id] = {
+        _ensure_no_collision(resources, smug_autoscaling_id)
+        resources[smug_autoscaling_id] = {
             "Type": "AWS::AppRunner::AutoScalingConfiguration",
             "Properties": auto_scaling_cfg,
         }
 
     if apprunner_xray_enabled:
-        _ensure_no_collision(resources, lpr_observability_id)
-        resources[lpr_observability_id] = {
+        _ensure_no_collision(resources, smug_observability_id)
+        resources[smug_observability_id] = {
             "Type": "AWS::AppRunner::ObservabilityConfiguration",
             "Properties": {
                 "TraceConfiguration": {"Vendor": "AWSXRAY"},
             },
         }
 
-    resources[lpr_publisher_id] = {
-        "Type": "Custom::LprConfigPublisher",
+    resources[smug_publisher_id] = {
+        "Type": "Custom::SmugConfigPublisher",
         "Properties": {
             "ServiceToken": _import_value(EXPORT_CONFIG_PUBLISHER_SERVICE_TOKEN),
             "Prefix": config_prefix,
             "Port": port,
-            "RouterConfig": router_config,
+            "GatewayConfig": gateway_config,
             "Spec": spec,
         },
     }
 
-    resources[lpr_ecr_role_id] = {
+    resources[smug_ecr_role_id] = {
         "Type": "AWS::IAM::Role",
         "Properties": {
             "AssumeRolePolicyDocument": {
@@ -395,7 +395,7 @@ def _expand_router_service(
 
         statements = [
             {
-                "Sid": "ReadRouterConfig",
+                "Sid": "ReadGatewayConfig",
                 "Effect": "Allow",
                 "Action": ["s3:GetObject"],
                 "Resource": [object_arn],
@@ -453,7 +453,7 @@ def _expand_router_service(
             },
             "Policies": [
                 {
-                    "PolicyName": "LprRouterInstancePolicy",
+                    "PolicyName": "SmugGatewayInstancePolicy",
                     "PolicyDocument": {
                         "Version": "2012-10-17",
                         "Statement": statements,
@@ -464,23 +464,23 @@ def _expand_router_service(
         if managed_policy_arns:
             instance_role_props["ManagedPolicyArns"] = managed_policy_arns
 
-        resources[lpr_instance_role_id] = {
+        resources[smug_instance_role_id] = {
             "Type": "AWS::IAM::Role",
             "Properties": instance_role_props,
         }
 
-        instance_role_arn = _get_att(lpr_instance_role_id, "Arn")
+        instance_role_arn = _get_att(smug_instance_role_id, "Arn")
 
     runtime_env = dict(env)
     runtime_env.setdefault("AWS_REGION", {"Ref": "AWS::Region"})
     runtime_env.setdefault("AWS_DEFAULT_REGION", {"Ref": "AWS::Region"})
     runtime_env.setdefault("RUST_LOG", "info")
-    runtime_env["LPR_CONFIG_URI"] = _get_att(lpr_publisher_id, "ConfigS3Uri")
+    runtime_env["SMUG_CONFIG_URI"] = _get_att(smug_publisher_id, "ConfigS3Uri")
 
     runtime_env_secrets = dict(effective_env_secrets)
 
     if observability_vendor is not None:
-        runtime_env.setdefault(LPR_OBSERVABILITY_VENDOR_ENV_VAR, observability_vendor)
+        runtime_env.setdefault(SMUG_OBSERVABILITY_VENDOR_ENV_VAR, observability_vendor)
 
     if apprunner_xray_enabled:
         runtime_env.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
@@ -515,7 +515,7 @@ def _expand_router_service(
 
     service_props: Dict[str, Any] = {
         "SourceConfiguration": {
-            "AuthenticationConfiguration": {"AccessRoleArn": _get_att(lpr_ecr_role_id, "Arn")},
+            "AuthenticationConfiguration": {"AccessRoleArn": _get_att(smug_ecr_role_id, "Arn")},
             "AutoDeploymentsEnabled": auto_deploy,
             "ImageRepository": {
                 "ImageIdentifier": image_identifier,
@@ -539,7 +539,7 @@ def _expand_router_service(
 
     if auto_scaling_cfg is not None:
         service_props["AutoScalingConfigurationArn"] = _get_att(
-            lpr_autoscaling_id, "AutoScalingConfigurationArn"
+            smug_autoscaling_id, "AutoScalingConfigurationArn"
         )
     elif auto_scaling_arn is not None:
         service_props["AutoScalingConfigurationArn"] = auto_scaling_arn
@@ -548,11 +548,11 @@ def _expand_router_service(
         service_props["ObservabilityConfiguration"] = {
             "ObservabilityEnabled": True,
             "ObservabilityConfigurationArn": _get_att(
-                lpr_observability_id, "ObservabilityConfigurationArn"
+                smug_observability_id, "ObservabilityConfigurationArn"
             ),
         }
 
-    # Replace the original resource in-place (same logical id) so `!GetAtt Router.ServiceUrl` keeps working.
+    # Replace the original resource in-place (same logical id) so `!GetAtt Gateway.ServiceUrl` keeps working.
     resources[logical_id] = {"Type": "AWS::AppRunner::Service", "Properties": service_props}
 
 
@@ -585,9 +585,9 @@ def handler(event: Mapping[str, Any], context: Any) -> Dict[str, Any]:
         for logical_id, res in resources.items():
             if not isinstance(res, dict):
                 continue
-            if res.get("Type") != LPR_ROUTER_RESOURCE_TYPE:
+            if res.get("Type") != SMUG_GATEWAY_RESOURCE_TYPE:
                 continue
-            _expand_router_service(
+            _expand_gateway_service(
                 resources=new_resources,
                 logical_id=logical_id,
                 original=res,
@@ -599,8 +599,8 @@ def handler(event: Mapping[str, Any], context: Any) -> Dict[str, Any]:
 
         logger.info(
             "Expanded %d %s resource(s)",
-            sum(1 for r in resources.values() if isinstance(r, dict) and r.get("Type") == LPR_ROUTER_RESOURCE_TYPE),
-            LPR_ROUTER_RESOURCE_TYPE,
+            sum(1 for r in resources.values() if isinstance(r, dict) and r.get("Type") == SMUG_GATEWAY_RESOURCE_TYPE),
+            SMUG_GATEWAY_RESOURCE_TYPE,
         )
         return {"requestId": request_id, "status": "success", "fragment": new_fragment}
     except Exception as exc:

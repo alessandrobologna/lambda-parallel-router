@@ -1,6 +1,6 @@
 //! Loading configuration/spec documents from either the local filesystem or S3.
 //!
-//! This enables deployments where the router container is generic and the routing config/spec are
+//! This enables deployments where the gateway container is generic and the routing config/spec are
 //! provided dynamically (for example, uploaded to S3 at deploy-time and referenced via env vars).
 
 use std::{path::PathBuf, str::FromStr};
@@ -83,8 +83,8 @@ mod tests {
     #[test]
     fn parse_file_path() {
         assert_eq!(
-            DocumentLocation::parse("examples/local/router.yaml").unwrap(),
-            DocumentLocation::File(PathBuf::from("examples/local/router.yaml"))
+            DocumentLocation::parse("examples/local/gateway.yaml").unwrap(),
+            DocumentLocation::File(PathBuf::from("examples/local/gateway.yaml"))
         );
     }
 
@@ -99,7 +99,7 @@ mod tests {
     #[tokio::test]
     async fn file_read_works() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("lpr-test-{}.txt", uuid::Uuid::new_v4()));
+        let path = dir.join(format!("smug-test-{}.txt", uuid::Uuid::new_v4()));
         tokio::fs::write(&path, b"hello").await.unwrap();
 
         let loc = DocumentLocation::File(path.clone());

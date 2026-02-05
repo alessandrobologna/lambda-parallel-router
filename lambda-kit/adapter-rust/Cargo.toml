@@ -1,5 +1,5 @@
 [package]
-name = "lpr-lambda-adapter"
+name = "smug-lambda-adapter"
 version = "0.1.0"
 edition = "2021"
 publish = false

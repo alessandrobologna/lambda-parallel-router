@@ -7,7 +7,7 @@
 Run k6 load tests against the App Runner demo routes and plot results.
 
 Example:
-  uv run benchmark/benchmark.py --stack lambda-parallel-router-demo --region us-east-1 \
+  uv run benchmark/benchmark.py --stack simple-multiplexer-gateway-demo --region us-east-1 \
     --ramp-duration 3m --hold-duration 30s --stage-targets 50,100,150 --max-delay-ms 0
 
 Rebuild charts for an existing run directory:
@@ -36,7 +36,7 @@ import click
 # Ensure Matplotlib + Fontconfig can create caches by defaulting to a temp directory.
 _cache_root = os.environ.get("XDG_CACHE_HOME")
 if not _cache_root:
-    _cache_root_path = Path(tempfile.gettempdir()) / "lpr-benchmark-cache"
+    _cache_root_path = Path(tempfile.gettempdir()) / "smug-benchmark-cache"
     _cache_root_path.mkdir(parents=True, exist_ok=True)
     os.environ["XDG_CACHE_HOME"] = str(_cache_root_path)
 
@@ -63,12 +63,12 @@ DEFAULT_OUTPUT_DIR = Path.cwd() / "benchmark-results"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 OUTPUT_KEY_BY_ENDPOINT: dict[str, str] = {
-    # Router endpoints
+    # Gateway endpoints
     "buffering-simple": "BufferingSimpleHelloUrl",
     "buffering-dynamic": "BufferingDynamicHelloUrl",
     "streaming-simple": "StreamingSimpleHelloUrl",
     "streaming-dynamic": "StreamingDynamicHelloUrl",
-    # Router endpoints (DynamoDB workload)
+    # Gateway endpoints (DynamoDB workload)
     "buffering-simple-item": "BufferingSimpleItemUrl",
     "buffering-dynamic-item": "BufferingDynamicItemUrl",
     "streaming-simple-item": "StreamingSimpleItemUrl",
@@ -247,7 +247,7 @@ def try_is_git_dirty() -> bool | None:
     return bool(out.strip())
 
 
-def try_read_router_version() -> str | None:
+def try_read_gateway_version() -> str | None:
     path = REPO_ROOT / "VERSION"
     try:
         return path.read_text(encoding="utf-8").strip() or None
@@ -311,7 +311,7 @@ def write_run_manifest(
         "report": report,
         "label": label,
         "git": {"sha": try_get_git_sha(), "dirty": try_is_git_dirty()},
-        "router_version": try_read_router_version(),
+        "gateway_version": try_read_gateway_version(),
         "k6": k6,
     }
 
@@ -465,7 +465,7 @@ def warmup_targets(targets: list[dict[str, str]]) -> None:
         warm_url = with_query_param(url, "max-delay", "0")
         started = time.time()
         try:
-            req = Request(warm_url, method="GET", headers={"user-agent": "lpr-benchmark-warmup"})
+            req = Request(warm_url, method="GET", headers={"user-agent": "smug-benchmark-warmup"})
             with urlopen(req, timeout=15) as resp:
                 status = getattr(resp, "status", None) or resp.getcode()
                 resp.read(1)
@@ -503,7 +503,7 @@ def parse_k6_latencies(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def parse_k6_batch_sizes(df: pd.DataFrame) -> pd.DataFrame:
-    batch = df[df["metric_name"] == "lpr_batch_size"].copy()
+    batch = df[df["metric_name"] == "smug_batch_size"].copy()
     if batch.empty:
         return batch.assign(timestamp=pd.NaT, batch_size=pd.NA)[["timestamp", "endpoint", "batch_size"]].iloc[0:0]
     batch["timestamp"] = pd.to_datetime(batch["timestamp"], unit="s", utc=True)
@@ -886,7 +886,7 @@ def plot_compare_report(
         ax.text(
             0.5,
             0.5,
-            "No batch size samples (lpr_batch_size).\nEnable LPR_INCLUDE_BATCH_SIZE_HEADER on the router and rerun.",
+            "No batch size samples (smug_batch_size).\nEnable SMUG_INCLUDE_BATCH_SIZE_HEADER on the gateway and rerun.",
             ha="center",
             va="center",
             transform=ax.transAxes,
@@ -1203,7 +1203,7 @@ def plot_route_report(
         ax.text(
             0.5,
             0.5,
-            "No batch size samples (lpr_batch_size).\nEnable LPR_INCLUDE_BATCH_SIZE_HEADER on the router and rerun.",
+            "No batch size samples (smug_batch_size).\nEnable SMUG_INCLUDE_BATCH_SIZE_HEADER on the gateway and rerun.",
             ha="center",
             va="center",
             transform=ax.transAxes,
@@ -1252,7 +1252,7 @@ def plot_route_report(
 
 
 @click.command()
-@click.option("--stack", "stack_name", default="lambda-parallel-router-demo", show_default=True)
+@click.option("--stack", "stack_name", default="simple-multiplexer-gateway-demo", show_default=True)
 @click.option("--region", default=None, help="AWS region (defaults to AWS config)")
 @click.option(
     "--output-dir",

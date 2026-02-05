@@ -32,10 +32,10 @@ class _FakeBoto3:
 class ConfigPublisherTests(unittest.TestCase):
     def test_normalize_prefix(self) -> None:
         self.assertEqual(app._normalize_prefix(""), "")
-        self.assertEqual(app._normalize_prefix("lpr"), "lpr/")
-        self.assertEqual(app._normalize_prefix("lpr/"), "lpr/")
-        self.assertEqual(app._normalize_prefix("/lpr"), "lpr/")
-        self.assertEqual(app._normalize_prefix(" /lpr/ "), "lpr/")
+        self.assertEqual(app._normalize_prefix("smug"), "smug/")
+        self.assertEqual(app._normalize_prefix("smug/"), "smug/")
+        self.assertEqual(app._normalize_prefix("/smug"), "smug/")
+        self.assertEqual(app._normalize_prefix(" /smug/ "), "smug/")
 
     def test_parse_port(self) -> None:
         self.assertEqual(app._parse_port(None), 8080)
@@ -51,21 +51,21 @@ class ConfigPublisherTests(unittest.TestCase):
         fake_s3 = _FakeS3()
         fake_boto3 = _FakeBoto3(fake_s3)
 
-        router_config = {"MaxInflightInvocations": 1}
+        gateway_config = {"MaxInflightInvocations": 1}
         spec = {"openapi": "3.0.0", "paths": {}}
 
         with mock.patch.object(app, "boto3", fake_boto3):
             data, physical_id = app._publish(
                 bucket="my-bucket",
-                prefix="lpr",
-                router_config=router_config,
+                prefix="smug",
+                gateway_config=gateway_config,
                 spec=spec,
                 port=8080,
             )
 
-        self.assertEqual(physical_id, "lpr-config-publisher:my-bucket:lpr/")
+        self.assertEqual(physical_id, "smug-config-publisher:my-bucket:smug/")
         self.assertEqual(data["BucketName"], "my-bucket")
-        self.assertTrue(data["ConfigKey"].startswith("lpr/config/"))
+        self.assertTrue(data["ConfigKey"].startswith("smug/config/"))
         self.assertTrue(data["ConfigKey"].endswith(".json"))
         self.assertEqual(data["ConfigS3Uri"], f"s3://my-bucket/{data['ConfigKey']}")
 
@@ -76,7 +76,7 @@ class ConfigPublisherTests(unittest.TestCase):
         config_call = calls_by_key[data["ConfigKey"]]
         self.assertEqual(config_call["Bucket"], "my-bucket")
         self.assertEqual(config_call["ContentType"], "application/json")
-        self.assertEqual(config_call["Metadata"]["lpr-name"], "config")
+        self.assertEqual(config_call["Metadata"]["smug-name"], "config")
 
         config_doc = app.json.loads(config_call["Body"].decode("utf-8"))
         self.assertIn("Spec", config_doc)
@@ -110,7 +110,7 @@ class ConfigPublisherTests(unittest.TestCase):
             "StackId": "stack",
             "RequestId": "req",
             "LogicalResourceId": "MyResource",
-            "ResourceProperties": {"RouterConfig": {}, "Spec": {}},
+            "ResourceProperties": {"GatewayConfig": {}, "Spec": {}},
         }
 
         with mock.patch.object(app, "_cfn_send_response") as send:

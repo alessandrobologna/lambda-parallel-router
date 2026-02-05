@@ -3,7 +3,7 @@
 version = 0.1
 
 [default.global.parameters]
-stack_name = "lambda-parallel-router-demo"
+stack_name = "simple-multiplexer-gateway-demo"
 region = "us-east-1"
 
 [default.build.parameters]
@@ -15,7 +15,7 @@ capabilities = "CAPABILITY_IAM"
 confirm_changeset = false
 fail_on_empty_changeset = false
 resolve_s3 = true
-s3_prefix = "lambda-parallel-router-demo"
+s3_prefix = "simple-multiplexer-gateway-demo"
 region = "us-east-1"
 beta_features = true
 parameter_overrides = "OtelHeadersSecretArn=arn:aws:secretsmanager:us-east-1:961341555982:secret:otel-header-AjUDyF"

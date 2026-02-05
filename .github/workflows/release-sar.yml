@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       publish_image:
-        description: "Build and push router image"
+        description: "Build and push gateway image"
         required: false
         default: "true"
         type: string
@@ -72,7 +72,7 @@ jobs:
         if: ${{ inputs.publish_sar != 'false' }}
         uses: aws-actions/setup-sam@v2
 
-      - name: Build and push router image (public ECR)
+      - name: Build and push gateway image (public ECR)
         if: ${{ inputs.publish_image != 'false' }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -92,7 +92,7 @@ jobs:
           aws ecr-public get-login-password --region "${PUBLIC_ECR_REGION}" \
             | docker login --username AWS --password-stdin public.ecr.aws
 
-          docker build -f Dockerfile.router -t "${IMAGE_URI}" .
+          docker build -f Dockerfile.gateway -t "${IMAGE_URI}" .
           docker push "${IMAGE_URI}"
 
           echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
@@ -115,10 +115,10 @@ from pathlib import Path
 template = Path("bootstrap/template.yaml")
 data = yaml.safe_load(template.read_text())
 params = data.setdefault("Parameters", {})
-param = params.setdefault("DefaultRouterImageIdentifier", {})
+param = params.setdefault("DefaultGatewayImageIdentifier", {})
 param["Default"] = os.environ["IMAGE_URI"]
 Path("bootstrap/template.release.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
-print("Wrote bootstrap/template.release.yaml with DefaultRouterImageIdentifier =", os.environ["IMAGE_URI"])
+print("Wrote bootstrap/template.release.yaml with DefaultGatewayImageIdentifier =", os.environ["IMAGE_URI"])
 PY
 
       - name: Build bootstrap app

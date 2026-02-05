@@ -1,7 +1,7 @@
-//! Rust batch adapter for `lambda-parallel-router`.
+//! Rust batch adapter for Simple Multiplexer Gateway.
 //!
 //! This crate implements "Mode B" from the project spec: wrap an existing single-request handler
-//! so it can handle `{"v":1,"batch":[...]}` events produced by the router.
+//! so it can handle `{"v":1,"batch":[...]}` events produced by the gateway.
 
 use std::{
     collections::HashMap,
@@ -19,7 +19,7 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Router -> Lambda batch event envelope.
+/// Gateway -> Lambda batch event envelope.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BatchRequestEvent<T> {
     /// Wire contract version (v1).
@@ -28,12 +28,12 @@ pub struct BatchRequestEvent<T> {
     /// Batch items. Each item is an API Gateway HTTP API (v2.0) shaped event.
     #[serde(default)]
     pub batch: Vec<T>,
-    /// Optional metadata provided by the router.
+    /// Optional metadata provided by the gateway.
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
 }
 
-/// Lambda -> Router buffered response envelope.
+/// Lambda -> Gateway buffered response envelope.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BatchResponse {
     pub v: u8,
@@ -246,11 +246,11 @@ impl From<ApiGatewayV2httpResponse> for HandlerResponse {
 
 /// Extracts the correlation id for routing (`batch[].requestContext.requestId`).
 pub trait BatchItemId {
-    fn lpr_request_id(&self) -> Option<&str>;
+    fn smug_request_id(&self) -> Option<&str>;
 }
 
 impl BatchItemId for ApiGatewayV2httpRequest {
-    fn lpr_request_id(&self) -> Option<&str> {
+    fn smug_request_id(&self) -> Option<&str> {
         self.request_context.request_id.as_deref()
     }
 }
@@ -315,7 +315,7 @@ pub struct BatchAdapter<H> {
     concurrency: usize,
 }
 
-/// Wrap a single-request handler to handle router batch events (buffered output).
+/// Wrap a single-request handler to handle gateway batch events (buffered output).
 pub fn batch_adapter<H>(handler: H) -> BatchAdapter<H> {
     BatchAdapter {
         handler,
@@ -348,7 +348,7 @@ impl<H> BatchAdapter<H> {
         let mut out: Vec<Option<BatchResponseItem>> = vec![None; event.batch.len()];
         stream::iter(event.batch.into_iter().enumerate())
             .map(|(idx, item)| async move {
-                let id = item.lpr_request_id().unwrap_or_default().to_string();
+                let id = item.smug_request_id().unwrap_or_default().to_string();
 
                 let record = match handler(item, ctx).await {
                     Ok(resp) => {
@@ -519,7 +519,7 @@ impl<H> BatchAdapterStream<H> {
         let interleaved = self.interleaved;
 
         let streams = event.batch.into_iter().map(move |item| {
-            let request_id = item.lpr_request_id().unwrap_or_default().to_string();
+            let request_id = item.smug_request_id().unwrap_or_default().to_string();
 
             let handler_fut = async move { handler(item, ctx).await };
 

@@ -12,22 +12,22 @@ single-request invocations to the managed runtime.
 - Accept one outer invocation that contains `{ "v": 1, "batch": [...] }`.
 - Split `batch[]` into virtual invocations and serve them via `GET /runtime/invocation/next`.
 - Collect one response per virtual invocation and correlate by request id.
-- Stream buffered handler results to the router in completion order using NDJSON.
+- Stream buffered handler results to the gateway in completion order using NDJSON.
 - Allow best-effort concurrency when the runtime uses Lambda Managed Instances (LMI) worker
   concurrency.
-- Provide pass-through behavior when the outer event is not an LPR batch.
+- Provide pass-through behavior when the outer event is not an SMUG batch.
 
 Non-goals (v1)
 
 - User handler streaming. The user handler returns a buffered API Gateway v2 response JSON.
-- Cross-route batching. The router controls batching.
+- Cross-route batching. The gateway controls batching.
 - Multiple outer invocations in flight at once in the same execution environment.
 
 ## Integration contract
 
-### Router to Lambda (outer event)
+### Gateway to Lambda (outer event)
 
-The router invokes the function with a single JSON payload:
+The gateway invokes the function with a single JSON payload:
 
 ```json
 {
@@ -42,9 +42,9 @@ Each `batch[]` item must include a stable request id:
 
 Mode A uses that value as the virtual invocation id.
 
-### Lambda to router (outer response)
+### Lambda to gateway (outer response)
 
-Mode A produces NDJSON records in completion order. Each record uses the router contract:
+Mode A produces NDJSON records in completion order. Each record uses the gateway contract:
 
 ```json
 {"v":1,"id":"<requestId>","statusCode":200,"headers":{},"cookies":[],"body":"...","isBase64Encoded":false}
@@ -59,21 +59,21 @@ Notes:
 
 ### Files
 
-- Extension binary (Rust): `/opt/extensions/lpr-runtime-api-proxy`
-- Exec wrapper (shell): `/opt/lpr/exec-wrapper.sh`
+- Extension binary (Rust): `/opt/extensions/smug-runtime-api-proxy`
+- Exec wrapper (shell): `/opt/smug/exec-wrapper.sh`
 
 ### Required function configuration
 
 Set the exec wrapper so the managed runtime talks to the proxy:
 
 ```bash
-AWS_LAMBDA_EXEC_WRAPPER=/opt/lpr/exec-wrapper.sh
+AWS_LAMBDA_EXEC_WRAPPER=/opt/smug/exec-wrapper.sh
 ```
 
 Configure the proxy listen address (defaults are acceptable for a first iteration):
 
 ```bash
-LPR_PROXY_ADDR=127.0.0.1:9009
+SMUG_PROXY_ADDR=127.0.0.1:9009
 ```
 
 ## Exec wrapper behavior
@@ -89,14 +89,14 @@ Responsibilities:
 
 Suggested environment variables:
 
-- `LPR_UPSTREAM_RUNTIME_API` (captured from `AWS_LAMBDA_RUNTIME_API`)
-- `LPR_PROXY_ADDR` (host:port for local proxy)
+- `SMUG_UPSTREAM_RUNTIME_API` (captured from `AWS_LAMBDA_RUNTIME_API`)
+- `SMUG_PROXY_ADDR` (host:port for local proxy)
 
 Example flow:
 
 ```bash
-export LPR_UPSTREAM_RUNTIME_API="${AWS_LAMBDA_RUNTIME_API}"
-export AWS_LAMBDA_RUNTIME_API="${LPR_PROXY_ADDR}"
+export SMUG_UPSTREAM_RUNTIME_API="${AWS_LAMBDA_RUNTIME_API}"
+export AWS_LAMBDA_RUNTIME_API="${SMUG_PROXY_ADDR}"
 exec "$@"
 ```
 
@@ -130,7 +130,7 @@ The proxy exposes the Runtime API surface that managed runtimes call:
 
 ### Upstream calls (real Runtime API)
 
-The proxy calls the real Runtime API using `LPR_UPSTREAM_RUNTIME_API`:
+The proxy calls the real Runtime API using `SMUG_UPSTREAM_RUNTIME_API`:
 
 - `GET /2018-06-01/runtime/invocation/next` (fetch outer invocation)
 - `POST /2018-06-01/runtime/invocation/{outer_id}/response` (send outer response)
@@ -165,7 +165,7 @@ Maintain a shared state struct:
 
 `VirtualInvocation` fields:
 
-- `virtual_id: String` (router request id)
+- `virtual_id: String` (gateway request id)
 - `event_bytes: bytes::Bytes` (single ApiGwV2 event JSON)
 
 ### GET /next logic
@@ -192,10 +192,10 @@ If `virtual_queue` is empty and the outer is still in progress:
 
 ### POST /{virtual_id}/response logic
 
-For LPR virtual ids:
+For SMUG virtual ids:
 
 1. Parse the managed runtime response body as an ApiGwV2 response object.
-2. Convert it into one router response record.
+2. Convert it into one gateway response record.
 3. Emit one NDJSON line to `outer_stream_tx` (completion order).
 4. Mark `virtual_id` as done.
 5. If all virtual ids are done (or the deadline is close), finalize the outer invocation:
@@ -209,9 +209,9 @@ For pass-through invocations:
 
 ### POST /{virtual_id}/error logic
 
-For LPR virtual ids:
+For SMUG virtual ids:
 
-- Synthesize a 500 router response record for `virtual_id`.
+- Synthesize a 500 gateway response record for `virtual_id`.
 - Emit one NDJSON line.
 - Mark done and finalize when complete.
 

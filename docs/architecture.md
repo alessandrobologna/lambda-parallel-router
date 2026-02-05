@@ -2,15 +2,15 @@
 
 ## System boundary
 
-Lambda Parallel Router is a long-running HTTP service. It accepts requests, batches them per route, and invokes Lambda once per batch.
+Simple Multiplexer Gateway is a long-running HTTP service. It accepts requests, batches them per route, and invokes Lambda once per batch.
 
 ## Data flow
 
-1. The router receives an HTTP request and matches a route in the compiled spec.
-2. The router buffers requests for up to `maxWaitMs` or until `maxBatchSize`.
-3. The router invokes Lambda with a batch payload.
+1. The gateway receives an HTTP request and matches a route in the compiled spec.
+2. The gateway buffers requests for up to `maxWaitMs` or until `maxBatchSize`.
+3. The gateway invokes Lambda with a batch payload.
 4. Lambda returns per-request responses in buffered or streaming form.
-5. The router demultiplexes responses and returns them to clients.
+5. The gateway demultiplexes responses and returns them to clients.
 
 ## Sequence diagram
 
@@ -21,7 +21,7 @@ This diagram shows two client requests multiplexed into one Lambda invocation an
 sequenceDiagram
   participant C1 as Client 1
   participant C2 as Client 2
-  participant R as Router
+  participant R as Gateway
   participant L as Lambda
 
   C1->>R: HTTP request (r-1)
@@ -35,17 +35,17 @@ sequenceDiagram
   R-->>C1: HTTP response for r-1
 ```
 
-Buffered mode returns one JSON document with `responses[]`. The router responds after the full batch completes.
+Buffered mode returns one JSON document with `responses[]`. The gateway responds after the full batch completes.
 
 ## Batch contract
 
-The router sends a JSON payload with a version marker, metadata, and a batch array. Each batch item follows the API Gateway HTTP API v2 event shape.
+The gateway sends a JSON payload with a version marker, metadata, and a batch array. Each batch item follows the API Gateway HTTP API v2 event shape.
 
 ```json
 {
   "v": 1,
   "meta": {
-    "router": "lambda-parallel-router",
+    "gateway": "simple-multiplexer-gateway",
     "route": "/hello/{id}",
     "receivedAtMs": 1730000000000
   },
@@ -68,19 +68,19 @@ The router sends a JSON payload with a version marker, metadata, and a batch arr
 }
 ```
 
-The `v` field is the protocol version. Mode A requires `v: 1` to detect LPR batches. The router always includes `v: 1`.
+The `v` field is the protocol version. Mode A requires `v: 1` to detect SMUG batches. The gateway always includes `v: 1`.
 
 Batch request requirements:
 
 - `v` is required and must be `1`.
 - `meta.route` is required and matches the compiled route template.
 - Each batch item must include `routeKey`, `requestContext.requestId`, `requestContext.http.method`, and `rawPath`.
-- The router uses `requestContext.requestId` as the response `id`.
+- The gateway uses `requestContext.requestId` as the response `id`.
 
 ## Response contracts
 
 Buffered and standard NDJSON response records must include `id` and `statusCode`. Records with unknown `id` values are dropped.
-Response records may include a `cookies` array. The router maps these to `Set-Cookie` headers.
+Response records may include a `cookies` array. The gateway maps these to `Set-Cookie` headers.
 
 ### Buffered response
 
@@ -99,7 +99,7 @@ Response records may include a `cookies` array. The router maps these to `Set-Co
 }
 ```
 
-Buffered responses can return in any order. The router waits for a response per buffered request or times out the batch.
+Buffered responses can return in any order. The gateway waits for a response per buffered request or times out the batch.
 
 ### Streaming response (NDJSON)
 
@@ -111,12 +111,12 @@ Each line is a complete response record. Records arrive in completion order.
 
 Streaming response constraints:
 
-- The router does not reorder stream records.
+- The gateway does not reorder stream records.
 - Missing `id` values cause the record to be dropped.
 
 ### Interleaved streaming (experimental)
 
-Interleaved streaming uses NDJSON records with `head`, `chunk`, and `end` events. The router demultiplexes these into per-request streams.
+Interleaved streaming uses NDJSON records with `head`, `chunk`, and `end` events. The gateway demultiplexes these into per-request streams.
 
 ```json
 {"v":1,"id":"r-1","type":"head","statusCode":200,"headers":{"content-type":"text/event-stream"}}
@@ -129,22 +129,22 @@ See [docs/interleaved-streaming.md](interleaved-streaming.md) for the framing ru
 
 Interleaved streaming constraints:
 
-- `head` is optional. If it is omitted, the router synthesizes a default `head` (200, empty headers)
+- `head` is optional. If it is omitted, the gateway synthesizes a default `head` (200, empty headers)
   when it receives the first `chunk` or `end` for that id.
-- The router closes the stream on the first `end` for a given id.
+- The gateway closes the stream on the first `end` for a given id.
 
 ## Batching behavior
 
 - Batching is per route and per batch key.
 - The batch key includes the target Lambda, method, and route template.
-- Additional key dimensions can be set with `x-lpr.key` to prevent unsafe co-batching.
+- Additional key dimensions can be set with `x-smug.key` to prevent unsafe co-batching.
 - `dynamicWait` adjusts the wait window based on observed request rate.
 
 ## Timing and splitting
 
-- The router starts the `maxWaitMs` timer when the first request arrives for a batch key.
-- When `maxBatchSize` is reached, the router invokes Lambda immediately.
-- When the payload exceeds `MaxInvokePayloadBytes`, the router splits the batch at request boundaries.
+- The gateway starts the `maxWaitMs` timer when the first request arrives for a batch key.
+- When `maxBatchSize` is reached, the gateway invokes Lambda immediately.
+- When the payload exceeds `MaxInvokePayloadBytes`, the gateway splits the batch at request boundaries.
 
 ## Payload limits
 

@@ -1,32 +1,32 @@
 # Bootstrap stack
 
-This folder contains the account/region bootstrap stack used by `lambda-parallel-router`.
+This folder contains the account/region bootstrap stack used by Simple Multiplexer Gateway.
 
 The bootstrap stack deploys shared resources:
-- a shared S3 bucket for router config manifests (or uses an existing bucket)
-- a CloudFormation macro (`LprRouter`) that expands `Lpr::Router::Service` into App Runner resources
-- a custom resource handler (`Custom::LprConfigPublisher`) used by the macro to publish config manifests
-- a default router image identifier configured on the macro function and used when `ImageIdentifier` is empty or omitted
+- a shared S3 bucket for gateway config manifests (or uses an existing bucket)
+- a CloudFormation macro (`SmugGateway`) that expands `Smug::Gateway::Service` into App Runner resources
+- a custom resource handler (`Custom::SmugConfigPublisher`) used by the macro to publish config manifests
+- a default gateway image identifier configured on the macro function and used when `ImageIdentifier` is empty or omitted
 - the Mode A Runtime API proxy layer (arm64 + amd64) for layer proxy integrations
 
 ## Macro
 
-The bootstrap stack registers a CloudFormation macro named `LprRouter`.
+The bootstrap stack registers a CloudFormation macro named `SmugGateway`.
 
-To enable the macro, add `LprRouter` to your template's `Transform` section, then declare one or
-more `Lpr::Router::Service` resources. The macro expands them into App Runner and supporting
+To enable the macro, add `SmugGateway` to your template's `Transform` section, then declare one or
+more `Smug::Gateway::Service` resources. The macro expands them into App Runner and supporting
 resources.
 
-## Resource type: `Lpr::Router::Service`
+## Resource type: `Smug::Gateway::Service`
 
 ### Syntax
 
 ```yaml
-Router:
-  Type: Lpr::Router::Service
+Gateway:
+  Type: Smug::Gateway::Service
   Properties:
     # Required
-    RouterConfig: {}
+    GatewayConfig: {}
     Spec: { paths: {} }
 
     # Optional
@@ -48,15 +48,15 @@ Router:
 
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `ImageIdentifier` | String | No | bootstrap default | ECR image identifier for the router. If omitted (or empty), the macro uses the default image configured by the bootstrap stack. |
-| `RouterConfig` | Object | Yes | - | Router settings object. Keys are PascalCase. See [RouterConfig (manifest fields)](#routerconfig-manifest-fields). |
+| `ImageIdentifier` | String | No | bootstrap default | ECR image identifier for the gateway. If omitted (or empty), the macro uses the default image configured by the bootstrap stack. |
+| `GatewayConfig` | Object | Yes | - | Gateway settings object. Keys are PascalCase. See [GatewayConfig (manifest fields)](#gatewayconfig-manifest-fields). |
 | `Spec` | Object | Yes | - | OpenAPI-like `paths` map. See [Spec object](#spec-object). |
 | `ServiceName` | String | No | - | Sets the App Runner service name (`AWS::AppRunner::Service.Properties.ServiceName`). |
-| `Port` | Integer | No | `8080` | Container port App Runner routes traffic to. Also used as the default for `RouterConfig.ListenAddr` when omitted. |
-| `Environment` | Object | No | `{}` | Map of environment variables for the router container. Values must resolve to strings (intrinsic functions are allowed). The macro always injects `LPR_CONFIG_URI`, and defaults `AWS_REGION`, `AWS_DEFAULT_REGION`, and `RUST_LOG` if not provided. |
+| `Port` | Integer | No | `8080` | Container port App Runner routes traffic to. Also used as the default for `GatewayConfig.ListenAddr` when omitted. |
+| `Environment` | Object | No | `{}` | Map of environment variables for the gateway container. Values must resolve to strings (intrinsic functions are allowed). The macro always injects `SMUG_CONFIG_URI`, and defaults `AWS_REGION`, `AWS_DEFAULT_REGION`, and `RUST_LOG` if not provided. |
 | `EnvironmentSecrets` | Object | No | `{}` | Map of environment variables sourced from Secrets Manager or SSM Parameter Store. Values must resolve to ARNs (intrinsic functions are allowed). These are emitted as `AWS::AppRunner::Service.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentSecrets`. |
 | `AutoDeploymentsEnabled` | Boolean | No | `true` | Enables App Runner auto deployments for this service. See [Automatic deployments](#automatic-deployments). |
-| `ConfigPrefix` | String | No | `lpr/${AWS::StackName}/<LogicalId>/` | S3 prefix used for published manifests (must resolve to a string). The publisher writes `config/<sha256>.json` under this prefix. |
+| `ConfigPrefix` | String | No | `smug/${AWS::StackName}/<LogicalId>/` | S3 prefix used for published manifests (must resolve to a string). The publisher writes `config/<sha256>.json` under this prefix. |
 | `InstanceRoleArn` | String | No | - | Use an existing App Runner instance role (you own permissions). If omitted, the macro creates an instance role with S3 read + Lambda invoke permissions derived from the spec. |
 | `InstanceConfiguration` | Object | No | - | Passed through to the service's `InstanceConfiguration` (e.g. `Cpu`, `Memory`). Some CPU/memory combinations are not supported (see App Runner docs). If it includes `InstanceRoleArn`, it must match `InstanceRoleArn` when both are set. |
 | `AutoScalingConfiguration` | Object | No | - | Creates an `AWS::AppRunner::AutoScalingConfiguration` resource and wires it to the service. Mutually exclusive with `AutoScalingConfigurationArn`. |
@@ -65,15 +65,15 @@ Router:
 
 Notes:
 - `PORT` is a reserved App Runner environment variable name. It can't be set in `Environment` or `EnvironmentSecrets`.
-- If `ImageIdentifier` is omitted (or empty), the macro uses the default router image configured by the bootstrap stack.
+- If `ImageIdentifier` is omitted (or empty), the macro uses the default gateway image configured by the bootstrap stack.
 - The macro configures the App Runner health check to use HTTP `GET /readyz`.
 - X-Ray tracing requires application instrumentation and X-Ray permissions on the instance role.
 
 ### Return values
 
-The macro replaces your `Lpr::Router::Service` resource with an `AWS::AppRunner::Service` **using the same logical id**.
+The macro replaces your `Smug::Gateway::Service` resource with an `AWS::AppRunner::Service` **using the same logical id**.
 
-That means you can use the normal App Runner attributes/refs (for example `!GetAtt Router.ServiceUrl`).
+That means you can use the normal App Runner attributes/refs (for example `!GetAtt Gateway.ServiceUrl`).
 
 ### Example
 
@@ -82,24 +82,24 @@ Minimal example:
 ```yaml
 Transform:
   - AWS::Serverless-2016-10-31
-  - LprRouter
+  - SmugGateway
 
 Resources:
-  Router:
-    Type: Lpr::Router::Service
+  Gateway:
+    Type: Smug::Gateway::Service
     Properties:
       Port: 8080
       Environment:
         RUST_LOG: info
-      RouterConfig:
-        # RouterConfig keys are PascalCase.
+      GatewayConfig:
+        # GatewayConfig keys are PascalCase.
         # ListenAddr defaults to 0.0.0.0:<Port> if omitted.
         DefaultTimeoutMs: 2000
       InstanceConfiguration:
         Cpu: "1 vCPU"
         Memory: "2 GB"
       AutoScalingConfiguration:
-        AutoScalingConfigurationName: my-router-autoscaling
+        AutoScalingConfigurationName: my-gateway-autoscaling
         MinSize: 2
         MaxSize: 4
         MaxConcurrency: 200
@@ -109,17 +109,17 @@ Resources:
           /hello:
             get:
               x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
-              x-lpr:
-                # x-lpr keys are camelCase.
+              x-smug:
+                # x-smug keys are camelCase.
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: buffered # buffered | response_stream
 ```
 
 At deploy time, the macro expands this into:
-- an `AWS::AppRunner::Service` (same logical id as your `Lpr::Router::Service` resource)
+- an `AWS::AppRunner::Service` (same logical id as your `Smug::Gateway::Service` resource)
 - IAM roles for ECR access and instance permissions
-- a `Custom::LprConfigPublisher` resource that uploads a resolved config manifest (`RouterConfig` + `Spec`) into S3
+- a `Custom::SmugConfigPublisher` resource that uploads a resolved config manifest (`GatewayConfig` + `Spec`) into S3
 
 The macro derives the set of Lambda ARNs to allow from `Spec.paths.*.*.x-target-lambda` (which must
 resolve to Lambda function ARNs). `x-target-lambda` may be a string ARN or an intrinsic function
@@ -127,23 +127,23 @@ object (e.g. `!GetAtt SomeFn.Arn`).
 
 ## Config manifest
 
-The router consumes a single YAML/JSON document that embeds both router settings and the OpenAPI-ish
-`Spec`. The macro publishes this manifest to S3 as JSON, and the router reads it at runtime via:
+The gateway consumes a single YAML/JSON document that embeds both gateway settings and the OpenAPI-ish
+`Spec`. The macro publishes this manifest to S3 as JSON, and the gateway reads it at runtime via:
 
-- `LPR_CONFIG_URI` (set automatically by the macro)
+- `SMUG_CONFIG_URI` (set automatically by the macro)
 
-`Spec` is required at runtime; the router exits on startup if it is missing.
+`Spec` is required at runtime; the gateway exits on startup if it is missing.
 
 Updates are content-addressed:
 - the publisher canonicalizes the manifest as JSON and computes `sha256`
-- the object key includes the hash (so it changes whenever you change `RouterConfig` or `Spec`)
+- the object key includes the hash (so it changes whenever you change `GatewayConfig` or `Spec`)
 - the App Runner service updates its env var to the new URI, which forces a new deployment
 
-## RouterConfig (manifest fields)
+## GatewayConfig (manifest fields)
 
-`RouterConfig` is the settings object embedded into the published manifest. Keys are **PascalCase**.
+`GatewayConfig` is the settings object embedded into the published manifest. Keys are **PascalCase**.
 
-In the published manifest, `RouterConfig` fields are **flattened at the top level** alongside the
+In the published manifest, `GatewayConfig` fields are **flattened at the top level** alongside the
 top-level `Spec` key.
 
 The macro publishes a manifest that looks like:
@@ -162,16 +162,16 @@ Notes:
 
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `ListenAddr` | String | Yes\* | - | Address to bind the HTTP server to (for example `0.0.0.0:8080`). \*Required if you run the router from a local manifest file; defaulted by the publisher when using the macro. |
+| `ListenAddr` | String | Yes\* | - | Address to bind the HTTP server to (for example `0.0.0.0:8080`). \*Required if you run the gateway from a local manifest file; defaulted by the publisher when using the macro. |
 | `AwsRegion` | String | No | - | Optional AWS region override for the Lambda client. If omitted, the AWS SDK resolves region from the environment. |
 | `MaxInflightInvocations` | Integer | No | `64` | Maximum number of concurrent in-flight Lambda invocations across all routes. |
-| `MaxInflightRequests` | Integer | No | `4096` | Maximum number of in-flight HTTP requests across all routes. When exceeded, the router rejects requests with HTTP 429. |
-| `MaxPendingInvocations` | Integer | No | `256` | Maximum number of queued invocations waiting for execution. When full, the router rejects new batches with HTTP 429. |
+| `MaxInflightRequests` | Integer | No | `4096` | Maximum number of in-flight HTTP requests across all routes. When exceeded, the gateway rejects requests with HTTP 429. |
+| `MaxPendingInvocations` | Integer | No | `256` | Maximum number of queued invocations waiting for execution. When full, the gateway rejects new batches with HTTP 429. |
 | `MaxQueueDepthPerKey` | Integer | No | `1000` | Maximum queued requests per batch key. When full, new requests are rejected with HTTP 429. |
 | `IdleTtlMs` | Integer | No | `30000` | Idle eviction TTL for per-key batching tasks. If a batch key sees no traffic for this long, its batching task is evicted. |
-| `DefaultTimeoutMs` | Integer | No | `2000` | Default per-request timeout, used when an operation does not specify `x-lpr.timeoutMs`. |
+| `DefaultTimeoutMs` | Integer | No | `2000` | Default per-request timeout, used when an operation does not specify `x-smug.timeoutMs`. |
 | `MaxBodyBytes` | Integer | No | `1048576` | Maximum accepted HTTP request body size. |
-| `MaxInvokePayloadBytes` | Integer | No | `6291456` | Maximum JSON payload size sent to Lambda per invocation. If a batch exceeds this limit, the router splits it into multiple invocations when possible; otherwise affected requests fail. |
+| `MaxInvokePayloadBytes` | Integer | No | `6291456` | Maximum JSON payload size sent to Lambda per invocation. If a batch exceeds this limit, the gateway splits it into multiple invocations when possible; otherwise affected requests fail. |
 | `ForwardHeaders` | Object | No | `{}` | Header forwarding policy. See [ForwardHeaders object](#forwardheaders-object). |
 
 ### ForwardHeaders object
@@ -187,24 +187,24 @@ Notes:
 
 ## Spec object
 
-The router accepts an OpenAPI-like document and uses only:
+The gateway accepts an OpenAPI-like document and uses only:
 
 - `paths` (required): map of route templates to path items
 
-Other OpenAPI fields (such as `openapi`, `info`, etc.) are allowed but ignored by the router.
+Other OpenAPI fields (such as `openapi`, `info`, etc.) are allowed but ignored by the gateway.
 
 ### Spec shape
 
 ```yaml
 Spec:
-  openapi: 3.0.0 # ignored by router (allowed)
-  info: {} # ignored by router (allowed)
+  openapi: 3.0.0 # ignored by gateway (allowed)
+  info: {} # ignored by gateway (allowed)
   paths:
     /hello:
       get:
         operationId: hello # optional
         x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
-        x-lpr:
+        x-smug:
           maxWaitMs: 25
           maxBatchSize: 4
 ```
@@ -225,9 +225,9 @@ Supported HTTP methods under a path item:
 | --- | --- | --- | --- |
 | `operationId` | String | No | Optional identifier for the operation (used for observability/debugging). |
 | `x-target-lambda` | String | Yes | Target Lambda **function ARN** (may include a qualifier). Must resolve to a function ARN string at runtime. |
-| `x-lpr` | Object | Yes | Router-specific per-operation configuration. See [x-lpr object](#x-lpr-object). |
+| `x-smug` | Object | Yes | Gateway-specific per-operation configuration. See [x-smug object](#x-smug-object). |
 
-## x-lpr object
+## x-smug object
 
 Keys are **camelCase**.
 
@@ -235,14 +235,14 @@ Keys are **camelCase**.
 | --- | --- | --- | --- | --- |
 | `maxWaitMs` | Integer | Yes | - | Maximum time to wait before flushing a batch (milliseconds). |
 | `maxBatchSize` | Integer | Yes | - | Maximum number of requests per batch. Must be `> 0`. |
-| `timeoutMs` | Integer | No | `RouterConfig.DefaultTimeoutMs` | Per-request timeout override (milliseconds). |
+| `timeoutMs` | Integer | No | `GatewayConfig.DefaultTimeoutMs` | Per-request timeout override (milliseconds). |
 | `invokeMode` | String | No | `buffered` | Lambda invoke mode. Allowed values: `buffered`, `response_stream`. |
 | `key` | List<String> | No | `[]` | Optional additional batch key dimensions (see [Batch key dimensions](#batch-key-dimensions)). |
 | `dynamicWait` | Object | No | - | Optional dynamic batching configuration (sigmoid-based). See [dynamicWait object](#dynamicwait-object). |
 
 ### Batch key dimensions
 
-The router always partitions batches by `(x-target-lambda, method, route_template, invokeMode)`.
+The gateway always partitions batches by `(x-target-lambda, method, route_template, invokeMode)`.
 
 `key` lets you add extra dimensions to avoid mixing requests whose semantics differ (for example
 multi-tenant traffic). Supported entries:
@@ -252,12 +252,12 @@ multi-tenant traffic). Supported entries:
 
 Duplicates are rejected.
 
-The following entries are accepted but ignored (because the router always keys by them anyway):
+The following entries are accepted but ignored (because the gateway always keys by them anyway):
 - `method`, `route`, `lambda`, `target_lambda`, `target-lambda`
 
 ### dynamicWait object
 
-When `dynamicWait` is set, the router computes a per-batch flush window in `[minWaitMs, maxWaitMs]`
+When `dynamicWait` is set, the gateway computes a per-batch flush window in `[minWaitMs, maxWaitMs]`
 based on the request rate for the current batch key.
 
 | Name | Type | Required | Default | Description |
@@ -285,7 +285,7 @@ Options:
 
 ## ObservabilityConfiguration
 
-`ObservabilityConfiguration` enables trace export from the router.
+`ObservabilityConfiguration` enables trace export from the gateway.
 
 ### Syntax
 
@@ -304,24 +304,24 @@ ObservabilityConfiguration:
 
 `Vendor: AWSXRAY`
   - Creates an `AWS::AppRunner::ObservabilityConfiguration` and associates it with the service.
-  - Defaults the router OTLP settings for App Runner X-Ray integration:
+  - Defaults the gateway OTLP settings for App Runner X-Ray integration:
     - `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`
     - `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc`
     - `OTEL_EXPORTER_OTLP_INSECURE=true`
     - `OTEL_PROPAGATORS=xray,tracecontext,baggage`
     - `OTEL_METRICS_EXPORTER=none`
-    - `LPR_OBSERVABILITY_VENDOR=AWSXRAY`
+    - `SMUG_OBSERVABILITY_VENDOR=AWSXRAY`
 
 `Vendor: OTEL`
   - Does not create an App Runner observability configuration (App Runner built-in tracing is X-Ray only).
-  - Configures the router exporter:
+  - Configures the gateway exporter:
     - `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=<TracesEndpoint>`
     - `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=<Protocol>` (defaults to `http/protobuf`)
     - `OTEL_PROPAGATORS=xray,tracecontext,baggage`
     - `OTEL_METRICS_EXPORTER=none`
-    - `LPR_OBSERVABILITY_VENDOR=OTEL`
-  - If `HeadersSecretArn` is set, the macro injects the referenced secret as `LPR_OTEL_HEADERS_JSON` using App Runner `RuntimeEnvironmentSecrets`.
-    The router expects a JSON object whose keys are HTTP header names and values are header values.
+    - `SMUG_OBSERVABILITY_VENDOR=OTEL`
+  - If `HeadersSecretArn` is set, the macro injects the referenced secret as `SMUG_OTEL_HEADERS_JSON` using App Runner `RuntimeEnvironmentSecrets`.
+    The gateway expects a JSON object whose keys are HTTP header names and values are header values.
 
 Notes:
   - When `ServiceName` is set, the macro defaults `OTEL_SERVICE_NAME` to the same value.
@@ -340,15 +340,16 @@ If you set `InstanceRoleArn`, you must provide equivalent permissions yourself.
 
 ## Generated logical IDs
 
-For a resource with logical id `Router`, the macro may create additional resources named:
-- `RouterLprConfigPublisher`
-- `RouterLprEcrAccessRole`
-- `RouterLprInstanceRole` (unless you set `InstanceRoleArn`)
-- `RouterLprAutoScaling` (when `AutoScalingConfiguration` is provided)
+For a resource with logical id `Gateway`, the macro may create additional resources named:
+- `GatewaySmugConfigPublisher`
+- `GatewaySmugEcrAccessRole`
+- `GatewaySmugInstanceRole` (unless you set `InstanceRoleArn`)
+- `GatewaySmugAutoScaling` (when `AutoScalingConfiguration` is provided)
+- `GatewaySmugObservability` (when `ObservabilityConfiguration` is provided)
 
 Do not declare resources with those logical IDs in the same template.
 
-## Resource type: `Custom::LprConfigPublisher`
+## Resource type: `Custom::SmugConfigPublisher`
 
 The macro uses this custom resource to publish the config manifest to S3. You can also use it
 directly if you do not want to use the macro.
@@ -357,13 +358,13 @@ directly if you do not want to use the macro.
 
 ```yaml
 PublishConfig:
-  Type: Custom::LprConfigPublisher
+  Type: Custom::SmugConfigPublisher
   Properties:
     ServiceToken: <Lambda ARN from bootstrap output>
     BucketName: <string> # optional
     Prefix: <string> # optional
     Port: 8080 # optional
-    RouterConfig: {}
+    GatewayConfig: {}
     Spec: { paths: {} }
 ```
 
@@ -372,10 +373,10 @@ PublishConfig:
 | Name | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `ServiceToken` | String | Yes | - | The `ConfigPublisherServiceToken` output from the bootstrap stack. |
-| `BucketName` | String | No | `LPR_DEFAULT_BUCKET` | S3 bucket where the manifest is uploaded. If omitted, the Lambda env var `LPR_DEFAULT_BUCKET` must be set. |
-| `Prefix` | String | No | `lpr/` | S3 key prefix (normalized to end with `/`). |
-| `Port` | Integer | No | `8080` | Used to default `ListenAddr` when omitted from `RouterConfig`. |
-| `RouterConfig` | Object | Yes | - | RouterConfig object (PascalCase keys). |
+| `BucketName` | String | No | `SMUG_DEFAULT_BUCKET` | S3 bucket where the manifest is uploaded. If omitted, the Lambda env var `SMUG_DEFAULT_BUCKET` must be set. |
+| `Prefix` | String | No | `smug/` | S3 key prefix (normalized to end with `/`). |
+| `Port` | Integer | No | `8080` | Used to default `ListenAddr` when omitted from `GatewayConfig`. |
+| `GatewayConfig` | Object | Yes | - | GatewayConfig object (PascalCase keys). |
 | `Spec` | Object | Yes | - | Spec object (OpenAPI-like `paths` map). |
 
 ### Return values
@@ -392,25 +393,25 @@ The custom resource returns these attributes (accessible via `!GetAtt PublishCon
 
 ## Deploy
 
-Create a new config bucket (default name: `lpr-config-<account>-<region>`):
+Create a new config bucket (default name: `smug-config-<account>-<region>`):
 
 ```bash
 sam deploy \
   --template-file bootstrap/template.yaml \
-  --stack-name lpr-bootstrap \
+  --stack-name smug-bootstrap \
   --capabilities CAPABILITY_IAM
 ```
 
-Set the default router image used by the macro (for services that omit `ImageIdentifier`):
+Set the default gateway image used by the macro (for services that omit `ImageIdentifier`):
 
 ```bash
 sam deploy \
   --template-file bootstrap/template.yaml \
-  --stack-name lpr-bootstrap \
+  --stack-name smug-bootstrap \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    DefaultRouterRepositoryName=lambda-parallel-router/router \
-    DefaultRouterImageTag=0.0.0
+    DefaultGatewayRepositoryName=simple-multiplexer-gateway/gateway \
+    DefaultGatewayImageTag=0.0.0
 ```
 
 Use an existing bucket (leave it managed by you):
@@ -418,24 +419,24 @@ Use an existing bucket (leave it managed by you):
 ```bash
 sam deploy \
   --template-file bootstrap/template.yaml \
-  --stack-name lpr-bootstrap \
+  --stack-name smug-bootstrap \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides UseExistingBucket=my-existing-bucket
 ```
 
-Override the default router image identifier (for example, to point to a public ECR image):
+Override the default gateway image identifier (for example, to point to a public ECR image):
 
 ```bash
 sam deploy \
   --template-file bootstrap/template.yaml \
-  --stack-name lpr-bootstrap \
+  --stack-name smug-bootstrap \
   --capabilities CAPABILITY_IAM \
-  --parameter-overrides DefaultRouterImageIdentifier=public.ecr.aws/your-alias/lambda-parallel-router/router:1.2.3
+  --parameter-overrides DefaultGatewayImageIdentifier=public.ecr.aws/your-alias/simple-multiplexer-gateway/gateway:1.2.3
 ```
 
 ## Outputs
 
-- `ConfigBucketName`: bucket where router config manifests are stored.
-- `ConfigPublisherServiceToken`: Lambda ARN to use as the `ServiceToken` for a `Custom::LprConfigPublisher` resource.
+- `ConfigBucketName`: bucket where gateway config manifests are stored.
+- `ConfigPublisherServiceToken`: Lambda ARN to use as the `ServiceToken` for a `Custom::SmugConfigPublisher` resource.
 - `LayerArm64Arn`: ARN of the arm64 runtime API proxy layer.
 - `LayerAmd64Arn`: ARN of the amd64 runtime API proxy layer.

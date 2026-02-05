@@ -10,10 +10,10 @@ use axum::Router;
 use bytes::Bytes;
 use tokio::sync::oneshot;
 
-use crate::lpr::parse_outer_lpr_batch;
+use crate::smug::parse_outer_smug_batch;
 use crate::ndjson::{encode_record_line, StreamRecord};
 use crate::runtime_api::RuntimeApiClient;
-use crate::state::{ActiveInvocation, LprBatchInvocation, PassThroughInvocation, ProxyState};
+use crate::state::{ActiveInvocation, PassThroughInvocation, ProxyState, SmugBatchInvocation};
 
 const NDJSON_CONTENT_TYPE: &str = "application/x-ndjson";
 const MAX_FORWARD_BODY_BYTES: usize = 10 * 1024 * 1024;
@@ -99,7 +99,7 @@ async fn handle_next(State(state): State<AppState>) -> Result<Response<Body>, St
                     );
 
                     let mut headers = sanitize_next_headers(&next.headers);
-                    let parsed = parse_outer_lpr_batch(&next.body).map_err(|err| {
+                    let parsed = parse_outer_smug_batch(&next.body).map_err(|err| {
                         tracing::error!(error = %err, outer_request_id = %next.request_id, "failed to parse outer batch envelope");
                         StatusCode::BAD_GATEWAY
                     })?;
@@ -107,7 +107,7 @@ async fn handle_next(State(state): State<AppState>) -> Result<Response<Body>, St
                         tracing::info!(
                             outer_request_id = %next.request_id,
                             virtual_invocations = virtuals.len(),
-                            "parsed LPR batch invocation"
+                            "parsed SMUG batch invocation"
                         );
                         // The outer invocation is response-streaming, but each virtual invocation
                         // must be treated as a normal (buffered) runtime invocation. Propagating
@@ -117,7 +117,7 @@ async fn handle_next(State(state): State<AppState>) -> Result<Response<Body>, St
                         let (tx, join) = state
                             .upstream
                             .start_streaming_response(next.request_id.clone(), NDJSON_CONTENT_TYPE);
-                        inner.active = ActiveInvocation::LprBatch(LprBatchInvocation {
+                        inner.active = ActiveInvocation::SmugBatch(SmugBatchInvocation {
                             outer_request_id: next.request_id,
                             base_headers: headers,
                             queue: VecDeque::from(virtuals),
@@ -197,7 +197,7 @@ async fn try_take_next(state: &AppState) -> Result<Option<Response<Body>>, Statu
             let res = response_from_bytes(StatusCode::OK, pass.headers.clone(), pass.body.clone());
             Ok(Some(res))
         }
-        ActiveInvocation::LprBatch(batch) => {
+        ActiveInvocation::SmugBatch(batch) => {
             let Some(inv) = batch.queue.pop_front() else {
                 return Ok(None);
             };
@@ -211,7 +211,7 @@ async fn try_take_next(state: &AppState) -> Result<Option<Response<Body>>, Statu
             let res = response_from_bytes(StatusCode::OK, headers, inv.event_bytes);
             Ok(Some(res))
         }
-        ActiveInvocation::None | ActiveInvocation::LprFinalizing => Ok(None),
+        ActiveInvocation::None | ActiveInvocation::SmugFinalizing => Ok(None),
     }
 }
 
@@ -343,7 +343,7 @@ async fn handle_completion_inner(
                 body,
             })
         }
-        ActiveInvocation::LprBatch(batch) => {
+        ActiveInvocation::SmugBatch(batch) => {
             if !batch.inflight.remove(&id) {
                 // Unknown request id. Accept to avoid wedging the runtime.
                 return Ok(CompletionOutcome::HandledLocally {
@@ -375,12 +375,12 @@ async fn handle_completion_inner(
             // Drop the sender held by state to close the streaming body once all cloned senders are dropped.
             batch.stream_tx.take();
 
-            inner.active = ActiveInvocation::LprFinalizing;
+            inner.active = ActiveInvocation::SmugFinalizing;
             Ok(CompletionOutcome::HandledLocally {
                 finalize_join: join,
             })
         }
-        ActiveInvocation::None | ActiveInvocation::LprFinalizing => {
+        ActiveInvocation::None | ActiveInvocation::SmugFinalizing => {
             Ok(CompletionOutcome::HandledLocally {
                 finalize_join: None,
             })

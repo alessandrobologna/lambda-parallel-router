@@ -5,7 +5,7 @@ use http::HeaderMap;
 use tokio::sync::mpsc;
 use tokio::sync::{Mutex, Notify};
 
-use crate::lpr::VirtualInvocation;
+use crate::smug::VirtualInvocation;
 
 pub struct ProxyState {
     pub inner: Mutex<InnerState>,
@@ -36,8 +36,8 @@ pub struct InnerState {
 pub enum ActiveInvocation {
     None,
     PassThrough(PassThroughInvocation),
-    LprBatch(LprBatchInvocation),
-    LprFinalizing,
+    SmugBatch(SmugBatchInvocation),
+    SmugFinalizing,
 }
 
 impl Default for ActiveInvocation {
@@ -53,7 +53,7 @@ pub struct PassThroughInvocation {
     pub delivered: bool,
 }
 
-pub struct LprBatchInvocation {
+pub struct SmugBatchInvocation {
     pub outer_request_id: String,
     pub base_headers: HeaderMap,
     pub queue: VecDeque<VirtualInvocation>,

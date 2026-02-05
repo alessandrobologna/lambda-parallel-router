@@ -1,8 +1,8 @@
-# Lambda Parallel Router Overview
+# Simple Multiplexer Gateway Overview
 
 ## Purpose
 
-Lambda Parallel Router is a long-running HTTP router that micro-batches requests per route. It sends one Lambda invocation per batch and returns per-request responses. This trades a bounded delay for fewer invocations and better utilization. The batch window is controlled by per-route settings.
+Simple Multiplexer Gateway is a long-running HTTP gateway that micro-batches requests per route. It sends one Lambda invocation per batch and returns per-request responses. This trades a bounded delay for fewer invocations and better utilization. The batch window is controlled by per-route settings.
 
 ## Core capabilities
 
@@ -18,7 +18,7 @@ Client
   |
   | HTTP
   v
-Router (long-running service)
+Gateway (long-running service)
   | micro-batch per route
   v
 Lambda invocation (buffered or streaming)
@@ -27,12 +27,12 @@ Lambda invocation (buffered or streaming)
 Per-request responses
 ```
 
-The router groups requests by route and batch key, invokes Lambda once per batch, and maps responses back to each request id.
+The gateway groups requests by route and batch key, invokes Lambda once per batch, and maps responses back to each request id.
 
 ## Components
 
-- Router service ([`router/`](../router/)). Rust, axum, per-route batchers.
-- Spec compiler ([`router/src/spec.rs`](../router/src/spec.rs)). Parses OpenAPI-like route config.
+- Gateway service ([`gateway/`](../gateway/)). Rust, axum, per-route batchers.
+- Spec compiler ([`gateway/src/spec.rs`](../gateway/src/spec.rs)). Parses OpenAPI-like route config.
 - Lambda kit ([`lambda-kit/`](../lambda-kit/)).
   - Adapters ([`adapter-node`](../lambda-kit/adapter-node/), [`adapter-rust`](../lambda-kit/adapter-rust/)).
   - Layer proxy ([`bootstrap/layer-proxy`](../bootstrap/layer-proxy/)). Runtime API proxy and exec wrapper.

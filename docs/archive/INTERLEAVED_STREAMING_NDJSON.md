@@ -1,11 +1,11 @@
 # Interleaved streaming (NDJSON framing) - design note
 
-This document describes a possible **interleaved streaming** protocol for the router.
+This document describes a possible **interleaved streaming** protocol for the gateway.
 It keeps **NDJSON as the internal framing** but allows the Lambda to decide the
 **client-facing response format** (e.g., SSE, JSON, text, binary).
 
 The key idea is: a single Lambda invocation returns a stream of NDJSON records,
-each tagged with a request `id`, and the router demultiplexes those records into
+each tagged with a request `id`, and the gateway demultiplexes those records into
 per-request HTTP response streams.
 
 ---
@@ -51,7 +51,7 @@ Establishes status + headers for a request stream.
 
 Rules:
 - Must appear **once per request** before the first `chunk`.
-- If absent, router MAY synthesize a default `200` and empty headers.
+- If absent, gateway MAY synthesize a default `200` and empty headers.
 
 ### 2) `chunk`
 Contains a chunk of body bytes.
@@ -68,7 +68,7 @@ Contains a chunk of body bytes.
 
 Rules:
 - `body` is a string; `isBase64Encoded` indicates decoding before send.
-- Router writes chunk to the corresponding client response body.
+- Gateway writes chunk to the corresponding client response body.
 
 ### 3) `end`
 Marks the end of the response stream for `id`.
@@ -78,8 +78,8 @@ Marks the end of the response stream for `id`.
 ```
 
 Rules:
-- Router finalizes the response and closes the stream.
-- Missing `end` implies error/timeout handling by router policy.
+- Gateway finalizes the response and closes the stream.
+- Missing `end` implies error/timeout handling by gateway policy.
 
 ### 4) `error`
 Indicates a request-specific failure.
@@ -95,7 +95,7 @@ Indicates a request-specific failure.
 ```
 
 Rules:
-- Router sends an error response (if not already started) and closes the stream.
+- Gateway sends an error response (if not already started) and closes the stream.
 
 ---
 
@@ -113,7 +113,7 @@ Two requests (`r1`, `r2`) interleaved in one Lambda response stream:
 {"v":1,"id":"r1","type":"end"}
 ```
 
-The router demuxes each record to the correct client stream.
+The gateway demuxes each record to the correct client stream.
 
 ---
 
@@ -133,7 +133,7 @@ This keeps NDJSON internal while still providing **native SSE** to clients.
 
 ---
 
-## Router behavior (high level)
+## Gateway behavior (high level)
 
 - Parse NDJSON line-by-line from the Lambda response stream.
 - Validate each record; unknown `id` ⇒ error policy (e.g., drop + log).
@@ -150,8 +150,8 @@ This keeps NDJSON internal while still providing **native SSE** to clients.
 
 ## Backpressure & buffering
 
-- Router should apply **bounded buffering** per request to avoid memory blowup.
-- If a client is slow, router can:
+- Gateway should apply **bounded buffering** per request to avoid memory blowup.
+- If a client is slow, gateway can:
   - apply backpressure to the Lambda stream (best-effort), or
   - fail that request with `error` and continue others.
 

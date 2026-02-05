@@ -13,13 +13,13 @@ MaxInvokePayloadBytes: 6291456
 Spec:
   openapi: 3.0.0
   info:
-    title: lambda-parallel-router example
+    title: Simple Multiplexer Gateway example
     version: "1"
   paths:
     /hello:
       get:
         x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:my-fn
-        x-lpr:
+        x-smug:
           maxWaitMs: 25
           maxBatchSize: 4
           invokeMode: buffered # buffered | response_stream
