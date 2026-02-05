@@ -1,6 +1,6 @@
 //! Lambda invocation abstraction.
 //!
-//! The router supports two modes:
+//! The gateway supports two modes:
 //! - Buffered (`Invoke`) where the entire Lambda response is returned as a single payload.
 //! - Response streaming (`InvokeWithResponseStream`) where the Lambda response is delivered as a
 //!   stream of byte chunks (used for NDJSON records).
@@ -23,7 +23,7 @@ pub enum LambdaInvokeResult {
 }
 
 #[async_trait]
-/// Abstract Lambda invoker to allow unit-testing the router without AWS.
+/// Abstract Lambda invoker to allow unit-testing the gateway without AWS.
 pub trait LambdaInvoker: Send + Sync {
     async fn invoke(
         &self,

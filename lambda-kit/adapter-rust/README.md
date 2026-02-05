@@ -1,6 +1,6 @@
-# lpr adapter (Rust)
+# smug adapter (Rust)
 
-`batch_adapter(handler)` wraps a single-request handler and returns a batch handler compatible with `lambda-parallel-router`.
+`batch_adapter(handler)` wraps a single-request handler and returns a batch handler compatible with Simple Multiplexer Gateway.
 
 ## Usage
 
@@ -9,7 +9,7 @@ use std::convert::Infallible;
 
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
-use lpr_lambda_adapter::{batch_adapter, BatchRequestEvent, HandlerResponse};
+use smug_lambda_adapter::{batch_adapter, BatchRequestEvent, HandlerResponse};
 
 async fn handler(
     event: ApiGatewayV2httpRequest,
@@ -32,13 +32,13 @@ async fn main() -> Result<(), Error> {
 
 ## Response streaming (NDJSON)
 
-If the router operation uses `invokeMode: response_stream`, emit NDJSON response records:
+If the gateway operation uses `invokeMode: response_stream`, emit NDJSON response records:
 
 ```rust
 use std::convert::Infallible;
 
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
-use lpr_lambda_adapter::{batch_adapter_stream, BatchRequestEvent, HandlerResponse};
+use smug_lambda_adapter::{batch_adapter_stream, BatchRequestEvent, HandlerResponse};
 
 async fn handler(
     _event: ApiGatewayV2httpRequest,
@@ -62,7 +62,7 @@ use std::{collections::HashMap, convert::Infallible};
 
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
 use futures::stream;
-use lpr_lambda_adapter::{batch_adapter_stream, HandlerResponse, ResponseBody, ResponseChunk};
+use smug_lambda_adapter::{batch_adapter_stream, HandlerResponse, ResponseBody, ResponseChunk};
 
 async fn handler(
     event: ApiGatewayV2httpRequest,
@@ -84,7 +84,7 @@ async fn handler(
 }
 
 pub fn ndjson_interleaved(
-    event: lpr_lambda_adapter::BatchRequestEvent<ApiGatewayV2httpRequest>,
+    event: smug_lambda_adapter::BatchRequestEvent<ApiGatewayV2httpRequest>,
     ctx: &lambda_runtime::Context,
 ) -> impl futures::Stream<Item = bytes::Bytes> + '_ {
     batch_adapter_stream(handler)
@@ -95,4 +95,4 @@ pub fn ndjson_interleaved(
 
 Notes:
 - `ResponseChunk::Binary` is base64-encoded and emitted with `isBase64Encoded: true`.
-- The router demultiplexes NDJSON records and forwards bytes to clients.
+- The gateway demultiplexes NDJSON records and forwards bytes to clients.

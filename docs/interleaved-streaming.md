@@ -1,6 +1,6 @@
 # Interleaved Streaming (NDJSON Framing)
 
-Interleaved streaming is an experimental response format. It allows one Lambda invocation to stream multiple request responses by emitting NDJSON records tagged with a request id. The router demultiplexes records into per-request streams.
+Interleaved streaming is an experimental response format. It allows one Lambda invocation to stream multiple request responses by emitting NDJSON records tagged with a request id. The gateway demultiplexes records into per-request streams.
 
 Use this when a single invocation handles multiple requests and each request needs incremental output.
 
@@ -44,18 +44,18 @@ Closes the stream.
 
 ### `error`
 
-Reports a per-request error. The router returns an error response and closes the stream.
+Reports a per-request error. The gateway returns an error response and closes the stream.
 
 ```json
 {"v":1,"id":"r-1","type":"error","statusCode":502,"message":"upstream failed"}
 ```
 
-## Router behavior
+## Gateway behavior
 
 - Records are processed in arrival order.
-- `head` is optional. If it is omitted, the router synthesizes a default `head` (200, empty headers)
+- `head` is optional. If it is omitted, the gateway synthesizes a default `head` (200, empty headers)
   when it receives the first `chunk` or `end` for that id.
-- The router maps `cookies` to `Set-Cookie` headers.
+- The gateway maps `cookies` to `Set-Cookie` headers.
 - Unknown ids are dropped.
 
 ## Compatibility

@@ -1,7 +1,7 @@
 {
-  "name": "lpr-lambda-adapter",
+  "name": "smug-lambda-adapter",
   "version": "0.1.0",
-  "description": "Batch adapter for lambda-parallel-router",
+  "description": "Batch adapter for Simple Multiplexer Gateway",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "commonjs",

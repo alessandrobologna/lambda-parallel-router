@@ -9,15 +9,15 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let proxy_addr =
-            std::env::var("LPR_PROXY_ADDR").unwrap_or_else(|_| "127.0.0.1:9009".into());
+            std::env::var("SMUG_PROXY_ADDR").unwrap_or_else(|_| "127.0.0.1:9009".into());
         let proxy_addr = SocketAddr::from_str(&proxy_addr)
-            .map_err(|err| anyhow::anyhow!("invalid LPR_PROXY_ADDR ({proxy_addr}): {err}"))?;
+            .map_err(|err| anyhow::anyhow!("invalid SMUG_PROXY_ADDR ({proxy_addr}): {err}"))?;
 
-        let upstream_runtime_api = std::env::var("LPR_UPSTREAM_RUNTIME_API")
+        let upstream_runtime_api = std::env::var("SMUG_UPSTREAM_RUNTIME_API")
             .ok()
             .or_else(|| std::env::var("AWS_LAMBDA_RUNTIME_API").ok())
             .ok_or_else(|| {
-                anyhow::anyhow!("missing LPR_UPSTREAM_RUNTIME_API and AWS_LAMBDA_RUNTIME_API")
+                anyhow::anyhow!("missing SMUG_UPSTREAM_RUNTIME_API and AWS_LAMBDA_RUNTIME_API")
             })?;
 
         Ok(Self {
@@ -37,8 +37,8 @@ mod tests {
 
     #[test]
     fn config_defaults_proxy_addr() {
-        std::env::remove_var("LPR_PROXY_ADDR");
-        std::env::set_var("LPR_UPSTREAM_RUNTIME_API", "127.0.0.1:9001");
+        std::env::remove_var("SMUG_PROXY_ADDR");
+        std::env::set_var("SMUG_UPSTREAM_RUNTIME_API", "127.0.0.1:9001");
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.proxy_addr, "127.0.0.1:9009".parse().unwrap());

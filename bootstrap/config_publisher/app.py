@@ -89,7 +89,7 @@ def _publish(
     *,
     bucket: str,
     prefix: str,
-    router_config: Mapping[str, Any],
+    gateway_config: Mapping[str, Any],
     spec: Mapping[str, Any],
     port: int,
 ) -> Tuple[Dict[str, Any], str]:
@@ -99,9 +99,9 @@ def _publish(
     prefix = _normalize_prefix(prefix)
     s3 = boto3.client("s3")
 
-    config_obj = dict(router_config)
+    config_obj = dict(gateway_config)
     config_obj.setdefault("ListenAddr", f"0.0.0.0:{port}")
-    # The router expects the OpenAPI-ish spec to be embedded directly in the config manifest.
+    # The gateway expects the OpenAPI-ish spec to be embedded directly in the config manifest.
     config_obj["Spec"] = spec
 
     config_json = _canonical_json(config_obj)
@@ -118,7 +118,7 @@ def _publish(
         Key=config_key,
         Body=config_body,
         ContentType="application/json",
-        Metadata={"lpr-sha256": config_sha256, "lpr-name": "config"},
+        Metadata={"smug-sha256": config_sha256, "smug-name": "config"},
     )
 
     data: Dict[str, Any] = {
@@ -129,7 +129,7 @@ def _publish(
         "ConfigSha256": config_sha256,
     }
 
-    physical_resource_id = f"lpr-config-publisher:{bucket}:{prefix or '-'}"
+    physical_resource_id = f"smug-config-publisher:{bucket}:{prefix or '-'}"
     return data, physical_resource_id
 
 
@@ -138,10 +138,10 @@ def handler(event: Mapping[str, Any], context: Any) -> None:
     CloudFormation custom resource handler.
 
     Properties:
-      - BucketName (optional): target S3 bucket (defaults to env LPR_DEFAULT_BUCKET)
-      - Prefix (optional): object key prefix (default: "lpr/")
-      - Port (optional): port number used to default `ListenAddr` when omitted in `RouterConfig`
-      - RouterConfig: object (YAML/JSON object)
+      - BucketName (optional): target S3 bucket (defaults to env SMUG_DEFAULT_BUCKET)
+      - Prefix (optional): object key prefix (default: "smug/")
+      - Port (optional): port number used to default `ListenAddr` when omitted in `GatewayConfig`
+      - GatewayConfig: object (YAML/JSON object)
       - Spec: object (YAML/JSON object)
     """
     logger.info("RequestType=%s LogicalResourceId=%s", event.get("RequestType"), event.get("LogicalResourceId"))
@@ -149,7 +149,7 @@ def handler(event: Mapping[str, Any], context: Any) -> None:
     request_type = event.get("RequestType")
     props = event.get("ResourceProperties") or {}
 
-    physical_resource_id = event.get("PhysicalResourceId") or "lpr-config-publisher"
+    physical_resource_id = event.get("PhysicalResourceId") or "smug-config-publisher"
 
     try:
         if request_type == "Delete":
@@ -162,18 +162,18 @@ def handler(event: Mapping[str, Any], context: Any) -> None:
             )
             return
 
-        bucket = props.get("BucketName") or os.environ.get("LPR_DEFAULT_BUCKET")
+        bucket = props.get("BucketName") or os.environ.get("SMUG_DEFAULT_BUCKET")
         if not isinstance(bucket, str) or not bucket:
             raise ValueError(
-                "BucketName is required (or set LPR_DEFAULT_BUCKET on the function)."
+                "BucketName is required (or set SMUG_DEFAULT_BUCKET on the function)."
             )
-        prefix = props.get("Prefix", "lpr/")
+        prefix = props.get("Prefix", "smug/")
         if not isinstance(prefix, str):
             raise ValueError("Prefix must be a string.")
 
-        router_config = props.get("RouterConfig")
-        if not isinstance(router_config, dict):
-            raise ValueError("RouterConfig is required and must be an object.")
+        gateway_config = props.get("GatewayConfig")
+        if not isinstance(gateway_config, dict):
+            raise ValueError("GatewayConfig is required and must be an object.")
 
         spec = props.get("Spec")
         if not isinstance(spec, dict):
@@ -184,7 +184,7 @@ def handler(event: Mapping[str, Any], context: Any) -> None:
         data, physical_resource_id = _publish(
             bucket=bucket,
             prefix=prefix,
-            router_config=router_config,
+            gateway_config=gateway_config,
             spec=spec,
             port=port,
         )

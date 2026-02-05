@@ -5,7 +5,7 @@ use serde_json::Value as JsonValue;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
-use lpr_router::{config::RouterConfig, location::DocumentLocation, server, spec::CompiledSpec};
+use smug_gateway::{config::GatewayConfig, location::DocumentLocation, server, spec::CompiledSpec};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -20,13 +20,13 @@ fn resolve_config_location(args: &Args) -> anyhow::Result<String> {
         }
     }
 
-    if let Ok(v) = std::env::var("LPR_CONFIG_URI") {
+    if let Ok(v) = std::env::var("SMUG_CONFIG_URI") {
         if !v.trim().is_empty() {
             return Ok(v);
         }
     }
 
-    anyhow::bail!("missing config location: provide --config or set LPR_CONFIG_URI")
+    anyhow::bail!("missing config location: provide --config or set SMUG_CONFIG_URI")
 }
 
 fn env_missing_or_empty(name: &str) -> bool {
@@ -100,35 +100,35 @@ fn try_set_otlp_headers_from_json_secret() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let raw = match std::env::var("LPR_OTEL_HEADERS_JSON") {
+    let raw = match std::env::var("SMUG_OTEL_HEADERS_JSON") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => return Ok(()),
     };
 
     let parsed: JsonValue =
-        serde_json::from_str(&raw).context("parse LPR_OTEL_HEADERS_JSON as JSON")?;
+        serde_json::from_str(&raw).context("parse SMUG_OTEL_HEADERS_JSON as JSON")?;
     let obj = parsed
         .as_object()
-        .context("LPR_OTEL_HEADERS_JSON must be a JSON object")?;
+        .context("SMUG_OTEL_HEADERS_JSON must be a JSON object")?;
 
     let mut parts: Vec<String> = Vec::with_capacity(obj.len());
     for (k, v) in obj {
         let key = k.trim();
         if key.is_empty() {
-            anyhow::bail!("LPR_OTEL_HEADERS_JSON contains an empty header name");
+            anyhow::bail!("SMUG_OTEL_HEADERS_JSON contains an empty header name");
         }
         let value = v
             .as_str()
-            .context("LPR_OTEL_HEADERS_JSON header values must be strings")?
+            .context("SMUG_OTEL_HEADERS_JSON header values must be strings")?
             .trim();
         if value.is_empty() {
-            anyhow::bail!("LPR_OTEL_HEADERS_JSON contains an empty value for header {key}");
+            anyhow::bail!("SMUG_OTEL_HEADERS_JSON contains an empty value for header {key}");
         }
         parts.push(format!("{key}={}", url_encode_header_value(value)));
     }
 
     if parts.is_empty() {
-        anyhow::bail!("LPR_OTEL_HEADERS_JSON must contain at least one header");
+        anyhow::bail!("SMUG_OTEL_HEADERS_JSON must contain at least one header");
     }
 
     std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", parts.join(","));
@@ -206,7 +206,7 @@ fn init_logging_and_tracing() -> anyhow::Result<(bool, Option<TracerProviderGuar
         .with_resource(resource)
         .with_span_processor(batch);
 
-    if std::env::var("LPR_OBSERVABILITY_VENDOR")
+    if std::env::var("SMUG_OBSERVABILITY_VENDOR")
         .ok()
         .map(|v| v.trim().to_string())
         .as_deref()
@@ -252,9 +252,9 @@ async fn main() -> anyhow::Result<()> {
     let s3 = aws_cfg.as_ref().map(aws_sdk_s3::Client::new);
 
     let cfg_bytes = cfg_loc.read_bytes(s3.as_ref()).await?;
-    let mut cfg = RouterConfig::from_yaml_bytes(&cfg_bytes)?;
+    let mut cfg = GatewayConfig::from_yaml_bytes(&cfg_bytes)?;
 
-    let spec_doc = cfg.spec.take().context("router config is missing `Spec`")?;
+    let spec_doc = cfg.spec.take().context("gateway config is missing `Spec`")?;
     let spec = CompiledSpec::from_spec(spec_doc, cfg.default_timeout_ms)?;
 
     tracing::info!(listen_addr = %cfg.listen_addr, "loaded config + spec");

@@ -25,7 +25,7 @@ Use the adapter when a small code change is acceptable. This mode is the default
 **Node adapter**
 
 ```javascript
-const { batchAdapter } = require("lpr-lambda-adapter");
+const { batchAdapter } = require("smug-lambda-adapter");
 
 exports.handler = batchAdapter(async function handler(event) {
   return { statusCode: 200, body: JSON.stringify({ ok: true }) };
@@ -39,7 +39,7 @@ use std::convert::Infallible;
 
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
-use lpr_lambda_adapter::{batch_adapter, BatchRequestEvent, HandlerResponse};
+use smug_lambda_adapter::{batch_adapter, BatchRequestEvent, HandlerResponse};
 
 async fn handler(
     event: ApiGatewayV2httpRequest,
@@ -81,13 +81,13 @@ Streaming adapters return an NDJSON stream. Each line is one response record.
 
 Ordering and errors:
 
-- Response lines can arrive out of order. The router matches lines by `id`.
+- Response lines can arrive out of order. The gateway matches lines by `id`.
 - If the stream ends early, items without a response are treated as errors.
 
 **Node**
 
 ```javascript
-const { batchAdapterStream } = require("lpr-lambda-adapter");
+const { batchAdapterStream } = require("smug-lambda-adapter");
 exports.handler = batchAdapterStream(handler);
 ```
 
@@ -95,7 +95,7 @@ exports.handler = batchAdapterStream(handler);
 
 ```rust
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
-use lpr_lambda_adapter::{batch_adapter_stream, BatchRequestEvent};
+use smug_lambda_adapter::{batch_adapter_stream, BatchRequestEvent};
 
 pub fn ndjson(
     event: BatchRequestEvent<ApiGatewayV2httpRequest>,
@@ -115,7 +115,7 @@ Use a native batch handler for full control. The handler receives `event.batch` 
 {
   "v": 1,
   "meta": {
-    "router": "lambda-parallel-router",
+    "gateway": "simple-multiplexer-gateway",
     "route": "/hello/{id}",
     "receivedAtMs": 1730000000000
   },
@@ -164,8 +164,8 @@ If you deploy the bootstrap stack, it outputs `LayerAmd64Arn` and `LayerArm64Arn
 **Enable the layer proxy**
 
 ```bash
-AWS_LAMBDA_EXEC_WRAPPER=/opt/lpr/exec-wrapper.sh
-LPR_MAX_CONCURRENCY=4
+AWS_LAMBDA_EXEC_WRAPPER=/opt/smug/exec-wrapper.sh
+SMUG_MAX_CONCURRENCY=4
 ```
 
 **Limitations**

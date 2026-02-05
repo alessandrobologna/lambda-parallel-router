@@ -1,4 +1,4 @@
-# lpr-runtime-api-proxy
+# smug-runtime-api-proxy
 
 Rust Lambda Extension that proxies the Lambda Runtime API.
 
@@ -13,8 +13,8 @@ Docs:
 
 The layer contents map to `/opt` in Lambda.
 
-- Extension binary: `/opt/extensions/lpr-runtime-api-proxy`
-- Exec wrapper: `/opt/lpr/exec-wrapper.sh`
+- Extension binary: `/opt/extensions/smug-runtime-api-proxy`
+- Exec wrapper: `/opt/smug/exec-wrapper.sh`
 
 Build:
 
@@ -33,13 +33,13 @@ sam deploy --guided
 Then configure the function to use the exec wrapper:
 
 ```bash
-AWS_LAMBDA_EXEC_WRAPPER=/opt/lpr/exec-wrapper.sh
+AWS_LAMBDA_EXEC_WRAPPER=/opt/smug/exec-wrapper.sh
 ```
 
 Optionally set the runtime worker concurrency (recommended: match your route `maxBatchSize`):
 
 ```bash
-LPR_MAX_CONCURRENCY=4
+SMUG_MAX_CONCURRENCY=4
 ```
 
 Note: Python 3.14 concurrency remains experimental. As of `python:3.14.v32`, enabling

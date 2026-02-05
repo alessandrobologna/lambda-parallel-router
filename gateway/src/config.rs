@@ -1,4 +1,4 @@
-//! Router configuration loaded from YAML.
+//! Gateway configuration loaded from YAML.
 //!
 //! This config is intentionally small and focused on batching behavior and safe defaults.
 
@@ -43,7 +43,7 @@ fn default_max_pending_invocations() -> usize {
 #[derive(Debug, Clone, Default, Deserialize)]
 /// Header forwarding policy.
 ///
-/// By default (empty `allow` + empty `deny`) the router forwards all headers that can be decoded as
+/// By default (empty `allow` + empty `deny`) the gateway forwards all headers that can be decoded as
 /// UTF-8, except hop-by-hop headers.
 #[serde(rename_all = "PascalCase")]
 pub struct ForwardHeadersConfig {
@@ -56,10 +56,10 @@ pub struct ForwardHeadersConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-/// Top-level router configuration.
+/// Top-level gateway configuration.
 #[serde(rename_all = "PascalCase")]
-pub struct RouterConfig {
-    /// Address the router listens on (e.g. `127.0.0.1:3000`).
+pub struct GatewayConfig {
+    /// Address the gateway listens on (e.g. `127.0.0.1:3000`).
     pub listen_addr: SocketAddr,
     /// OpenAPI-ish spec document (only `paths` are used).
     #[serde(default)]
@@ -82,7 +82,7 @@ pub struct RouterConfig {
     )]
     /// Maximum number of in-flight HTTP requests across all routes.
     ///
-    /// When exceeded, the router rejects requests with 429.
+    /// When exceeded, the gateway rejects requests with 429.
     pub max_inflight_requests: usize,
 
     #[serde(
@@ -91,7 +91,7 @@ pub struct RouterConfig {
     )]
     /// Maximum number of queued Lambda invocations waiting for execution.
     ///
-    /// When full, the router rejects new batches with 429.
+    /// When full, the gateway rejects new batches with 429.
     pub max_pending_invocations: usize,
 
     #[serde(
@@ -112,7 +112,7 @@ pub struct RouterConfig {
         default = "default_default_timeout_ms",
         deserialize_with = "crate::serde_ext::de_u64_or_string"
     )]
-    /// Default per-request timeout (used when an operation doesn't specify `x-lpr.timeoutMs`).
+    /// Default per-request timeout (used when an operation doesn't specify `x-smug.timeoutMs`).
     pub default_timeout_ms: u64,
 
     #[serde(
@@ -128,7 +128,7 @@ pub struct RouterConfig {
     )]
     /// Maximum JSON payload size sent to Lambda per invocation.
     ///
-    /// If a batch exceeds this limit, the router will split it into multiple invocations when
+    /// If a batch exceeds this limit, the gateway will split it into multiple invocations when
     /// possible; otherwise the affected requests will fail.
     pub max_invoke_payload_bytes: usize,
 
@@ -137,8 +137,8 @@ pub struct RouterConfig {
     pub forward_headers: ForwardHeadersConfig,
 }
 
-impl RouterConfig {
-    /// Parse a YAML router config from bytes.
+impl GatewayConfig {
+    /// Parse a YAML gateway config from bytes.
     pub fn from_yaml_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
         Ok(serde_yaml::from_slice(bytes)?)
     }
@@ -155,7 +155,7 @@ ListenAddr: "127.0.0.1:3000"
 Spec:
   paths: {}
 "#;
-        let cfg = RouterConfig::from_yaml_bytes(yaml).unwrap();
+        let cfg = GatewayConfig::from_yaml_bytes(yaml).unwrap();
         assert_eq!(cfg.max_inflight_invocations, 64);
         assert_eq!(cfg.max_inflight_requests, 4096);
         assert_eq!(cfg.max_pending_invocations, 256);
@@ -185,7 +185,7 @@ DefaultTimeoutMs: "789"
 MaxBodyBytes: "1024"
 MaxInvokePayloadBytes: "2048"
 "#;
-        let cfg = RouterConfig::from_yaml_bytes(yaml).unwrap();
+        let cfg = GatewayConfig::from_yaml_bytes(yaml).unwrap();
         assert_eq!(cfg.max_inflight_invocations, 12);
         assert_eq!(cfg.max_inflight_requests, 56);
         assert_eq!(cfg.max_pending_invocations, 78);

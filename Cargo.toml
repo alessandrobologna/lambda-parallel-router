@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "router",
+  "gateway",
   "lambda-kit/adapter-rust",
   "bootstrap/layer-proxy",
 ]

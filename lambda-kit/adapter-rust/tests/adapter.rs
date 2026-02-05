@@ -10,7 +10,7 @@ use std::{
 use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
 use bytes::Bytes;
 use futures::StreamExt;
-use lpr_lambda_adapter::{
+use smug_lambda_adapter::{
     batch_adapter, batch_adapter_stream, BatchRequestEvent, BatchResponseItem, HandlerResponse,
     ResponseBody, ResponseChunk,
 };

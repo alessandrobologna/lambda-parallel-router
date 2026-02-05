@@ -26,7 +26,7 @@ paths:
   /v1/search:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:search
-      x-lpr:
+      x-smug:
         maxWaitMs: 10
         maxBatchSize: 8
         invokeMode: buffered
@@ -38,13 +38,13 @@ Batching reduces invocation count but does not remove cold starts. Plan capacity
 
 ## Align concurrency for Mode A
 
-Set `LPR_MAX_CONCURRENCY` to the route `maxBatchSize`. This allows the runtime to process multiple virtual invocations in parallel.
+Set `SMUG_MAX_CONCURRENCY` to the route `maxBatchSize`. This allows the runtime to process multiple virtual invocations in parallel.
 This is best-effort and depends on the managed runtime honoring `AWS_LAMBDA_MAX_CONCURRENCY`.
 Mode A remains experimental, and Python 3.14 concurrency is fragile.
 
 ## Avoid unsafe co-batching
 
-Use `x-lpr.key` when a route must isolate tenants or auth contexts. A common choice is `key: [header:x-tenant-id]`.
+Use `x-smug.key` when a route must isolate tenants or auth contexts. A common choice is `key: [header:x-tenant-id]`.
 
 Example key configuration:
 
@@ -53,7 +53,7 @@ paths:
   /v1/tenant/report:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:report
-      x-lpr:
+      x-smug:
         maxWaitMs: 20
         maxBatchSize: 4
         invokeMode: buffered
@@ -94,7 +94,7 @@ paths:
   /v1/search:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:search
-      x-lpr:
+      x-smug:
         maxWaitMs: 10
         maxBatchSize: 8
         invokeMode: buffered
@@ -103,12 +103,12 @@ paths:
 
 ## Observability and cost estimation
 
-Enable `LPR_INCLUDE_BATCH_SIZE_HEADER=1` on the router to add `x-lpr-batch-size`. This enables batch size metrics in the benchmark tooling and makes invocation count estimation possible. These numbers are illustrative. Actual costs will depend on traffic patterns and configuration.
+Enable `SMUG_INCLUDE_BATCH_SIZE_HEADER=1` on the gateway to add `x-smug-batch-size`. This enables batch size metrics in the benchmark tooling and makes invocation count estimation possible. These numbers are illustrative. Actual costs will depend on traffic patterns and configuration.
 
 Example response header:
 
 ```
-x-lpr-batch-size: 7
+x-smug-batch-size: 7
 ```
 
 ## Benchmarking hygiene

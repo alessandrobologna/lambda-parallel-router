@@ -43,7 +43,7 @@ async fn mode_a_splits_batch_and_streams_ndjson_in_completion_order() {
             .unwrap();
     });
 
-    let proxy_upstream = lpr_runtime_api_proxy::runtime_api::RuntimeApiClient::new(format!(
+    let proxy_upstream = smug_runtime_api_proxy::runtime_api::RuntimeApiClient::new(format!(
         "http://{upstream_addr}"
     ))
     .unwrap();
@@ -52,7 +52,7 @@ async fn mode_a_splits_batch_and_streams_ndjson_in_completion_order() {
     let (proxy_shutdown_tx, proxy_shutdown_rx) = oneshot::channel::<()>();
 
     let proxy_server = tokio::spawn(async move {
-        lpr_runtime_api_proxy::proxy::serve_listener(
+        smug_runtime_api_proxy::proxy::serve_listener(
             proxy_listener,
             proxy_upstream,
             proxy_shutdown_rx,

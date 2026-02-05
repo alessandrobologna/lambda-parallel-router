@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export LPR_PROXY_ADDR="${LPR_PROXY_ADDR:-127.0.0.1:9009}"
+export SMUG_PROXY_ADDR="${SMUG_PROXY_ADDR:-127.0.0.1:9009}"
 
 # The Lambda managed runtimes decide how many concurrent Runtime API workers to run by reading
 # `AWS_LAMBDA_MAX_CONCURRENCY`. Mode A relies on those workers to pull multiple "virtual"
@@ -11,9 +11,9 @@ export LPR_PROXY_ADDR="${LPR_PROXY_ADDR:-127.0.0.1:9009}"
 # cause the runtime to crash during init (OSError: [Errno 9] Bad file descriptor in awslambdaric
 # log sink). See workaround below.
 #
-# Keep the wrapper safe-by-default and only set it when explicitly requested via `LPR_MAX_CONCURRENCY`.
-if [[ -z "${AWS_LAMBDA_MAX_CONCURRENCY:-}" && -n "${LPR_MAX_CONCURRENCY:-}" ]]; then
-  export AWS_LAMBDA_MAX_CONCURRENCY="${LPR_MAX_CONCURRENCY}"
+# Keep the wrapper safe-by-default and only set it when explicitly requested via `SMUG_MAX_CONCURRENCY`.
+if [[ -z "${AWS_LAMBDA_MAX_CONCURRENCY:-}" && -n "${SMUG_MAX_CONCURRENCY:-}" ]]; then
+  export AWS_LAMBDA_MAX_CONCURRENCY="${SMUG_MAX_CONCURRENCY}"
 fi
 
 # Python 3.14 uses `multiprocessing` to implement elevator mode. On Linux, the default start method
@@ -28,10 +28,10 @@ if [[ "${AWS_EXECUTION_ENV:-}" == *python* && -n "${AWS_LAMBDA_MAX_CONCURRENCY:-
   unset _LAMBDA_TELEMETRY_LOG_FD
 fi
 
-if [[ -z "${LPR_UPSTREAM_RUNTIME_API:-}" ]]; then
-  export LPR_UPSTREAM_RUNTIME_API="${AWS_LAMBDA_RUNTIME_API}"
+if [[ -z "${SMUG_UPSTREAM_RUNTIME_API:-}" ]]; then
+  export SMUG_UPSTREAM_RUNTIME_API="${AWS_LAMBDA_RUNTIME_API}"
 fi
 
-export AWS_LAMBDA_RUNTIME_API="${LPR_PROXY_ADDR}"
+export AWS_LAMBDA_RUNTIME_API="${SMUG_PROXY_ADDR}"
 
 exec "$@"

@@ -1,15 +1,15 @@
-# lambda-parallel-router — Project Spec (Implementation-Ready Draft)
+# Simple Multiplexer Gateway — Project Spec (Implementation-Ready Draft)
 
 > **Status:** Experimental OSS
 >
-> **Core idea:** A long-running HTTP router that **micro-buffers** requests per route for a few milliseconds and invokes Lambda with a **single batched payload**. The Lambda returns per-request responses (buffered or streamed), and the router correlates and replies to each caller.
+> **Core idea:** A long-running HTTP gateway that **micro-buffers** requests per route for a few milliseconds and invokes Lambda with a **single batched payload**. The Lambda returns per-request responses (buffered or streamed), and the gateway correlates and replies to each caller.
 
 ---
 
 ## 1. Problem statement
 AWS Lambda is optimized around per-request invocation patterns, but many workloads are I/O-heavy and spend most time awaiting downstream calls. For bursty traffic, invoking once per request can be unnecessarily expensive (request charges + overhead + duplicated initialization/warm costs) and can underutilize compute.
 
-**lambda-parallel-router** introduces a configurable **latency–cost dial** by micro-buffering requests (e.g., 5–15ms) and sending them to Lambda as an array.
+**Simple Multiplexer Gateway** introduces a configurable **latency–cost dial** by micro-buffering requests (e.g., 5–15ms) and sending them to Lambda as an array.
 
 ---
 
@@ -26,7 +26,7 @@ AWS Lambda is optimized around per-request invocation patterns, but many workloa
   - **Mode A:** No code changes (Layer: exec wrapper + Runtime API proxy) — best-effort compatibility.
   - **Mode B:** One-line adapter (language SDK wrapper) — recommended.
   - **Mode C:** Native batch handler — maximal control.
-- Be implementation-ready for Rust (Router) and at least one Lambda SDK (Node or Rust) in v1.
+- Be implementation-ready for Rust (Gateway) and at least one Lambda SDK (Node or Rust) in v1.
 
 ### 2.2 Non-goals (v1)
 - True per-request byte-level multiplexed streaming (interleaving chunks for multiple requests concurrently).
@@ -38,10 +38,10 @@ AWS Lambda is optimized around per-request invocation patterns, but many workloa
 
 ## 3. User-facing concept
 
-### 3.1 Router responsibilities
+### 3.1 Gateway responsibilities
 - Accept HTTP.
 - Match OpenAPI routes.
-- Assign a `router_request_id`.
+- Assign a `gateway_request_id`.
 - Buffer requests into a batch for a short, configurable time.
 - Invoke Lambda once per batch.
 - Demultiplex per-request responses and reply to callers.
@@ -56,7 +56,7 @@ AWS Lambda is optimized around per-request invocation patterns, but many workloa
 ## 4. High-level architecture
 
 ```
-Client  ──HTTP──>  Router (axum)  ──Invoke/Stream──>  Lambda
+Client  ──HTTP──>  Gateway (axum)  ──Invoke/Stream──>  Lambda
    ^                 |   |                              |
    |                 |   └─ per-route micro-buffer      | 
    |                 └──── correlate by id              |  
@@ -64,7 +64,7 @@ Client  ──HTTP──>  Router (axum)  ──Invoke/Stream──>  Lambda
 ```
 
 ### 4.1 Components
-- **router** (Rust service)
+- **gateway** (Rust service)
 - **spec** (OpenAPI-ish config parser + compiler)
 - **lambda-kit** (optional, later split):
   - **layer-proxy** (Mode A)
@@ -72,10 +72,10 @@ Client  ──HTTP──>  Router (axum)  ──Invoke/Stream──>  Lambda
 
 ---
 
-## 5. Router: implementation details
+## 5. Gateway: implementation details
 
 ### 5.1 Repository layout (suggested)
-- `router/`
+- `gateway/`
   - `src/main.rs` (bootstrap)
   - `src/config.rs`
   - `src/spec/` (OpenAPI loader, validation)
@@ -111,7 +111,7 @@ Client  ──HTTP──>  Router (axum)  ──Invoke/Stream──>  Lambda
 
 **Optional key dimensions** (configurable):
 - `header:<name>` (e.g., tenant, version)
-- `principal` (if router authenticates)
+- `principal` (if gateway authenticates)
 - `query:<name>` (rare; avoid by default)
 
 **Rule:** never batch requests together if the lambda semantics differ due to auth/tenant or routing.
@@ -133,7 +133,7 @@ Client  ──HTTP──>  Router (axum)  ──Invoke/Stream──>  Lambda
 - `cancel_token: CancellationToken`
 
 `ResponseSink` options:
-- buffered response: `oneshot::Sender<RouterResponse>`
+- buffered response: `oneshot::Sender<GatewayResponse>`
 - streaming-to-client: a `hyper::body::Sender` or axum streaming type
 
 #### Batcher task loop
@@ -146,13 +146,13 @@ For each key, run a Tokio task:
 4) On flush, build a `BatchInvocation` and **schedule** a Lambda invoke.
    - Invokes are **not serialized** per key: the batcher should be able to dispatch multiple
      in-flight invocations for the same `BatchKey`.
-   - The router relies on Lambda’s own concurrency limits (and an optional per‑key cap) rather
+   - The gateway relies on Lambda’s own concurrency limits (and an optional per‑key cap) rather
      than forcing sequential execution.
 5) Dispatch responses back to waiting clients as each invocation completes.
 6) If no activity for `idle_ttl`, evict batcher task to prevent unbounded map growth.
 
 #### Dynamic batching (optional)
-In addition to a fixed `maxWaitMs`, the router can **dynamically** choose `wait_ms` based on the
+In addition to a fixed `maxWaitMs`, the gateway can **dynamically** choose `wait_ms` based on the
 observed request rate for the current `BatchKey`.
 
 **Goal**
@@ -167,12 +167,12 @@ observed request rate for the current `BatchKey`.
    bounds.
 
 **Parameters (per operation)**
-- `x-lpr.maxWaitMs` (`u64`): the upper bound for `wait_ms`.
-- `x-lpr.dynamicWait.minWaitMs` (`u64`): the lower bound for `wait_ms`.
-- `x-lpr.dynamicWait.targetRps` (`f64`): request rate where the sigmoid is centered.
-- `x-lpr.dynamicWait.steepness` (`f64`): transition sharpness around `targetRps`.
-- `x-lpr.dynamicWait.samplingIntervalMs` (`u64`): sampling period for request counts.
-- `x-lpr.dynamicWait.smoothingSamples` (`usize`): moving average window size.
+- `x-smug.maxWaitMs` (`u64`): the upper bound for `wait_ms`.
+- `x-smug.dynamicWait.minWaitMs` (`u64`): the lower bound for `wait_ms`.
+- `x-smug.dynamicWait.targetRps` (`f64`): request rate where the sigmoid is centered.
+- `x-smug.dynamicWait.steepness` (`f64`): transition sharpness around `targetRps`.
+- `x-smug.dynamicWait.samplingIntervalMs` (`u64`): sampling period for request counts.
+- `x-smug.dynamicWait.smoothingSamples` (`usize`): moving average window size.
 
 **Sampling + smoothing**
 Every `sampling_interval_ms`, the batcher:
@@ -209,7 +209,7 @@ the time-based flush condition.
 - Optional per-key cap on in-flight invocations (defaults to unlimited; rely on Lambda throttling).
 - Optional global cap on total queued requests.
 
-### 5.6 Router HTTP handling
+### 5.6 Gateway HTTP handling
 
 #### Incoming request extraction
 Normalize into envelope fields:
@@ -231,7 +231,7 @@ Normalize into envelope fields:
 - **Buffered invoke** (baseline): one request → one response payload.
 - **Response-stream invoke** (when available): read incremental response stream.
 
-Router supports both by abstracting:
+Gateway supports both by abstracting:
 - `LambdaInvokeResult::Buffered(bytes)`
 - `LambdaInvokeResult::Stream(Stream<Item = Bytes>)`
 
@@ -246,22 +246,22 @@ Router supports both by abstracting:
 
 ---
 
-## 6. Wire contract (Router ⇄ Lambda)
+## 6. Wire contract (Gateway ⇄ Lambda)
 
 ### 6.1 Versioning
 Include `"v": 1` in top-level objects.
 
-### 6.2 Batch request event (Router → Lambda)
+### 6.2 Batch request event (Gateway → Lambda)
 
 Each `batch[]` item is an **API Gateway v2 (HTTP API) proxy request event** (payload format version `2.0`).
-The router assigns a correlation id by setting `batch[].requestContext.requestId`.
-For request bodies, the router prefers UTF-8 (`isBase64Encoded: false`) and falls back to base64 when needed.
+The gateway assigns a correlation id by setting `batch[].requestContext.requestId`.
+For request bodies, the gateway prefers UTF-8 (`isBase64Encoded: false`) and falls back to base64 when needed.
 
 ```json
 {
   "v": 1,
   "meta": {
-    "router": "lambda-parallel-router",
+    "gateway": "simple-multiplexer-gateway",
     "route": "/v1/items/{id}",
     "receivedAtMs": 1730000000000
   },
@@ -294,7 +294,7 @@ For request bodies, the router prefers UTF-8 (`isBase64Encoded: false`) and fall
 }
 ```
 
-### 6.3 Batch response (Lambda → Router)
+### 6.3 Batch response (Lambda → Gateway)
 
 #### Option A — Buffered JSON
 ```json
@@ -325,10 +325,10 @@ Each line is one response record; ordering is **completion order**.
 If a single request fails inside a batch, return an error record with a normal statusCode (e.g., 500) and optional diagnostic fields (non-sensitive).
 
 ### 6.4 Required invariants
-- Every request in `batch[]` must produce exactly one response record **or** the router will synthesize a timeout/5xx.
+- Every request in `batch[]` must produce exactly one response record **or** the gateway will synthesize a timeout/5xx.
 - `batch[].requestContext.requestId` must be unique within the batch.
 - Every response `id` must equal the corresponding `batch[].requestContext.requestId`.
-- Router must tolerate extra records (ignore unknown response ids).
+- Gateway must tolerate extra records (ignore unknown response ids).
 
 ---
 
@@ -340,7 +340,7 @@ Accept YAML or JSON.
 ### 7.2 Required vendor extensions
 Per operation:
 - `x-target-lambda`: function identifier
-- `x-lpr` (lambda-parallel-router) config:
+- `x-smug` (Simple Multiplexer Gateway) config:
   - `maxWaitMs`
   - `maxBatchSize`
   - optional `key` dimensions
@@ -355,7 +355,7 @@ paths:
     get:
       operationId: getItem
       x-target-lambda: arn:aws:lambda:REGION:ACCT:function:myfn:live
-      x-lpr:
+      x-smug:
         maxWaitMs: 10
         maxBatchSize: 16
         dynamicWait:
@@ -371,8 +371,8 @@ paths:
         timeoutMs: 2000
 ```
 
-### 7.3 Router config manifest
-The router consumes a single YAML/JSON manifest with:
+### 7.3 Gateway config manifest
+The gateway consumes a single YAML/JSON manifest with:
 
 - `ListenAddr`
 - `AwsRegion`
@@ -459,7 +459,7 @@ Allow users to deploy without changing handler code by converting one outer batc
 - Simple framing.
 - Allows early-return of fast responses without complex multiplexing.
 
-### 9.2 Router NDJSON parser
+### 9.2 Gateway NDJSON parser
 - Incremental line splitter over `Bytes` stream.
 - Tolerate partial UTF-8 boundaries:
   - accumulate bytes until newline.
@@ -475,7 +475,7 @@ Allow users to deploy without changing handler code by converting one outer batc
 ## 10. Security model
 
 ### 10.1 Tenant isolation
-- Default safe stance: include `principal`/tenant header in BatchKey if the router is in a multi-tenant setting.
+- Default safe stance: include `principal`/tenant header in BatchKey if the gateway is in a multi-tenant setting.
 
 ### 10.2 Header forwarding
 - Default: forward only allowlisted headers.
@@ -490,15 +490,15 @@ Allow users to deploy without changing handler code by converting one outer batc
 
 ### 11.1 Metrics (Prometheus)
 Per route (labels: route_template, method, target_lambda):
-- `lpr_batch_size` histogram
-- `lpr_batch_wait_ms` histogram
-- `lpr_invoke_duration_ms` histogram
-- `lpr_queue_depth` gauge
-- `lpr_inflight_invocations` gauge
-- `lpr_errors_total` counter (by type)
+- `smug_batch_size` histogram
+- `smug_batch_wait_ms` histogram
+- `smug_invoke_duration_ms` histogram
+- `smug_queue_depth` gauge
+- `smug_inflight_invocations` gauge
+- `smug_errors_total` counter (by type)
 
 ### 11.2 Tracing
-- Generate `router_request_id` and include in:
+- Generate `gateway_request_id` and include in:
   - logs
   - lambda event meta
 - Optional OpenTelemetry spans:
@@ -513,12 +513,12 @@ Per route (labels: route_template, method, target_lambda):
 ## 12. Deployment
 
 ### 12.1 AppRunner/ECS/K8s
-- Container image with router binary.
+- Container image with gateway binary.
 - Provide `/healthz` and `/readyz` endpoints.
 - Config via env + spec mount.
 
 ### 12.2 IAM
-- Router needs permission to invoke target lambdas.
+- Gateway needs permission to invoke target lambdas.
 
 ---
 
@@ -534,7 +534,7 @@ Per route (labels: route_template, method, target_lambda):
 - OpenAPI route matching.
 
 ### 13.2 Integration tests
-- Spin router locally.
+- Spin gateway locally.
 - Mock lambda invoke endpoint (or local emulator) producing:
   - buffered array
   - NDJSON stream
@@ -551,7 +551,7 @@ Per route (labels: route_template, method, target_lambda):
 
 ## 14. MVP build checklist (agent-ready)
 
-### 14.1 Router v1 (buffered)
+### 14.1 Gateway v1 (buffered)
 1) Implement config loader.
 2) Implement OpenAPI-ish parser + vendor extensions.
 3) Implement route matcher.
@@ -563,7 +563,7 @@ Per route (labels: route_template, method, target_lambda):
 9) Add metrics + logging.
 10) Add tests.
 
-### 14.2 Router v1.1 (NDJSON streaming)
+### 14.2 Gateway v1.1 (NDJSON streaming)
 1) Add invoke-with-stream support.
 2) Add incremental NDJSON parser.
 3) Dispatch as records arrive.
@@ -588,4 +588,4 @@ Per route (labels: route_template, method, target_lambda):
 - NDJSON vs length-prefixed as the long-term record framing.
 - Handling of binary bodies in NDJSON (base64 always vs conditional).
 - Support matrix for streaming invocation methods (per deployment choice).
-- Router behavior when Lambda returns fewer/more records than expected.
+- Gateway behavior when Lambda returns fewer/more records than expected.

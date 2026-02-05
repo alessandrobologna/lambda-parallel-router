@@ -16,7 +16,7 @@ struct OuterBatchEnvelope {
     batch: Vec<Value>,
 }
 
-pub fn parse_outer_lpr_batch(body: &[u8]) -> anyhow::Result<Option<Vec<VirtualInvocation>>> {
+pub fn parse_outer_smug_batch(body: &[u8]) -> anyhow::Result<Option<Vec<VirtualInvocation>>> {
     let env: OuterBatchEnvelope = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return Ok(None),
@@ -59,19 +59,19 @@ mod tests {
 
     #[test]
     fn parse_outer_batch_rejects_non_json() {
-        let got = parse_outer_lpr_batch(b"nope").unwrap();
+        let got = parse_outer_smug_batch(b"nope").unwrap();
         assert!(got.is_none());
     }
 
     #[test]
     fn parse_outer_batch_rejects_wrong_version() {
-        let got = parse_outer_lpr_batch(br#"{"v":2,"batch":[]}"#).unwrap();
+        let got = parse_outer_smug_batch(br#"{"v":2,"batch":[]}"#).unwrap();
         assert!(got.is_none());
     }
 
     #[test]
     fn parse_outer_batch_extracts_ids() {
-        let got = parse_outer_lpr_batch(
+        let got = parse_outer_smug_batch(
             br#"{"v":1,"batch":[{"requestContext":{"requestId":"a"}},{"requestContext":{"requestId":"b"}}]}"#,
         )
         .unwrap()
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn parse_outer_batch_rejects_duplicate_ids() {
-        let err = parse_outer_lpr_batch(
+        let err = parse_outer_smug_batch(
             br#"{"v":1,"batch":[{"requestContext":{"requestId":"a"}},{"requestContext":{"requestId":"a"}}]}"#,
         )
         .unwrap_err();

@@ -16,9 +16,9 @@ const ARRIVAL_VUS_MULTIPLIER = parseFloat(__ENV.ARRIVAL_VUS_MULTIPLIER || '1');
 const ARRIVAL_MAX_VUS_MULTIPLIER = parseFloat(__ENV.ARRIVAL_MAX_VUS_MULTIPLIER || '2');
 const MAX_DELAY_MS = parseInt(__ENV.MAX_DELAY_MS || '0', 10);
 const KEYSPACE_SIZE = parseInt(__ENV.KEYSPACE_SIZE || '1000', 10);
-const BATCH_SIZE_HEADER = (__ENV.BATCH_SIZE_HEADER || 'x-lpr-batch-size').trim();
+const BATCH_SIZE_HEADER = (__ENV.BATCH_SIZE_HEADER || 'x-smug-batch-size').trim();
 
-const batchSizeTrend = new Trend('lpr_batch_size');
+const batchSizeTrend = new Trend('smug_batch_size');
 
 if (!TARGETS_JSON) {
   throw new Error('Missing TARGETS JSON. Provide via env TARGETS.');

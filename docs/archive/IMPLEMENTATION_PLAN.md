@@ -1,14 +1,14 @@
-# lambda-parallel-router: implementation plan
+# Simple Multiplexer Gateway: Implementation Plan
 
-This document tracks implemented features and remaining work for `http_microbatch_router_for_lambda_project_spec_draft.md`.
+This document tracks implemented features and remaining work for `http_microbatch_gateway_for_lambda_project_spec_draft.md`.
 It is a checklist and a reference for the repository state.
 
 ## Current state
 
-### Router service (Rust, `router/`)
+### Gateway service (Rust, `gateway/`)
 
 - Configuration
-  - Loads a config document from `--config` or `LPR_CONFIG_URI`.
+  - Loads a config document from `--config` or `SMUG_CONFIG_URI`.
   - Supports local paths, `file://` URIs, and `s3://` URIs.
   - Parses config as YAML (JSON syntax is accepted by the YAML parser).
   - Requires `ListenAddr` and `Spec`.
@@ -34,21 +34,21 @@ It is a checklist and a reference for the repository state.
   - Exports OpenTelemetry traces when an OTLP endpoint environment variable is set.
   - Sets span name to `METHOD {routeTemplate}` to keep cardinality bounded.
   - Sets `http.route` from the OpenAPI route template.
-  - Adds per-request attributes: `lpr.invoke.mode`, `lpr.batch.size`, `lpr.batch.wait_ms`.
+  - Adds per-request attributes: `smug.invoke.mode`, `smug.batch.size`, `smug.batch.wait_ms`.
   - Propagates inbound trace context (W3C and X-Ray) into per-item payload headers.
 
 ### Lambda adapters (Node, `lambda-kit/adapter-node/`)
 
-- TypeScript package that adapts a per-request handler to the router batch event.
+- TypeScript package that adapts a per-request handler to the gateway batch event.
 - Buffered adapter produces `{ v: 1, responses: [...] }`.
 - Streaming adapter produces NDJSON records (legacy and interleaved formats).
 
 ### Deployment and demo stacks
 
 - `bootstrap/` provides a bootstrap stack with:
-  - CloudFormation Macro `LprRouter`.
+  - CloudFormation Macro `SmugGateway`.
   - Shared S3 config bucket and a config publisher custom resource.
-  - A default router image tag driven by `VERSION`.
+  - A default gateway image tag driven by `VERSION`.
 - `sam/` provides a demo stack with:
   - Sample Lambda functions.
   - An App Runner service deployed via the macro.
@@ -56,13 +56,13 @@ It is a checklist and a reference for the repository state.
 
 ## Remaining work
 
-### Router hardening
+### Gateway hardening
 
 - Metrics for batch size, wait time, queue depth, and Lambda invoke duration.
 - Span lifecycle for streaming routes (spans currently end when response headers are available).
 - Clearer error mapping and responses for:
-  - router overload (429),
-  - router timeouts (504),
+  - gateway overload (429),
+  - gateway timeouts (504),
   - upstream Lambda errors (502).
 - Per-route limits (body size, batch size, concurrency caps) with clear defaults.
 

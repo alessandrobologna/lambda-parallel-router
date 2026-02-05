@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::proxy;
 use crate::runtime_api::RuntimeApiClient;
 
-const EXTENSION_NAME: &str = "lpr-runtime-api-proxy";
+const EXTENSION_NAME: &str = "smug-runtime-api-proxy";
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;

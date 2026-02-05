@@ -5,34 +5,34 @@ import os
 
 BOOTSTRAP_DIR = Path(__file__).resolve().parents[1]
 
-_APP_PATH = BOOTSTRAP_DIR / "router_macro" / "app.py"
-_SPEC = importlib.util.spec_from_file_location("router_macro_app", _APP_PATH)
+_APP_PATH = BOOTSTRAP_DIR / "gateway_macro" / "app.py"
+_SPEC = importlib.util.spec_from_file_location("gateway_macro_app", _APP_PATH)
 assert _SPEC and _SPEC.loader
 app = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(app)  # type: ignore[union-attr]
 
 
-class RouterMacroTests(unittest.TestCase):
+class GatewayMacroTests(unittest.TestCase):
     def test_defaults_image_identifier_from_macro_env(self) -> None:
-        old = os.environ.get("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER")
-        os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = (
-            "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0"
+        old = os.environ.get("SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER")
+        os.environ["SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER"] = (
+            "123456789012.dkr.ecr.us-east-1.amazonaws.com/simple-multiplexer-gateway/gateway:0.0.0"
         )
         event = {
             "requestId": "req-0",
             "fragment": {
                 "Resources": {
-                    "Router": {
-                        "Type": "Lpr::Router::Service",
+                    "Gateway": {
+                        "Type": "Smug::Gateway::Service",
                         "Properties": {
-                            "RouterConfig": {},
+                            "GatewayConfig": {},
                             "Spec": {
                                 "openapi": "3.0.0",
                                 "paths": {
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                            "x-smug": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -48,47 +48,47 @@ class RouterMacroTests(unittest.TestCase):
             self.assertEqual(out["status"], "success")
             resources = out["fragment"]["Resources"]
             image_id = (
-                resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"][
+                resources["Gateway"]["Properties"]["SourceConfiguration"]["ImageRepository"][
                     "ImageIdentifier"
                 ]
             )
             self.assertEqual(
                 image_id,
-                "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/simple-multiplexer-gateway/gateway:0.0.0",
             )
         finally:
             if old is None:
-                os.environ.pop("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER", None)
+                os.environ.pop("SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER", None)
             else:
-                os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = old
+                os.environ["SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER"] = old
 
     def test_defaults_image_identifier_from_empty_ref_param(self) -> None:
-        old = os.environ.get("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER")
-        os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = (
-            "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0"
+        old = os.environ.get("SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER")
+        os.environ["SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER"] = (
+            "123456789012.dkr.ecr.us-east-1.amazonaws.com/simple-multiplexer-gateway/gateway:0.0.0"
         )
         event = {
             "requestId": "req-0b",
             "fragment": {
                 "Parameters": {
-                    "RouterImageIdentifier": {
+                    "GatewayImageIdentifier": {
                         "Type": "String",
                         "Default": "",
                     }
                 },
                 "Resources": {
-                    "Router": {
-                        "Type": "Lpr::Router::Service",
+                    "Gateway": {
+                        "Type": "Smug::Gateway::Service",
                         "Properties": {
-                            "ImageIdentifier": {"Ref": "RouterImageIdentifier"},
-                            "RouterConfig": {},
+                            "ImageIdentifier": {"Ref": "GatewayImageIdentifier"},
+                            "GatewayConfig": {},
                             "Spec": {
                                 "openapi": "3.0.0",
                                 "paths": {
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                            "x-smug": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -104,39 +104,39 @@ class RouterMacroTests(unittest.TestCase):
             self.assertEqual(out["status"], "success")
             resources = out["fragment"]["Resources"]
             image_id = (
-                resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"][
+                resources["Gateway"]["Properties"]["SourceConfiguration"]["ImageRepository"][
                     "ImageIdentifier"
                 ]
             )
             self.assertEqual(
                 image_id,
-                "123456789012.dkr.ecr.us-east-1.amazonaws.com/lambda-parallel-router/router:0.0.0",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/simple-multiplexer-gateway/gateway:0.0.0",
             )
         finally:
             if old is None:
-                os.environ.pop("LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER", None)
+                os.environ.pop("SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER", None)
             else:
-                os.environ["LPR_DEFAULT_ROUTER_IMAGE_IDENTIFIER"] = old
+                os.environ["SMUG_DEFAULT_GATEWAY_IMAGE_IDENTIFIER"] = old
 
-    def test_expands_router_resource(self) -> None:
+    def test_expands_gateway_resource(self) -> None:
         event = {
             "requestId": "req-1",
             "fragment": {
                 "Resources": {
-                    "Router": {
-                        "Type": "Lpr::Router::Service",
+                    "Gateway": {
+                        "Type": "Smug::Gateway::Service",
                         "Properties": {
-                            "ImageIdentifier": {"Ref": "RouterImageIdentifier"},
+                            "ImageIdentifier": {"Ref": "GatewayImageIdentifier"},
                             "Port": 8080,
                             "Environment": {"RUST_LOG": "debug"},
-                            "RouterConfig": {"MaxInflightInvocations": 1},
+                            "GatewayConfig": {"MaxInflightInvocations": 1},
                             "Spec": {
                                 "openapi": "3.0.0",
                                 "paths": {
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": {"Fn::GetAtt": ["Fn", "Arn"]},
-                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                            "x-smug": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -152,33 +152,33 @@ class RouterMacroTests(unittest.TestCase):
         frag = out["fragment"]
         resources = frag["Resources"]
 
-        self.assertIn("Router", resources)
-        self.assertEqual(resources["Router"]["Type"], "AWS::AppRunner::Service")
+        self.assertIn("Gateway", resources)
+        self.assertEqual(resources["Gateway"]["Type"], "AWS::AppRunner::Service")
 
-        self.assertIn("RouterLprConfigPublisher", resources)
-        self.assertEqual(resources["RouterLprConfigPublisher"]["Type"], "Custom::LprConfigPublisher")
+        self.assertIn("GatewaySmugConfigPublisher", resources)
+        self.assertEqual(resources["GatewaySmugConfigPublisher"]["Type"], "Custom::SmugConfigPublisher")
 
-        self.assertIn("RouterLprEcrAccessRole", resources)
-        self.assertEqual(resources["RouterLprEcrAccessRole"]["Type"], "AWS::IAM::Role")
+        self.assertIn("GatewaySmugEcrAccessRole", resources)
+        self.assertEqual(resources["GatewaySmugEcrAccessRole"]["Type"], "AWS::IAM::Role")
 
-        self.assertIn("RouterLprInstanceRole", resources)
-        self.assertEqual(resources["RouterLprInstanceRole"]["Type"], "AWS::IAM::Role")
+        self.assertIn("GatewaySmugInstanceRole", resources)
+        self.assertEqual(resources["GatewaySmugInstanceRole"]["Type"], "AWS::IAM::Role")
 
-        policy_doc = resources["RouterLprInstanceRole"]["Properties"]["Policies"][0]["PolicyDocument"]
+        policy_doc = resources["GatewaySmugInstanceRole"]["Properties"]["Policies"][0]["PolicyDocument"]
         invoke_stmt = next(s for s in policy_doc["Statement"] if s.get("Sid") == "InvokeTargetLambdas")
         self.assertEqual(invoke_stmt["Action"], ["lambda:InvokeFunction", "lambda:InvokeWithResponseStream"])
         self.assertIn({"Fn::GetAtt": ["Fn", "Arn"]}, invoke_stmt["Resource"])
 
         svc_env = (
-            resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
+            resources["Gateway"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
                 "RuntimeEnvironmentVariables"
             ]
         )
         env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
         self.assertEqual(env_map["RUST_LOG"], "debug")
-        self.assertIn("LPR_CONFIG_URI", env_map)
+        self.assertIn("SMUG_CONFIG_URI", env_map)
 
-        health = resources["Router"]["Properties"]["HealthCheckConfiguration"]
+        health = resources["Gateway"]["Properties"]["HealthCheckConfiguration"]
         self.assertEqual(health["Protocol"], "HTTP")
         self.assertEqual(health["Path"], "/readyz")
         self.assertEqual(health["HealthyThreshold"], 1)
@@ -189,19 +189,19 @@ class RouterMacroTests(unittest.TestCase):
             "requestId": "req-2",
             "fragment": {
                 "Resources": {
-                    "Router": {
-                        "Type": "Lpr::Router::Service",
+                    "Gateway": {
+                        "Type": "Smug::Gateway::Service",
                         "Properties": {
                             "ImageIdentifier": "x",
                             "InstanceRoleArn": "arn:aws:iam::123:role/Existing",
-                            "RouterConfig": {},
+                            "GatewayConfig": {},
                             "Spec": {
                                 "openapi": "3.0.0",
                                 "paths": {
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                            "x-smug": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -215,9 +215,9 @@ class RouterMacroTests(unittest.TestCase):
         out = app.handler(event, context=None)
         self.assertEqual(out["status"], "success")
         resources = out["fragment"]["Resources"]
-        self.assertNotIn("RouterLprInstanceRole", resources)
+        self.assertNotIn("GatewaySmugInstanceRole", resources)
         self.assertEqual(
-            resources["Router"]["Properties"]["InstanceConfiguration"]["InstanceRoleArn"],
+            resources["Gateway"]["Properties"]["InstanceConfiguration"]["InstanceRoleArn"],
             "arn:aws:iam::123:role/Existing",
         )
 
@@ -226,14 +226,14 @@ class RouterMacroTests(unittest.TestCase):
             "requestId": "req-3",
             "fragment": {
                 "Resources": {
-                    "Router": {
-                        "Type": "Lpr::Router::Service",
+                    "Gateway": {
+                        "Type": "Smug::Gateway::Service",
                         "Properties": {
                             "ImageIdentifier": "x",
-                            "RouterConfig": {},
+                            "GatewayConfig": {},
                             "InstanceConfiguration": {"Cpu": "0.5 vCPU", "Memory": "1 GB"},
                             "AutoScalingConfiguration": {
-                                "AutoScalingConfigurationName": "lpr-demo-autoscaling",
+                                "AutoScalingConfigurationName": "smug-demo-autoscaling",
                                 "MaxConcurrency": 200,
                                 "MinSize": 2,
                                 "MaxSize": 4,
@@ -244,7 +244,7 @@ class RouterMacroTests(unittest.TestCase):
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                            "x-smug": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -259,18 +259,18 @@ class RouterMacroTests(unittest.TestCase):
         self.assertEqual(out["status"], "success")
         resources = out["fragment"]["Resources"]
 
-        self.assertIn("RouterLprAutoScaling", resources)
+        self.assertIn("GatewaySmugAutoScaling", resources)
         self.assertEqual(
-            resources["RouterLprAutoScaling"]["Type"], "AWS::AppRunner::AutoScalingConfiguration"
+            resources["GatewaySmugAutoScaling"]["Type"], "AWS::AppRunner::AutoScalingConfiguration"
         )
         self.assertEqual(
-            resources["RouterLprAutoScaling"]["Properties"]["MaxConcurrency"], 200
+            resources["GatewaySmugAutoScaling"]["Properties"]["MaxConcurrency"], 200
         )
 
-        service_props = resources["Router"]["Properties"]
+        service_props = resources["Gateway"]["Properties"]
         self.assertEqual(
             service_props["AutoScalingConfigurationArn"],
-            {"Fn::GetAtt": ["RouterLprAutoScaling", "AutoScalingConfigurationArn"]},
+            {"Fn::GetAtt": ["GatewaySmugAutoScaling", "AutoScalingConfigurationArn"]},
         )
         self.assertEqual(
             service_props["InstanceConfiguration"]["Cpu"],
@@ -286,11 +286,11 @@ class RouterMacroTests(unittest.TestCase):
             "requestId": "req-4",
             "fragment": {
                 "Resources": {
-                    "Router": {
-                        "Type": "Lpr::Router::Service",
+                    "Gateway": {
+                        "Type": "Smug::Gateway::Service",
                         "Properties": {
                             "ImageIdentifier": "x",
-                            "RouterConfig": {},
+                            "GatewayConfig": {},
                             "ObservabilityConfiguration": {"Vendor": "AWSXRAY"},
                             "Spec": {
                                 "openapi": "3.0.0",
@@ -298,7 +298,7 @@ class RouterMacroTests(unittest.TestCase):
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                            "x-smug": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -313,36 +313,36 @@ class RouterMacroTests(unittest.TestCase):
         self.assertEqual(out["status"], "success")
         resources = out["fragment"]["Resources"]
 
-        self.assertIn("RouterLprObservability", resources)
+        self.assertIn("GatewaySmugObservability", resources)
         self.assertEqual(
-            resources["RouterLprObservability"]["Type"],
+            resources["GatewaySmugObservability"]["Type"],
             "AWS::AppRunner::ObservabilityConfiguration",
         )
 
-        service_props = resources["Router"]["Properties"]
+        service_props = resources["Gateway"]["Properties"]
         self.assertEqual(
             service_props["ObservabilityConfiguration"]["ObservabilityEnabled"],
             True,
         )
         self.assertEqual(
             service_props["ObservabilityConfiguration"]["ObservabilityConfigurationArn"],
-            {"Fn::GetAtt": ["RouterLprObservability", "ObservabilityConfigurationArn"]},
+            {"Fn::GetAtt": ["GatewaySmugObservability", "ObservabilityConfigurationArn"]},
         )
 
         svc_env = (
-            resources["Router"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
+            resources["Gateway"]["Properties"]["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"][
                 "RuntimeEnvironmentVariables"
             ]
         )
         env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
-        self.assertEqual(env_map["LPR_OBSERVABILITY_VENDOR"], "AWSXRAY")
+        self.assertEqual(env_map["SMUG_OBSERVABILITY_VENDOR"], "AWSXRAY")
         self.assertEqual(env_map["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4317")
         self.assertEqual(env_map["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"], "grpc")
         self.assertEqual(env_map["OTEL_EXPORTER_OTLP_INSECURE"], "true")
         self.assertEqual(env_map["OTEL_PROPAGATORS"], "xray,tracecontext,baggage")
         self.assertEqual(env_map["OTEL_METRICS_EXPORTER"], "none")
 
-        instance_role = resources["RouterLprInstanceRole"]["Properties"]
+        instance_role = resources["GatewaySmugInstanceRole"]["Properties"]
         self.assertIn("ManagedPolicyArns", instance_role)
         self.assertIn(
             "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess",
@@ -354,11 +354,11 @@ class RouterMacroTests(unittest.TestCase):
             "requestId": "req-5",
             "fragment": {
                 "Resources": {
-                    "Router": {
-                        "Type": "Lpr::Router::Service",
+                    "Gateway": {
+                        "Type": "Smug::Gateway::Service",
                         "Properties": {
                             "ImageIdentifier": "x",
-                            "RouterConfig": {},
+                            "GatewayConfig": {},
                             "ObservabilityConfiguration": {
                                 "Vendor": "OTEL",
                                 "OpentelemetryConfiguration": {
@@ -373,7 +373,7 @@ class RouterMacroTests(unittest.TestCase):
                                     "/hello": {
                                         "get": {
                                             "x-target-lambda": "arn:aws:lambda:us-east-1:123:function:fn",
-                                            "x-lpr": {"maxWaitMs": 1, "maxBatchSize": 1},
+                                            "x-smug": {"maxWaitMs": 1, "maxBatchSize": 1},
                                         }
                                     }
                                 },
@@ -388,15 +388,15 @@ class RouterMacroTests(unittest.TestCase):
         self.assertEqual(out["status"], "success")
         resources = out["fragment"]["Resources"]
 
-        self.assertNotIn("RouterLprObservability", resources)
+        self.assertNotIn("GatewaySmugObservability", resources)
 
-        service_props = resources["Router"]["Properties"]
+        service_props = resources["Gateway"]["Properties"]
         self.assertNotIn("ObservabilityConfiguration", service_props)
 
         image_cfg = service_props["SourceConfiguration"]["ImageRepository"]["ImageConfiguration"]
         svc_env = image_cfg["RuntimeEnvironmentVariables"]
         env_map = {kv["Name"]: kv["Value"] for kv in svc_env}
-        self.assertEqual(env_map["LPR_OBSERVABILITY_VENDOR"], "OTEL")
+        self.assertEqual(env_map["SMUG_OBSERVABILITY_VENDOR"], "OTEL")
         self.assertEqual(
             env_map["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"], "https://ingest.example.com/v1/traces"
         )
@@ -407,11 +407,11 @@ class RouterMacroTests(unittest.TestCase):
         runtime_secrets = image_cfg["RuntimeEnvironmentSecrets"]
         secret_map = {kv["Name"]: kv["Value"] for kv in runtime_secrets}
         self.assertEqual(
-            secret_map["LPR_OTEL_HEADERS_JSON"],
+            secret_map["SMUG_OTEL_HEADERS_JSON"],
             "arn:aws:secretsmanager:us-east-1:123:secret:otel-headers",
         )
 
-        policy_doc = resources["RouterLprInstanceRole"]["Properties"]["Policies"][0]["PolicyDocument"]
+        policy_doc = resources["GatewaySmugInstanceRole"]["Properties"]["Policies"][0]["PolicyDocument"]
         secrets_stmt = next(
             s for s in policy_doc["Statement"] if s.get("Sid") == "ReadSecretsManagerSecrets"
         )

@@ -1,6 +1,6 @@
 //! axum server wiring.
 //!
-//! The router exposes:
+//! The gateway exposes:
 //! - `/healthz` and `/readyz`
 //! - a catch-all handler that performs route matching and enqueues requests for batching
 
@@ -36,10 +36,10 @@ use uuid::Uuid;
 
 use crate::{
     batching::{
-        BatcherManager, BatchingConfig, EnqueueError, PendingRequest, ResponseSink, RouterResponse,
-        RouterResponseMeta, StreamInit, StreamSender,
+        BatcherManager, BatchingConfig, EnqueueError, PendingRequest, ResponseSink, GatewayResponse,
+        GatewayResponseMeta, StreamInit, StreamSender,
     },
-    config::{ForwardHeadersConfig, RouterConfig},
+    config::{ForwardHeadersConfig, GatewayConfig},
     lambda::AwsLambdaInvoker,
     spec::{CompiledSpec, InvokeMode, RouteMatch},
 };
@@ -154,7 +154,7 @@ fn start_request_span(
     let route_for_name = route_template.unwrap_or(path);
     let span_name = format!("{} {}", method.as_str(), route_for_name);
 
-    let tracer = global::tracer("lpr-router");
+    let tracer = global::tracer("smug-gateway");
     let span = tracer
         .span_builder(span_name)
         .with_kind(SpanKind::Server)
@@ -252,7 +252,7 @@ impl<S: futures::Stream> futures::Stream for PermitStream<S> {
     }
 }
 
-pub async fn run(cfg: RouterConfig, spec: CompiledSpec, otel_enabled: bool) -> anyhow::Result<()> {
+pub async fn run(cfg: GatewayConfig, spec: CompiledSpec, otel_enabled: bool) -> anyhow::Result<()> {
     let invoker = Arc::new(AwsLambdaInvoker::new(cfg.aws_region.clone()).await?);
     let batchers = BatcherManager::new(
         invoker,
@@ -289,7 +289,7 @@ pub async fn run(cfg: RouterConfig, spec: CompiledSpec, otel_enabled: bool) -> a
 }
 
 fn batch_size_header_from_env() -> anyhow::Result<Option<http::HeaderName>> {
-    let enabled = match std::env::var("LPR_INCLUDE_BATCH_SIZE_HEADER") {
+    let enabled = match std::env::var("SMUG_INCLUDE_BATCH_SIZE_HEADER") {
         Ok(v) => {
             let v = v.trim();
             !v.is_empty() && !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")
@@ -298,7 +298,7 @@ fn batch_size_header_from_env() -> anyhow::Result<Option<http::HeaderName>> {
     };
 
     if enabled {
-        Ok(Some(http::HeaderName::from_static("x-lpr-batch-size")))
+        Ok(Some(http::HeaderName::from_static("x-smug-batch-size")))
     } else {
         Ok(None)
     }
@@ -403,11 +403,11 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
     let response = async move {
         match outcome {
             MatchOutcome::NotFound => {
-                RouterResponse::text(StatusCode::NOT_FOUND, "not found").into_response()
+                GatewayResponse::text(StatusCode::NOT_FOUND, "not found").into_response()
             }
             MatchOutcome::MethodNotAllowed { allowed } => {
                 let mut resp =
-                    RouterResponse::text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+                    GatewayResponse::text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
                 // Best-effort `Allow` header.
                 let allow = allowed
                     .into_iter()
@@ -426,7 +426,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                         InvokeMode::ResponseStream => "response_stream",
                     };
                     cx.span()
-                        .set_attribute(KeyValue::new("lpr.invoke.mode", mode));
+                        .set_attribute(KeyValue::new("smug.invoke.mode", mode));
                 }
 
                 let inflight_permit = match state.inflight_requests.clone().try_acquire_owned() {
@@ -439,7 +439,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                             route = %op.route_template,
                             "request rejected"
                         );
-                        return RouterResponse::text(
+                        return GatewayResponse::text(
                             StatusCode::TOO_MANY_REQUESTS,
                             "too many requests",
                         )
@@ -450,7 +450,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                 let body = match to_bytes(body, state.max_body_bytes).await {
                     Ok(b) => b,
                     Err(_) => {
-                        return RouterResponse::text(
+                        return GatewayResponse::text(
                             StatusCode::PAYLOAD_TOO_LARGE,
                             "body too large",
                         )
@@ -514,7 +514,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 route = %op.route_template,
                                 "request rejected"
                             );
-                            return RouterResponse::text(
+                            return GatewayResponse::text(
                                 StatusCode::TOO_MANY_REQUESTS,
                                 "queue full",
                             )
@@ -528,7 +528,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 route = %op.route_template,
                                 "request rejected"
                             );
-                            return RouterResponse::text(
+                            return GatewayResponse::text(
                                 StatusCode::TOO_MANY_REQUESTS,
                                 "batcher closed",
                             )
@@ -557,7 +557,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 route = %op.route_template,
                                 "response channel dropped"
                             );
-                            RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response")
+                            GatewayResponse::text(StatusCode::BAD_GATEWAY, "dropped response")
                                 .into_response()
                         }
                         Err(_) => {
@@ -570,7 +570,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 elapsed_ms = elapsed_ms,
                                 "request timed out waiting for batch response"
                             );
-                            RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout")
+                            GatewayResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout")
                                 .into_response()
                         }
                     }
@@ -599,7 +599,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 route = %op.route_template,
                                 "request rejected"
                             );
-                            return RouterResponse::text(
+                            return GatewayResponse::text(
                                 StatusCode::TOO_MANY_REQUESTS,
                                 "queue full",
                             )
@@ -613,7 +613,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 route = %op.route_template,
                                 "request rejected"
                             );
-                            return RouterResponse::text(
+                            return GatewayResponse::text(
                                 StatusCode::TOO_MANY_REQUESTS,
                                 "batcher closed",
                             )
@@ -630,7 +630,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 route = %op.route_template,
                                 "response channel dropped"
                             );
-                            RouterResponse::text(StatusCode::BAD_GATEWAY, "dropped response")
+                            GatewayResponse::text(StatusCode::BAD_GATEWAY, "dropped response")
                                 .into_response()
                         }
                         Err(_) => {
@@ -643,7 +643,7 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
                                 elapsed_ms = elapsed_ms,
                                 "request timed out waiting for batch response"
                             );
-                            RouterResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout")
+                            GatewayResponse::text(StatusCode::GATEWAY_TIMEOUT, "timeout")
                                 .into_response()
                         }
                     }
@@ -657,10 +657,10 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
         None => response.await,
     };
 
-    let meta = res.extensions().get::<RouterResponseMeta>().copied();
+    let meta = res.extensions().get::<GatewayResponseMeta>().copied();
 
     let mut res = res;
-    res.extensions_mut().remove::<RouterResponseMeta>();
+    res.extensions_mut().remove::<GatewayResponseMeta>();
 
     if let (Some(meta), Some(header_name)) = (meta.as_ref(), state.batch_size_header.as_ref()) {
         if let Ok(value) = http::HeaderValue::from_str(&meta.batch_size.to_string()) {
@@ -673,9 +673,9 @@ async fn handle_any(State(state): State<AppState>, req: Request<Body>) -> axum::
             let batch_size = i64::try_from(meta.batch_size).unwrap_or(i64::MAX);
             let batch_wait_ms = i64::try_from(meta.batch_wait_ms).unwrap_or(i64::MAX);
             cx.span()
-                .set_attribute(KeyValue::new("lpr.batch.size", batch_size));
+                .set_attribute(KeyValue::new("smug.batch.size", batch_size));
             cx.span()
-                .set_attribute(KeyValue::new("lpr.batch.wait_ms", batch_wait_ms));
+                .set_attribute(KeyValue::new("smug.batch.wait_ms", batch_wait_ms));
         }
 
         let status = res.status();
@@ -757,7 +757,7 @@ paths:
   /hello/{id}:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
+      x-smug: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
             1024,
         );
@@ -775,8 +775,8 @@ paths:
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        assert!(res.headers().get("x-lpr-batch-size").is_none());
-        assert!(res.headers().get("x-lpr-batch-wait-ms").is_none());
+        assert!(res.headers().get("x-smug-batch-size").is_none());
+        assert!(res.headers().get("x-smug-batch-wait-ms").is_none());
 
         let spans = exporter.get_finished_spans().unwrap();
         let span = spans
@@ -816,14 +816,14 @@ paths:
             opentelemetry::Value::I64(200)
         );
         assert_eq!(
-            get_attr("lpr.batch.size").unwrap(),
+            get_attr("smug.batch.size").unwrap(),
             opentelemetry::Value::I64(1)
         );
         assert_eq!(
-            get_attr("lpr.batch.wait_ms").unwrap(),
+            get_attr("smug.batch.wait_ms").unwrap(),
             opentelemetry::Value::I64(0)
         );
-        assert_eq!(get_attr("lpr.invoke.mode").unwrap().as_str(), "buffered");
+        assert_eq!(get_attr("smug.invoke.mode").unwrap().as_str(), "buffered");
     }
 
     #[tokio::test]
@@ -834,11 +834,11 @@ paths:
   /hello/{id}:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 0, maxBatchSize: 4, timeoutMs: 1000 }
+      x-smug: { maxWaitMs: 0, maxBatchSize: 4, timeoutMs: 1000 }
 "#,
             1024,
         );
-        state.batch_size_header = Some(http::HeaderName::from_static("x-lpr-batch-size"));
+        state.batch_size_header = Some(http::HeaderName::from_static("x-smug-batch-size"));
         let app = build_app(state);
 
         let res = app
@@ -853,7 +853,7 @@ paths:
             .unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(res.headers().get("x-lpr-batch-size").unwrap(), "1");
+        assert_eq!(res.headers().get("x-smug-batch-size").unwrap(), "1");
     }
 
     struct TestInvoker;
@@ -1083,7 +1083,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
+      x-smug: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
             1024,
         ));
@@ -1103,7 +1103,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
+      x-smug: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
             1024,
         ));
@@ -1130,7 +1130,7 @@ paths:
   /hello:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 1, maxBatchSize: 1 }
+      x-smug: { maxWaitMs: 1, maxBatchSize: 1 }
 "#,
             1,
         ));
@@ -1156,7 +1156,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
+      x-smug: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
             1024,
         ));
@@ -1237,7 +1237,7 @@ paths:
   /hello/{greeting}:
     post:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
+      x-smug: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
             1024,
         );
@@ -1270,7 +1270,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 10000 }
+      x-smug: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 10000 }
 "#;
 
         let spec = CompiledSpec::from_yaml_bytes(spec_yaml, 1000).unwrap();
@@ -1368,7 +1368,7 @@ paths:
   /hello:
     get:
       x-target-lambda: arn:aws:lambda:us-east-1:123456789012:function:fn
-      x-lpr: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
+      x-smug: { maxWaitMs: 0, maxBatchSize: 1, timeoutMs: 1000 }
 "#,
             1024,
             ForwardHeadersConfig {

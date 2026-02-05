@@ -1,14 +1,14 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform:
   - AWS::Serverless-2016-10-31
-  - LprRouter
-Description: lambda-parallel-router demo (App Runner + sample Lambda batch handlers)
+  - SmugGateway
+Description: Simple Multiplexer Gateway demo (App Runner + sample Lambda batch handlers)
 
 Parameters:
   OtelTracesEndpoint:
     Type: String
     Default: https://api.honeycomb.io/v1/traces
-    Description: OTLP traces endpoint URL (used as-is, not modified by the router).
+    Description: OTLP traces endpoint URL (used as-is, not modified by the gateway).
   OtelTracesProtocol:
     Type: String
     Default: http/protobuf
@@ -51,14 +51,14 @@ Resources:
         AttributeName: expiresAt
         Enabled: true
 
-  LprRuntimeApiProxyLayerAmd64:
+  SmugRuntimeApiProxyLayerAmd64:
     Type: AWS::Serverless::LayerVersion
     Metadata:
       BuildMethod: makefile
       BuildArchitecture: x86_64
     Properties:
       RetentionPolicy: Retain
-      LayerName: !Sub "${AWS::StackName}-lpr-runtime-api-proxy-amd64"
+      LayerName: !Sub "${AWS::StackName}-smug-runtime-api-proxy-amd64"
       ContentUri: ../bootstrap/layer-proxy
       CompatibleArchitectures:
         - x86_64
@@ -279,11 +279,11 @@ Resources:
       Architectures:
         - x86_64
       Layers:
-        - !Ref LprRuntimeApiProxyLayerAmd64
+        - !Ref SmugRuntimeApiProxyLayerAmd64
       Environment:
         Variables:
-          AWS_LAMBDA_EXEC_WRAPPER: /opt/lpr/exec-wrapper.sh
-          LPR_MAX_CONCURRENCY: "4"
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/smug/exec-wrapper.sh
+          SMUG_MAX_CONCURRENCY: "4"
           BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
       Policies:
         - DynamoDBReadPolicy:
@@ -298,10 +298,10 @@ Resources:
       Architectures:
         - x86_64
       Layers:
-        - !Ref LprRuntimeApiProxyLayerAmd64
+        - !Ref SmugRuntimeApiProxyLayerAmd64
       Environment:
         Variables:
-          AWS_LAMBDA_EXEC_WRAPPER: /opt/lpr/exec-wrapper.sh
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/smug/exec-wrapper.sh
           BENCHMARK_TABLE_NAME: !Ref BenchmarkItemsTable
       Policies:
         - DynamoDBReadPolicy:
@@ -319,16 +319,16 @@ Resources:
         Target: es2020
 
   # ------------------------------
-  # Router service (expanded by the LprRouter macro)
+  # Gateway service (expanded by the SmugGateway macro)
   # ------------------------------
-  RouterService:
-    Type: Lpr::Router::Service
+  GatewayService:
+    Type: Smug::Gateway::Service
     Properties:
       ServiceName: !Sub '${AWS::StackName}-service'
       Port: 8080
       Environment:
         RUST_LOG: info
-        LPR_INCLUDE_BATCH_SIZE_HEADER: "1"
+        SMUG_INCLUDE_BATCH_SIZE_HEADER: "1"
       InstanceConfiguration:
         Cpu: "1 vCPU"
         Memory: "2 GB"
@@ -336,7 +336,7 @@ Resources:
         MaxConcurrency: 100
         MinSize: 4
         MaxSize: 8
-      RouterConfig:
+      GatewayConfig:
         DefaultTimeoutMs: 2000
       ObservabilityConfiguration:
         Vendor: OTEL
@@ -347,13 +347,13 @@ Resources:
       Spec:
         openapi: 3.0.0
         info:
-          title: lambda-parallel-router demo
+          title: Simple Multiplexer Gateway demo
           version: "1"
         paths:
           /buffering/simple/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleBufferingSimpleHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: buffered
@@ -361,7 +361,7 @@ Resources:
           /buffering/simple/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleBufferingSimpleHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: buffered
@@ -369,7 +369,7 @@ Resources:
           /buffering/dynamic/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleBufferingDynamicHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 100
                 maxBatchSize: 16
                 invokeMode: buffered
@@ -383,7 +383,7 @@ Resources:
           /buffering/dynamic/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleBufferingDynamicHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 100
                 maxBatchSize: 16
                 invokeMode: buffered
@@ -397,7 +397,7 @@ Resources:
           /streaming/simple/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleStreamingSimpleHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -405,7 +405,7 @@ Resources:
           /streaming/simple/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingSimpleHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -413,7 +413,7 @@ Resources:
           /streaming/dynamic/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleStreamingDynamicHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 100
                 maxBatchSize: 16
                 invokeMode: response_stream
@@ -427,7 +427,7 @@ Resources:
           /streaming/dynamic/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingDynamicHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 100
                 maxBatchSize: 16
                 invokeMode: response_stream
@@ -441,7 +441,7 @@ Resources:
           /buffering/adapter/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleBufferingAdapterHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: buffered
@@ -449,7 +449,7 @@ Resources:
           /buffering/adapter/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleBufferingAdapterHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: buffered
@@ -457,7 +457,7 @@ Resources:
           /streaming/adapter/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleStreamingAdapterHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -465,7 +465,7 @@ Resources:
           /streaming/adapter/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingAdapterHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -473,7 +473,7 @@ Resources:
           /streaming/adapter/sse:
             get:
               x-target-lambda: !GetAtt SampleStreamingAdapterSseFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -481,7 +481,7 @@ Resources:
           /streaming/mode-a/python/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleStreamingModeALayerProxyPythonHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -489,7 +489,7 @@ Resources:
           /streaming/mode-a/python/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingModeALayerProxyPythonHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -497,7 +497,7 @@ Resources:
           /streaming/mode-a/node/{greeting}:
             get:
               x-target-lambda: !GetAtt SampleStreamingModeALayerProxyNodeHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -505,7 +505,7 @@ Resources:
           /streaming/mode-a/node/item/{id}:
             get:
               x-target-lambda: !GetAtt SampleStreamingModeALayerProxyNodeHelloFunction.Arn
-              x-lpr:
+              x-smug:
                 maxWaitMs: 25
                 maxBatchSize: 4
                 invokeMode: response_stream
@@ -545,11 +545,11 @@ Outputs:
   DirectHelloFunctionArn:
     Value: !GetAtt DirectHelloFunction.Arn
 
-  RouterServiceUrl:
-    Value: !GetAtt RouterService.ServiceUrl
+  GatewayServiceUrl:
+    Value: !GetAtt GatewayService.ServiceUrl
 
-  RouterServiceBaseUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}"
+  GatewayServiceBaseUrl:
+    Value: !Sub "https://${GatewayService.ServiceUrl}"
 
   DirectHelloUrl:
     Value: !GetAtt DirectHelloFunctionUrl.FunctionUrl
@@ -558,52 +558,52 @@ Outputs:
     Value: !Sub "${DirectHelloFunctionUrl.FunctionUrl}item/hello"
 
   BufferingSimpleHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/simple/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/buffering/simple/hello"
 
   BufferingSimpleItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/simple/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/buffering/simple/item/hello"
 
   BufferingDynamicHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/dynamic/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/buffering/dynamic/hello"
 
   BufferingDynamicItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/dynamic/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/buffering/dynamic/item/hello"
 
   StreamingSimpleHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/simple/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/simple/hello"
 
   StreamingSimpleItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/simple/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/simple/item/hello"
 
   StreamingDynamicHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/dynamic/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/dynamic/hello"
 
   StreamingDynamicItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/dynamic/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/dynamic/item/hello"
 
   BufferingAdapterHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/adapter/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/buffering/adapter/hello"
 
   BufferingAdapterItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/buffering/adapter/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/buffering/adapter/item/hello"
 
   StreamingAdapterHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/adapter/hello"
 
   StreamingAdapterItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/adapter/item/hello"
 
   StreamingAdapterSseUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/adapter/sse"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/adapter/sse"
 
   StreamingModeALayerProxyPythonHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/python/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/mode-a/python/hello"
 
   StreamingModeALayerProxyPythonItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/python/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/mode-a/python/item/hello"
 
   StreamingModeALayerProxyNodeHelloUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/node/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/mode-a/node/hello"
 
   StreamingModeALayerProxyNodeItemUrl:
-    Value: !Sub "https://${RouterService.ServiceUrl}/streaming/mode-a/node/item/hello"
+    Value: !Sub "https://${GatewayService.ServiceUrl}/streaming/mode-a/node/item/hello"

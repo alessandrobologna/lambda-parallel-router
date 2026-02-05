@@ -1,11 +1,11 @@
-# lpr adapter (Node.js)
+# smug adapter (Node.js)
 
-`batchAdapter(handler)` converts a single-request handler into a batch handler compatible with `lambda-parallel-router`.
+`batchAdapter(handler)` converts a single-request handler into a batch handler compatible with Simple Multiplexer Gateway.
 
 ## Usage
 
 ```js
-const { batchAdapter } = require("lpr-lambda-adapter");
+const { batchAdapter } = require("smug-lambda-adapter");
 
 async function handler(event) {
   // `event` is an API Gateway v2 (HTTP API) request event.
@@ -18,10 +18,10 @@ exports.handler = batchAdapter(handler);
 
 ## Response streaming (NDJSON)
 
-If your router operation uses `invokeMode: response_stream`, export a streaming handler:
+If your gateway operation uses `invokeMode: response_stream`, export a streaming handler:
 
 ```js
-const { batchAdapterStream } = require("lpr-lambda-adapter");
+const { batchAdapterStream } = require("smug-lambda-adapter");
 
 async function handler(event) {
   return { statusCode: 200, headers: { "content-type": "text/plain" }, body: "ok" };
@@ -37,7 +37,7 @@ chunk-level streaming per request while still batching multiple requests in a
 single Lambda response stream.
 
 ```js
-const { batchAdapterStream } = require("lpr-lambda-adapter");
+const { batchAdapterStream } = require("smug-lambda-adapter");
 
 async function handler(event) {
   async function* body() {
@@ -57,4 +57,4 @@ exports.handler = batchAdapterStream(handler, { interleaved: true });
 
 Notes:
 - `body` may be a string, Buffer, `AsyncIterable`, or Node `Readable`.
-- The router should demux the NDJSON records and forward the bytes to clients.
+- The gateway should demux the NDJSON records and forward the bytes to clients.

@@ -1,6 +1,6 @@
 # Quickstart
 
-This quickstart uses the SAM demo stack to deploy the router and sample Lambda functions. It is the fastest way to see batching behavior end to end.
+This quickstart uses the SAM demo stack to deploy the gateway and sample Lambda functions. It is the fastest way to see batching behavior end to end.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ From the repository root:
 make deploy
 ```
 
-This deploys the router service and sample Lambdas via SAM. Stack outputs include route URLs.
+This deploys the gateway service and sample Lambdas via SAM. Stack outputs include route URLs.
 
 ## 2) Find the route URLs
 
@@ -26,7 +26,7 @@ Find outputs in the CloudFormation console, or use the CLI:
 
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name lambda-parallel-router-demo \
+  --stack-name simple-multiplexer-gateway-demo \
   --query 'Stacks[0].Outputs'
 ```
 
@@ -42,7 +42,7 @@ Optional helper for local use:
 
 ```bash
 export StreamingSimpleItemUrl="$(aws cloudformation describe-stacks \
-  --stack-name lambda-parallel-router-demo \
+  --stack-name simple-multiplexer-gateway-demo \
   --query 'Stacks[0].Outputs[?OutputKey==`StreamingSimpleItemUrl`].OutputValue' \
   --output text)"
 ```
@@ -68,16 +68,16 @@ curl -sS "https://.../streaming/simple/item/42?max-delay=0"
 Adapter (Mode B) is the recommended default. See [docs/integrations.md](integrations.md) for details.
 
 ```javascript
-const { batchAdapter } = require("lpr-lambda-adapter");
+const { batchAdapter } = require("smug-lambda-adapter");
 exports.handler = batchAdapter(handler);
 ```
 
-## 5) Optional: run the router locally
+## 5) Optional: run the gateway locally
 
-Update [`examples/local/router.yaml`](../examples/local/router.yaml) with a real Lambda ARN, then run:
+Update [`examples/local/gateway.yaml`](../examples/local/gateway.yaml) with a real Lambda ARN, then run:
 
 ```bash
-cargo run -p lpr-router -- --config examples/local/router.yaml
+cargo run -p smug-gateway -- --config examples/local/gateway.yaml
 ```
 
 ## 6) Optional: layer proxy (Mode A)
@@ -85,6 +85,6 @@ cargo run -p lpr-router -- --config examples/local/router.yaml
 Mode A uses a Lambda Layer and exec wrapper and is experimental. See [docs/integrations.md](integrations.md) for setup and limitations.
 
 ```bash
-AWS_LAMBDA_EXEC_WRAPPER=/opt/lpr/exec-wrapper.sh
-LPR_MAX_CONCURRENCY=4
+AWS_LAMBDA_EXEC_WRAPPER=/opt/smug/exec-wrapper.sh
+SMUG_MAX_CONCURRENCY=4
 ```

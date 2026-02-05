@@ -6,16 +6,16 @@ AWS_REGION ?= $(shell aws configure get region)
 AWS_ACCOUNT_ID ?= $(shell aws sts get-caller-identity --query Account --output text)
 ECR_REGISTRY ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 
-ROUTER_REPO_PREFIX ?= lambda-parallel-router
-ROUTER_REPO_NAME ?= $(ROUTER_REPO_PREFIX)/router
-ROUTER_VERSION ?= $(shell tr -d '\n' < VERSION)
-ROUTER_IMAGE_TAG ?= $(ROUTER_VERSION)
-ROUTER_IMAGE_PLATFORM ?= linux/amd64
-ROUTER_IMAGE_IDENTIFIER ?= $(ECR_REGISTRY)/$(ROUTER_REPO_NAME):$(ROUTER_IMAGE_TAG)
+GATEWAY_REPO_PREFIX ?= simple-multiplexer-gateway
+GATEWAY_REPO_NAME ?= $(GATEWAY_REPO_PREFIX)/gateway
+GATEWAY_VERSION ?= $(shell tr -d '\n' < VERSION)
+GATEWAY_IMAGE_TAG ?= $(GATEWAY_VERSION)
+GATEWAY_IMAGE_PLATFORM ?= linux/amd64
+GATEWAY_IMAGE_IDENTIFIER ?= $(ECR_REGISTRY)/$(GATEWAY_REPO_NAME):$(GATEWAY_IMAGE_TAG)
 
 SAM_DEPLOY_FLAGS ?= --resolve-s3 --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset
 
-BOOTSTRAP_STACK_NAME ?= lpr-bootstrap
+BOOTSTRAP_STACK_NAME ?= smug-bootstrap
 BOOTSTRAP_TEMPLATE ?= bootstrap/template.yaml
 BOOTSTRAP_BUCKET ?=
 
@@ -27,8 +27,8 @@ help:
 		'  make bootstrap-deploy     Deploy the bootstrap stack (macro + shared config bucket)' \
 		'  make ecr-template         Create/update ECR repository creation template (CREATE_ON_PUSH)' \
 		'  make ecr-login            Docker login to ECR' \
-		'  make image-build          Build router container image' \
-		'  make image-push           Push router container image (auto-creates repo on first push)' \
+		'  make image-build          Build gateway container image' \
+		'  make image-push           Push gateway container image (auto-creates repo on first push)' \
 		'  make sam-build            sam build' \
 		'  make sam-deploy           sam deploy (uses sam/samconfig.toml)' \
 		'  make print-vars           Show computed variables' \
@@ -36,15 +36,15 @@ help:
 		'' \
 		'Common overrides:' \
 		'  make deploy BOOTSTRAP_BUCKET=my-existing-bucket' \
-		'  make deploy ROUTER_REPO_PREFIX=my-prefix ROUTER_REPO_NAME=my-prefix/router ROUTER_IMAGE_TAG=latest'
+		'  make deploy GATEWAY_REPO_PREFIX=my-prefix GATEWAY_REPO_NAME=my-prefix/gateway GATEWAY_IMAGE_TAG=latest'
 
 .PHONY: check
 check:
 	@if [[ -z "$(AWS_REGION)" ]]; then echo "AWS_REGION is empty (set AWS_REGION or configure a default region)"; exit 1; fi
 	@if [[ -z "$(AWS_ACCOUNT_ID)" ]]; then echo "Failed to resolve AWS_ACCOUNT_ID (check AWS credentials)"; exit 1; fi
-	@case "$(ROUTER_REPO_NAME)" in \
-		"$(ROUTER_REPO_PREFIX)"/*) ;; \
-		*) echo "ROUTER_REPO_NAME must start with ROUTER_REPO_PREFIX/ (got $(ROUTER_REPO_NAME), prefix $(ROUTER_REPO_PREFIX))"; exit 1 ;; \
+	@case "$(GATEWAY_REPO_NAME)" in \
+		"$(GATEWAY_REPO_PREFIX)"/*) ;; \
+		*) echo "GATEWAY_REPO_NAME must start with GATEWAY_REPO_PREFIX/ (got $(GATEWAY_REPO_NAME), prefix $(GATEWAY_REPO_PREFIX))"; exit 1 ;; \
 	esac
 
 .PHONY: print-vars
@@ -53,10 +53,10 @@ print-vars: check
 		"AWS_REGION=$(AWS_REGION)" \
 		"AWS_ACCOUNT_ID=$(AWS_ACCOUNT_ID)" \
 		"ECR_REGISTRY=$(ECR_REGISTRY)" \
-		"ROUTER_REPO_PREFIX=$(ROUTER_REPO_PREFIX)" \
-		"ROUTER_REPO_NAME=$(ROUTER_REPO_NAME)" \
-		"ROUTER_IMAGE_TAG=$(ROUTER_IMAGE_TAG)" \
-		"ROUTER_IMAGE_IDENTIFIER=$(ROUTER_IMAGE_IDENTIFIER)" \
+		"GATEWAY_REPO_PREFIX=$(GATEWAY_REPO_PREFIX)" \
+		"GATEWAY_REPO_NAME=$(GATEWAY_REPO_NAME)" \
+		"GATEWAY_IMAGE_TAG=$(GATEWAY_IMAGE_TAG)" \
+		"GATEWAY_IMAGE_IDENTIFIER=$(GATEWAY_IMAGE_IDENTIFIER)" \
 		"BOOTSTRAP_STACK_NAME=$(BOOTSTRAP_STACK_NAME)" \
 		"BOOTSTRAP_TEMPLATE=$(BOOTSTRAP_TEMPLATE)" \
 		"BOOTSTRAP_BUCKET=$(BOOTSTRAP_BUCKET)"
@@ -64,12 +64,12 @@ print-vars: check
 .PHONY: ecr-template
 ecr-template: check
 	@set -euo pipefail; \
-	applied_for="$$(aws ecr describe-repository-creation-templates --region "$(AWS_REGION)" --prefixes "$(ROUTER_REPO_PREFIX)" --query 'repositoryCreationTemplates[0].appliedFor' --output text 2>/dev/null || true)"; \
+	applied_for="$$(aws ecr describe-repository-creation-templates --region "$(AWS_REGION)" --prefixes "$(GATEWAY_REPO_PREFIX)" --query 'repositoryCreationTemplates[0].appliedFor' --output text 2>/dev/null || true)"; \
 	if [[ -z "$$applied_for" || "$$applied_for" == "None" ]]; then \
-		echo "Creating ECR repository creation template for prefix $(ROUTER_REPO_PREFIX) (CREATE_ON_PUSH)"; \
+		echo "Creating ECR repository creation template for prefix $(GATEWAY_REPO_PREFIX) (CREATE_ON_PUSH)"; \
 		aws ecr create-repository-creation-template \
 			--region "$(AWS_REGION)" \
-			--prefix "$(ROUTER_REPO_PREFIX)" \
+			--prefix "$(GATEWAY_REPO_PREFIX)" \
 			--applied-for CREATE_ON_PUSH >/dev/null; \
 	else \
 		if echo "$$applied_for" | grep -q "CREATE_ON_PUSH"; then \
@@ -78,14 +78,14 @@ ecr-template: check
 			echo "Updating ECR repository creation template to include CREATE_ON_PUSH (was: $$applied_for)"; \
 			aws ecr update-repository-creation-template \
 				--region "$(AWS_REGION)" \
-				--prefix "$(ROUTER_REPO_PREFIX)" \
+				--prefix "$(GATEWAY_REPO_PREFIX)" \
 				--applied-for $$applied_for CREATE_ON_PUSH >/dev/null; \
 		fi; \
 	fi
 
 .PHONY: ecr-template-delete
 ecr-template-delete: check
-	aws ecr delete-repository-creation-template --region "$(AWS_REGION)" --prefix "$(ROUTER_REPO_PREFIX)" || true
+	aws ecr delete-repository-creation-template --region "$(AWS_REGION)" --prefix "$(GATEWAY_REPO_PREFIX)" || true
 
 .PHONY: ecr-login
 ecr-login: check
@@ -93,11 +93,11 @@ ecr-login: check
 
 .PHONY: image-build
 image-build: check
-	docker build --platform "$(ROUTER_IMAGE_PLATFORM)" -f Dockerfile.router -t "$(ROUTER_IMAGE_IDENTIFIER)" .
+	docker build --platform "$(GATEWAY_IMAGE_PLATFORM)" -f Dockerfile.gateway -t "$(GATEWAY_IMAGE_IDENTIFIER)" .
 
 .PHONY: image-push
 image-push: ecr-template ecr-login image-build
-	docker push "$(ROUTER_IMAGE_IDENTIFIER)"
+	docker push "$(GATEWAY_IMAGE_IDENTIFIER)"
 
 .PHONY: sam-build
 sam-build:
@@ -112,8 +112,8 @@ bootstrap-deploy: check
 	@set -euo pipefail; \
 	AWS_REGION="$(AWS_REGION)" AWS_DEFAULT_REGION="$(AWS_REGION)" \
 		params=( \
-			"DefaultRouterRepositoryName=$(ROUTER_REPO_NAME)" \
-			"DefaultRouterImageTag=$(ROUTER_VERSION)" \
+			"DefaultGatewayRepositoryName=$(GATEWAY_REPO_NAME)" \
+			"DefaultGatewayImageTag=$(GATEWAY_VERSION)" \
 		); \
 		if [[ -n "$(BOOTSTRAP_BUCKET)" ]]; then params+=("UseExistingBucket=$(BOOTSTRAP_BUCKET)"); fi; \
 		sam deploy \
